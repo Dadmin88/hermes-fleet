@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import FleetDefaults, NodePolicy
+from .models import FleetDefaults, NodePolicy, _require_exact_type
 
 
 def _positive(value: object, label: str) -> int:
@@ -28,10 +28,10 @@ def enforce_request_policy(
     export_path_count: object,
 ) -> None:
     """Raise when a requested operation or bound exceeds local allowlisted policy."""
-    if type(policy) is not NodePolicy:
-        raise ValueError("policy must be a NodePolicy")
-    if type(defaults) is not FleetDefaults:
-        raise ValueError("defaults must be FleetDefaults")
+    policy = _require_exact_type(policy, NodePolicy, "policy must be a NodePolicy")
+    defaults = _require_exact_type(
+        defaults, FleetDefaults, "defaults must be FleetDefaults"
+    )
     if type(operation) is not str:
         raise ValueError("operation must be a string")
     deadline = _positive(deadline_seconds, "deadline_seconds")
@@ -39,7 +39,7 @@ def enforce_request_policy(
     prompt = _nonnegative(prompt_chars, "prompt_chars")
     exports = _nonnegative(export_path_count, "export_path_count")
     if operation not in policy.allowed_operations:
-        raise ValueError(f"operation is not allowed: {operation}")
+        raise ValueError("operation is not allowed")
     if deadline > min(policy.max_deadline_seconds, defaults.max_deadline_seconds):
         raise ValueError("deadline_seconds exceeds policy")
     if payload > min(policy.max_payload_bytes, defaults.max_payload_bytes):

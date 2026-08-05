@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TypeVar, cast
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _PEER_ID_LIMIT = 256
 _OPERATIONS = frozenset({"fleet.health", "fleet.inventory", "fleet.hermes.run"})
+_DomainType = TypeVar("_DomainType")
+
+
+def _require_exact_type(
+    value: object, expected: type[_DomainType], message: str
+) -> _DomainType:
+    """Require one trusted Fleet domain collaborator without subclass hooks."""
+    if type(value) is not expected:
+        raise ValueError(message)
+    return cast(_DomainType, value)
 
 
 def _identifier(value: str, label: str) -> str:

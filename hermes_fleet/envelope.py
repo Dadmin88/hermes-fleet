@@ -6,15 +6,87 @@ import json
 from dataclasses import dataclass
 from typing import Any, cast
 
-from .models import FleetDefaults, NodeConfig
+from .models import FleetDefaults, NodeConfig, _require_exact_type
 
 ENVELOPE_VERSION = 1
 OPERATIONS = frozenset({"fleet.health", "fleet.inventory", "fleet.hermes.run"})
 
 
+class _DuplicateJsonObjectKey(ValueError):
+    """Private decoder signal; it intentionally retains no untrusted key text."""
+
+
+class _NonStandardJsonValue(ValueError):
+    """Private decoder signal for Python-only non-finite numeric tokens."""
+
+
+class _InvalidJsonUnicode(ValueError):
+    """Private decoder signal for strings containing lone surrogate code points."""
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one decoded JSON object while rejecting repeated members."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonObjectKey
+        result[key] = value
+    return result
+
+
+def _reject_nonstandard_json_value(value: str) -> None:
+    del value
+    raise _NonStandardJsonValue
+
+
+def _contains_surrogate_code_point(value: str) -> bool:
+    return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+
+
+def _validate_decoded_json_strings(value: object) -> None:
+    """Reject lone surrogates without adding a second recursive parser walk."""
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if type(current) is str:
+            if _contains_surrogate_code_point(current):
+                raise _InvalidJsonUnicode
+        elif type(current) is dict:
+            mapping = cast(dict[object, object], current)
+            pending.extend(mapping.keys())
+            pending.extend(mapping.values())
+        elif type(current) is list:
+            pending.extend(cast(list[object], current))
+
+
+def _decode_json_payload(payload: str) -> object:
+    """Decode strict interoperable JSON behind stable Fleet-owned errors."""
+    try:
+        document = json.loads(
+            payload,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_nonstandard_json_value,
+        )
+        _validate_decoded_json_strings(document)
+        return document
+    except _DuplicateJsonObjectKey:
+        error_message = "payload must not contain duplicate JSON object keys"
+    except _NonStandardJsonValue:
+        error_message = "payload must contain only standard JSON values"
+    except _InvalidJsonUnicode:
+        error_message = "payload must be valid UTF-8"
+    except (ValueError, RecursionError):
+        error_message = "payload must be a JSON object"
+    raise ValueError(error_message)
+
+
 def _validate_json_value(value: object, ancestors: set[int]) -> None:
     """Reject non-primitive JSON values before their Python hooks can execute."""
-    if value is None or type(value) in (bool, int, float, str):
+    if value is None or type(value) in (bool, int, float):
+        return
+    if type(value) is str:
+        if _contains_surrogate_code_point(value):
+            raise ValueError("envelope input must be JSON serializable")
         return
     if type(value) not in (dict, list, tuple):
         raise ValueError("envelope input must be JSON serializable")
@@ -25,7 +97,10 @@ def _validate_json_value(value: object, ancestors: set[int]) -> None:
     try:
         if type(value) is dict:
             mapping = cast(dict[object, object], value)
-            if any(type(key) is not str for key in mapping):
+            if any(
+                type(key) is not str or _contains_surrogate_code_point(key)
+                for key in mapping
+            ):
                 raise ValueError("envelope input must be JSON serializable")
             nested_values = mapping.values()
         else:
@@ -62,24 +137,26 @@ class FleetEnvelope:
         if type(self.input) is not dict:
             raise ValueError("envelope input must be a JSON object")
         try:
-            _validate_json_value(self.input, set())
-            return json.dumps(
-                {
-                    "version": self.version,
-                    "operation": self.operation,
-                    "target": {
-                        "name": self.target_name,
-                        "peer_id": self.target_peer_id,
-                    },
-                    "input": self.input,
-                    "limits": {"deadline_seconds": self.deadline_seconds},
+            document = {
+                "version": self.version,
+                "operation": self.operation,
+                "target": {
+                    "name": self.target_name,
+                    "peer_id": self.target_peer_id,
                 },
+                "input": self.input,
+                "limits": {"deadline_seconds": self.deadline_seconds},
+            }
+            _validate_json_value(document, set())
+            return json.dumps(
+                document,
                 separators=(",", ":"),
                 sort_keys=True,
                 allow_nan=False,
             )
-        except (TypeError, ValueError, RuntimeError, RecursionError) as error:
-            raise ValueError("envelope input must be JSON serializable") from error
+        except (TypeError, ValueError, RuntimeError, RecursionError):
+            pass
+        raise ValueError("envelope input must be JSON serializable")
 
 
 def _object(value: object, label: str) -> dict[str, Any]:
@@ -122,22 +199,21 @@ def parse_envelope(
     payload: str, *, target: NodeConfig, defaults: FleetDefaults
 ) -> FleetEnvelope:
     """Parse and validate a bounded Fleet envelope before any later dispatch layer."""
-    if type(target) is not NodeConfig:
-        raise ValueError("target must be a NodeConfig")
-    if type(defaults) is not FleetDefaults:
-        raise ValueError("defaults must be FleetDefaults")
+    target = _require_exact_type(target, NodeConfig, "target must be a NodeConfig")
+    defaults = _require_exact_type(
+        defaults, FleetDefaults, "defaults must be FleetDefaults"
+    )
     if type(payload) is not str:
         raise ValueError("payload must be a string")
     try:
         payload_bytes = payload.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError("payload must be valid UTF-8") from error
+    except UnicodeEncodeError:
+        payload_bytes = None
+    if payload_bytes is None:
+        raise ValueError("payload must be valid UTF-8")
     if len(payload_bytes) > defaults.max_payload_bytes:
         raise ValueError("payload exceeds the configured size limit")
-    try:
-        document = json.loads(payload)
-    except (ValueError, RecursionError) as error:
-        raise ValueError("payload must be a JSON object") from error
+    document = _decode_json_payload(payload)
     document = _object(document, "payload")
     if set(document) != {"version", "operation", "target", "input", "limits"}:
         raise ValueError("payload has an invalid envelope shape")

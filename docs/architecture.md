@@ -2,7 +2,7 @@
 
 ## Decision
 
-Hermes Fleet v0.1 uses [Hermes Keryx](https://github.com/DeployFaith/hermes-keryx) as its durable task transport and data plane. Direct Hermes A2A is not the primary transport.
+Target architecture after the Keryx integration phases: Hermes Fleet v0.1 will use [Hermes Keryx](https://github.com/DeployFaith/hermes-keryx) as its durable task transport and data plane. Direct Hermes A2A is not the primary transport.
 
 The responsibility boundary is:
 
@@ -53,6 +53,47 @@ The audit found several narrower limits than the former product docs implied:
 
 These are upstream integration slices, not justification for a parallel Fleet transport, database, or file channel.
 
+## Fleet trust-boundary map
+
+Exact runtime types are required where direct Python callers could supply subclasses with executable hooks. Parser-produced JSON/YAML containers remain ordinary built-ins and are validated by shape and value; exact-type checks are not spread mechanically through trusted internal helpers.
+
+| Module | Untrusted/public boundaries and boundary helpers | Internal trusted helpers |
+| --- | --- | --- |
+| `config.py` | `_construct_unique_mapping`, `_require_absolute_state_root`, `get_hermes_home`, `get_fleet_dir`, `_mapping`, `_node`, `load_fleet_config` | None; every callable either receives direct caller/environment input or validates parser output. |
+| `inventory.py` | `_require_absolute_state_path`, `write_json_atomic`, `write_yaml_atomic`, `_valid_cache_at`, `load_cache`, `initialize_inventory_state` | `_verify_owner_directory`, `_tighten_owner_directory`, `_open_owner_directory`, `_open_or_create_owner_directory`, `_open_state_directory`, `_safe_existing_target_at`, `_new_temporary_file`, `_atomic_write_at`, `_atomic_write`, `_read_text_at`; these operate only after concrete paths or open descriptors establish the boundary. |
+| `envelope.py` | `_unique_json_object`, `_reject_nonstandard_json_value`, `_contains_surrogate_code_point`, `_validate_decoded_json_strings`, `_decode_json_payload`, `_validate_json_value`, `FleetEnvelope.to_json`, `_object`, `_positive_int`, `_export_paths`, `parse_envelope` | None; each callable validates decoded or directly constructed untrusted envelope data. |
+| `models.py` | `_require_exact_type`, `_identifier`, `_peer_id`, `_positive_int`, and every `__post_init__` on `FleetDefaults`, `NodePolicy`, `NodeConfig`, and `RemoteOutput` | None; public dataclass construction is itself a boundary. |
+| `policy.py` | `_positive`, `_nonnegative`, `enforce_request_policy` | None; request and collaborator values are caller-controlled. |
+| `selection.py` | `_requested`, `select_nodes` | None; the public API deliberately accepts external one-shot iterables, materializes each once, then exact-checks elements. |
+| `formatting.py` | `format_remote_output` | None. |
+
+Two repeated cross-module semantic predicates are centralized narrowly: concrete platform `Path` trust in dependency-free `_paths.is_concrete_path`, and exact Fleet domain collaborators in `models._require_exact_type`. The latter is used only for `NodeConfig`, `FleetDefaults`, `NodePolicy`, and `RemoteOutput` gates before attribute access while callers retain their literal stable messages. Primitive, numeric, string, mapping, and iterable checks intentionally remain local because their accepted values, normalization, upper bounds, and errors differ. This is not a generic validation framework.
+
+## Artifact capability boundary
+
+### Current verified Keryx behavior
+
+- Durable result records carry result metadata.
+- Routed results may carry artifact descriptors and bounded text previews where supported.
+- Artifact byte storage is destination-local.
+- Fleet has no proven cross-node artifact-byte retrieval path.
+- The high-level Python SDK has no artifact list/get/download contract available to Fleet.
+
+The first safe Fleet vertical slice is therefore text-only: controller → Keryx submission → remote `fleet-node` → authenticated loopback Hermes Runs API → terminal text result → durable Keryx result → controller retrieval.
+
+### Deferred artifact backlog
+
+If separately approved after the first Katana/VPS text-result release, Phase 2B would need to add and prove these upstream capabilities before Fleet advertises remote artifact retrieval:
+
+- bounded authenticated artifact-byte transport;
+- aggregate cross-node artifact limits;
+- descriptor size and digest verification;
+- origin-side content-addressed ingestion;
+- replay-safe and duplicate-safe behavior;
+- high-level Python retrieval and safe download helpers.
+
+Binary, empty, multi-file, traversal, replay, duplicate, hash-mismatch, and oversize cases belong to that later gate. They do not block the Katana-to-VPS text-result proof.
+
 ## Runtime topology
 
 ```text
@@ -72,10 +113,10 @@ Controller device
 └─────────┬────────────────┬───────────────┘
           │                │
 ┌─────────▼────────┐ ┌─────▼──────────────┐
-│ Linux/VPS node   │ │ Android/Termux node│
-│ Hermes gateway   │ │ Hermes gateway     │
-│ fleet-node       │ │ fleet-node         │
-│ local keryxd     │ │ local keryxd       │
+│ Linux/VPS node   │ │ Deferred Android   │
+│ Hermes gateway   │ │ backlog only       │
+│ fleet-node       │ │                    │
+│ local keryxd     │ │                    │
 └──────────────────┘ └────────────────────┘
 ```
 
@@ -166,12 +207,14 @@ This is an execution-correlation record, not a second Fleet task lifecycle datab
 
 ### Artifact export contract
 
-Hermes Runs returns final text/status, not a list of created files. Fleet therefore never scans the node filesystem. `fleet.hermes.run` may return:
+Hermes Runs returns final text/status, not a list of created files. Fleet therefore never scans the node filesystem. Phase 1 validates `input.export_paths` syntax as a local contract, but Phase 2A sends and retrieves terminal text only. It does not claim cross-node artifact bytes or expose artifact download.
+
+After the Phase 2B Keryx gate passes, `fleet.hermes.run` may additionally return:
 
 - a bounded `result.txt` artifact produced from final Hermes output; and
 - explicitly requested relative files under a configured export root.
 
-`input.export_paths` is optional, contains only bounded relative paths, and is exposed by `hermes fleet run --export <relative-path>` and the model tool's `export_paths` array through one shared schema. Before Hermes starts, Fleet rejects absolute, empty, duplicate, `.`/`..`, control-character, and over-limit paths and creates a private per-task export directory. Because Hermes may create the files later, post-run collection repeats containment checks and opens every directory component and final regular file relative to the task-root directory descriptor with no-follow semantics; it never trusts a preflight path resolution. Collected files are size/count bounded, hashed, and handed to Keryx. Keryx routes authenticated artifact bytes inline in the result envelope with a default **4 MiB aggregate cross-node limit**, ingests them into the origin daemon's existing content-addressed artifact store, and exposes safe Python download helpers. The existing 256 MiB node-local blob ceiling does not imply a 256 MiB relay payload.
+`input.export_paths` is optional and contains only bounded relative paths. Future CLI/model surfaces must share that schema. Before Hermes starts, Fleet must reject absolute, empty, duplicate, `.`/`..`, control-character, and over-limit paths and create a private per-task export directory. Because Hermes may create files later, future post-run collection must repeat containment checks and open every component and final regular file relative to the task-root descriptor with no-follow semantics. Collected files must remain size/count bounded and hashed. Keryx must then provide the authenticated, aggregate-bounded, verified transport and origin ingestion described in Phase 2B; none of those future actions are present Fleet behavior today.
 
 If a node does not expose the Runs capability, `fleet.hermes.run` is not registered. Fleet does not import Hermes private runtime internals as a fallback.
 
@@ -211,9 +254,9 @@ Every node is default-deny. Only explicitly listed authenticated sender peer IDs
 
 Authentication never implies authorization.
 
-## CLI and model tools
+## Planned CLI and model tools
 
-CLI:
+After the corresponding controller phases are implemented, the CLI is planned to include:
 
 ```text
 hermes fleet init
@@ -228,7 +271,7 @@ hermes fleet artifacts TASK_ID --output DIR
 hermes fleet doctor [--deep] [--json]
 ```
 
-Model-callable tools remain narrow:
+Planned model-callable tools remain narrow:
 
 - `fleet_list_nodes`
 - `fleet_get_node`
@@ -249,17 +292,21 @@ Native Hermes A2A remains a verified compatibility surface, but it is outside th
 
 The current Katana `keryx-task-bridge.service` is a pre-Phase-17 stub. It reads pending task IDs directly from Keryx SQLite, claims them, and completes them immediately with `"Agency node processing not yet wired."` It must be disabled and replaced by `fleet-node` before the relay is activated for Fleet traffic. Fleet must never read or mutate Keryx SQLite directly.
 
-Fleet v0.1 is not complete until one real controller dispatches through Keryx to three independent Hermes installations—workstation, VPS/Linux, and Android/Termux—and verifies:
+### First-release acceptance
 
-- distinct stable peer IDs and friendly names;
-- capability discovery;
-- one named-node run;
-- one tag-selected parallel run;
-- durable result retrieval after sender waiting is interrupted;
-- artifact retrieval;
-- policy denial;
-- deadline behavior;
-- node-offline mailbox behavior without claiming relay-restart durability;
-- cancellation behavior at the level actually implemented.
+Hermes Fleet's first release is one Katana controller, one VPS worker, and text-only remote execution. It is not complete until a repeatable real proof shows:
+
+- Katana selected the VPS through Fleet inventory;
+- Fleet submitted the task through Keryx;
+- the VPS executed the task through its local Hermes instance;
+- the terminal text result returned to Katana;
+- logs identify the Keryx task, peer, Hermes run, and final status;
+- deadline and cooperative cancellation behavior were observed;
+- GitHub Actions remained green on the released commit; and
+- the two-machine smoke procedure is documented and repeatable.
+
+Authenticated registry ownership, TTL refresh/deregistration, absolute deadline propagation, cooperative cancellation observation, and the actual-route/routed-peer submission receipt are supporting safety seams for that proof.
+
+Artifact transport, tag fan-out, Android/Termux, mailbox durability, and richer orchestration are deferred backlog. They do not block the first release and must not interrupt the vertical slice unless a concrete critical vulnerability is found.
 
 Fake services are acceptable for CI, never as a substitute for this release gate.

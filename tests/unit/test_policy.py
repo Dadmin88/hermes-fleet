@@ -52,6 +52,27 @@ def test_policy_defaults_to_deny_and_enforces_explicit_bounds() -> None:
         )
 
 
+def test_policy_denial_does_not_reflect_untrusted_operation_text() -> None:
+    """Authorization failures cannot inject caller text into errors or logs."""
+    from hermes_fleet.models import FleetDefaults, NodePolicy
+    from hermes_fleet.policy import enforce_request_policy
+
+    operation = "TOP-SECRET\x1b[2J\nFORGED"
+    with pytest.raises(ValueError) as error:
+        enforce_request_policy(
+            NodePolicy(),
+            defaults=FleetDefaults(),
+            operation=operation,
+            deadline_seconds=1,
+            payload_bytes=1,
+            prompt_chars=0,
+            export_path_count=0,
+        )
+
+    assert str(error.value) == "operation is not allowed"
+    assert operation not in str(error.value)
+
+
 def test_policy_validates_malformed_metrics_before_authorization() -> None:
     """A denied operation cannot hide a structurally invalid request metric."""
     from hermes_fleet.models import FleetDefaults, NodePolicy

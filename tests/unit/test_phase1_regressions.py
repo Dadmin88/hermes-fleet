@@ -162,6 +162,8 @@ def test_envelope_rejects_lone_unicode_surrogate_as_value_error() -> None:
         parse_envelope(payload, target=target, defaults=FleetDefaults())
     assert type(raised.value) is ValueError
     assert str(raised.value) == "payload must be valid UTF-8"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
 def test_selection_materializes_generator_requests_once() -> None:

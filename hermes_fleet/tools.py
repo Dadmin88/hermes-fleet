@@ -8,7 +8,7 @@ from typing import Any
 TOOLSET = "fleet"
 FLEET_LIST_NODES_SCHEMA = {
     "name": "fleet_list_nodes",
-    "description": "List configured Hermes Fleet nodes. Phase 1 returns no live state.",
+    "description": "Report that live Hermes Fleet inventory is unavailable in Phase 1.",
     "parameters": {
         "type": "object",
         "properties": {},
@@ -22,9 +22,14 @@ def fleet_list_nodes(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     del args, kwargs
     return json.dumps(
         {
-            "success": True,
-            "data": [],
-            "errors": [],
-            "warnings": ["Fleet dispatch is not available in Phase 1."],
+            "success": False,
+            "data": None,
+            "errors": [
+                {
+                    "code": "FEATURE_NOT_IMPLEMENTED",
+                    "message": "Live Fleet inventory is not available in Phase 1.",
+                }
+            ],
+            "warnings": [],
         }
     )

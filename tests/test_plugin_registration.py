@@ -94,6 +94,9 @@ def test_plugin_uses_public_registration_and_returns_stable_json_tool_result() -
     assert tool["toolset"] == "fleet"
     assert callable(tool["handler"])
     assert set(tool["schema"]) == {"name", "description", "parameters"}
+    assert tool["schema"]["description"] == (
+        "Report that live Hermes Fleet inventory is unavailable in Phase 1."
+    )
     assert tool["schema"]["parameters"] == {
         "type": "object",
         "properties": {},
@@ -101,8 +104,13 @@ def test_plugin_uses_public_registration_and_returns_stable_json_tool_result() -
     }
     handler = cast(Callable[[dict[str, Any]], str], tool["handler"])
     assert json.loads(handler({})) == {
-        "success": True,
-        "data": [],
-        "errors": [],
-        "warnings": ["Fleet dispatch is not available in Phase 1."],
+        "success": False,
+        "data": None,
+        "errors": [
+            {
+                "code": "FEATURE_NOT_IMPLEMENTED",
+                "message": "Live Fleet inventory is not available in Phase 1.",
+            }
+        ],
+        "warnings": [],
     }

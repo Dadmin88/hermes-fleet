@@ -10,7 +10,7 @@ Hermes Fleet is a **Keryx-first Phase 1** standalone Hermes plugin. It provides 
 - Strict JSON envelopes for `fleet.health`, `fleet.inventory`, and `fleet.hermes.run`.
 - Deterministic enabled-node selection by exact name or AND-matched tags, sorted by priority then name.
 - Owner-safe local initialization of `nodes.yaml` and recoverable `cache.json` with private state permissions.
-- A public `hermes fleet init` CLI command and `fleet_list_nodes` tool placeholder. Tool results retain the stable `{success,data,errors,warnings}` shape.
+- A public `hermes fleet init` CLI command and an honest `fleet_list_nodes` placeholder. The tool retains the stable `{success,data,errors,warnings}` shape but returns `FEATURE_NOT_IMPLEMENTED` until a Keryx-backed controller provides live inventory.
 
 ## Install as a Hermes plugin
 
@@ -42,3 +42,27 @@ Hermes plugin installation path.
 Phase 1 has **no network traffic, Keryx SDK integration, discovery, health probing, dispatch, secrets, history/task database, daemon, or dashboard**. `fleet_list_nodes` is intentionally a non-networking placeholder; it does not expose live inventory or dispatch work.
 
 Earlier direct Hermes A2A concepts are superseded design evidence only. Production Phase 1 makes no direct-A2A or transport assumptions. A later phase must explicitly integrate Keryx and define dispatch behavior before remote work can occur.
+
+## Artifact capability boundary
+
+### Current verified Keryx behavior
+
+- Durable results can carry result metadata, artifact descriptors, and bounded text previews where supported.
+- Artifact bytes remain in destination-local Keryx artifact storage.
+- Fleet has no proven cross-node artifact-byte retrieval path.
+- The high-level Keryx Python API exposes no artifact download contract that Fleet can use.
+
+These facts do not block the first real Fleet proof: a text-only Hermes run from Katana to the VPS through Keryx.
+
+### Deferred artifact backlog
+
+The following are possible post-release Phase 2B work, not shipped Fleet capabilities or first-release requirements:
+
+- bounded authenticated artifact-byte transport;
+- aggregate cross-node artifact limits;
+- digest and size verification;
+- origin-side content-addressed ingestion;
+- replay-safe ingestion and delivery;
+- high-level Python retrieval and download helpers.
+
+Fleet will not add a parallel artifact channel while those Keryx capabilities are absent.
