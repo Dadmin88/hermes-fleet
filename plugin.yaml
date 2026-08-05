@@ -1,0 +1,7 @@
+name: hermes-fleet
+version: 0.1.0
+description: "Keryx-first local Fleet inventory, policy, envelope, and selection domain (no dispatch)"
+author: "Hermes Fleet contributors"
+kind: standalone
+provides_tools:
+  - fleet_list_nodes
