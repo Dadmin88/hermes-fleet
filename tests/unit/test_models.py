@@ -30,3 +30,116 @@ def test_node_config_maps_friendly_name_to_opaque_keryx_peer_id() -> None:
         NodeConfig(name="not valid", peer_id="peer")
     with pytest.raises(ValueError, match="tag"):
         NodeConfig(name="alpha", peer_id="peer", tags=("not valid",))
+
+
+def test_node_policy_rejects_unhashable_string_subclasses() -> None:
+    """Operation normalization cannot leak set-construction type errors."""
+    from hermes_fleet.models import NodePolicy
+
+    UnhashableStr = type("UnhashableStr", (str,), {"__hash__": None})
+
+    with pytest.raises(ValueError, match="allowed_operations"):
+        NodePolicy(allowed_operations=(UnhashableStr("fleet.health"),))
+
+
+@pytest.mark.parametrize("field", ("name", "tag"))
+def test_node_config_rejects_string_subclasses_with_custom_normalization(
+    field: str,
+) -> None:
+    """Identifier validation does not invoke overridden string methods."""
+    from hermes_fleet.models import NodeConfig
+
+    BadStrip = type("BadStrip", (str,), {"strip": lambda self: 1})
+    kwargs = {"name": "alpha", "peer_id": "peer-alpha", "tags": ()}
+    if field == "name":
+        kwargs["name"] = BadStrip("alpha")
+    else:
+        kwargs["tags"] = (BadStrip("gpu"),)
+
+    with pytest.raises(ValueError, match=field):
+        NodeConfig(**kwargs)
+
+
+@pytest.mark.parametrize("behavior", ("plain-subclass", "explosive-strip"))
+def test_node_config_requires_an_exact_primitive_peer_id(behavior: str) -> None:
+    """Peer IDs cannot invoke string-subclass normalization hooks."""
+    from hermes_fleet.models import NodeConfig
+
+    attributes = {}
+    if behavior == "explosive-strip":
+
+        def explode(self):
+            raise RuntimeError("strip hook ran")
+
+        attributes["strip"] = explode
+    PeerId = type("PeerId", (str,), attributes)
+
+    with pytest.raises(ValueError, match="peer_id must be a string"):
+        NodeConfig(name="alpha", peer_id=PeerId("peer-alpha"))
+
+
+def test_remote_output_requires_exact_primitive_text() -> None:
+    """Untrusted output retains only exact primitive strings."""
+    from hermes_fleet.models import RemoteOutput
+
+    Text = type("Text", (str,), {})
+    with pytest.raises(ValueError, match="remote output must be text"):
+        RemoteOutput(Text("hello"))
+
+
+def test_node_config_requires_an_exact_node_policy() -> None:
+    """Nested policy subclasses are rejected at model construction."""
+    from hermes_fleet.models import NodeConfig, NodePolicy
+
+    Policy = type("Policy", (NodePolicy,), {})
+    with pytest.raises(ValueError, match="policy must be a NodePolicy"):
+        NodeConfig(name="alpha", peer_id="peer-alpha", policy=Policy())
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "max_deadline_seconds",
+        "max_payload_bytes",
+        "max_prompt_chars",
+        "max_export_paths",
+        "priority",
+    ),
+)
+def test_models_require_exact_primitive_integers(field: str) -> None:
+    """Numeric subclasses cannot invoke hooks or survive model validation."""
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    def explode(self, other):
+        raise RuntimeError("numeric comparison hook ran")
+
+    Metric = type(
+        "Metric",
+        (int,),
+        {"__lt__": explode, "__gt__": explode},
+    )
+    with pytest.raises(ValueError, match=field):
+        if field == "priority":
+            NodeConfig(name="alpha", peer_id="peer-alpha", priority=Metric(1))
+        else:
+            FleetDefaults(**{field: Metric(1)})
+
+
+@pytest.mark.parametrize("field", ("allowed_operations", "tags"))
+def test_models_reject_container_subclasses_before_iteration(field: str) -> None:
+    """Container subclasses cannot invoke iteration hooks in model validation."""
+    from hermes_fleet.models import NodeConfig, NodePolicy
+
+    class ExplosiveTuple(tuple):
+        def __iter__(self):
+            raise RuntimeError("iteration hook ran")
+
+    with pytest.raises(ValueError, match=field):
+        if field == "allowed_operations":
+            NodePolicy(allowed_operations=ExplosiveTuple(("fleet.health",)))
+        else:
+            NodeConfig(
+                name="alpha",
+                peer_id="peer-alpha",
+                tags=ExplosiveTuple(("gpu",)),
+            )

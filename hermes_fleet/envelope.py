@@ -4,12 +4,36 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from .models import FleetDefaults, NodeConfig
 
 ENVELOPE_VERSION = 1
 OPERATIONS = frozenset({"fleet.health", "fleet.inventory", "fleet.hermes.run"})
+
+
+def _validate_json_value(value: object, ancestors: set[int]) -> None:
+    """Reject non-primitive JSON values before their Python hooks can execute."""
+    if value is None or type(value) in (bool, int, float, str):
+        return
+    if type(value) not in (dict, list, tuple):
+        raise ValueError("envelope input must be JSON serializable")
+    identity = id(value)
+    if identity in ancestors:
+        raise ValueError("envelope input must be JSON serializable")
+    ancestors.add(identity)
+    try:
+        if type(value) is dict:
+            mapping = cast(dict[object, object], value)
+            if any(type(key) is not str for key in mapping):
+                raise ValueError("envelope input must be JSON serializable")
+            nested_values = mapping.values()
+        else:
+            nested_values = cast(list[object] | tuple[object, ...], value)
+        for nested in nested_values:
+            _validate_json_value(nested, ancestors)
+    finally:
+        ancestors.remove(identity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,17 +49,37 @@ class FleetEnvelope:
 
     def to_json(self) -> str:
         """Serialize a stable envelope representation for a future Keryx task part."""
-        return json.dumps(
-            {
-                "version": self.version,
-                "operation": self.operation,
-                "target": {"name": self.target_name, "peer_id": self.target_peer_id},
-                "input": self.input,
-                "limits": {"deadline_seconds": self.deadline_seconds},
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        )
+        if type(self.version) is not int:
+            raise ValueError("version must be an integer")
+        if type(self.operation) is not str:
+            raise ValueError("operation must be a string")
+        if type(self.target_name) is not str:
+            raise ValueError("target_name must be a string")
+        if type(self.target_peer_id) is not str:
+            raise ValueError("target_peer_id must be a string")
+        if type(self.deadline_seconds) is not int:
+            raise ValueError("deadline_seconds must be an integer")
+        if type(self.input) is not dict:
+            raise ValueError("envelope input must be a JSON object")
+        try:
+            _validate_json_value(self.input, set())
+            return json.dumps(
+                {
+                    "version": self.version,
+                    "operation": self.operation,
+                    "target": {
+                        "name": self.target_name,
+                        "peer_id": self.target_peer_id,
+                    },
+                    "input": self.input,
+                    "limits": {"deadline_seconds": self.deadline_seconds},
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError, RuntimeError, RecursionError) as error:
+            raise ValueError("envelope input must be JSON serializable") from error
 
 
 def _object(value: object, label: str) -> dict[str, Any]:
@@ -78,8 +122,12 @@ def parse_envelope(
     payload: str, *, target: NodeConfig, defaults: FleetDefaults
 ) -> FleetEnvelope:
     """Parse and validate a bounded Fleet envelope before any later dispatch layer."""
-    if not isinstance(payload, str):
-        raise ValueError("payload exceeds the configured size limit")
+    if type(target) is not NodeConfig:
+        raise ValueError("target must be a NodeConfig")
+    if type(defaults) is not FleetDefaults:
+        raise ValueError("defaults must be FleetDefaults")
+    if type(payload) is not str:
+        raise ValueError("payload must be a string")
     try:
         payload_bytes = payload.encode("utf-8")
     except UnicodeEncodeError as error:
@@ -88,7 +136,7 @@ def parse_envelope(
         raise ValueError("payload exceeds the configured size limit")
     try:
         document = json.loads(payload)
-    except json.JSONDecodeError as error:
+    except (ValueError, RecursionError) as error:
         raise ValueError("payload must be a JSON object") from error
     document = _object(document, "payload")
     if set(document) != {"version", "operation", "target", "input", "limits"}:

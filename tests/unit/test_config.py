@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 
@@ -18,6 +20,74 @@ def test_config_uses_hermes_home_or_an_explicit_standalone_override(
         get_fleet_dir(standalone_home=tmp_path / "standalone")
         == tmp_path / "standalone" / "fleet"
     )
+
+
+def test_config_path_boundaries_reject_wrong_runtime_types() -> None:
+    """Public path inputs fail as Fleet configuration errors, not attribute errors."""
+    from hermes_fleet.config import FleetConfigError, get_fleet_dir, load_fleet_config
+
+    with pytest.raises(FleetConfigError, match="path"):
+        load_fleet_config(cast(Any, "nodes.yaml"))
+    with pytest.raises(FleetConfigError, match="state root"):
+        get_fleet_dir(standalone_home=cast(Any, "/tmp/fleet"))
+
+
+@pytest.mark.parametrize("boundary", ("load", "state-root"))
+def test_config_path_boundaries_reject_path_subclasses(tmp_path, boundary: str) -> None:
+    """Path subclasses cannot invoke filesystem or normalization hooks."""
+    from hermes_fleet.config import FleetConfigError, get_fleet_dir, load_fleet_config
+
+    class HostilePath(type(tmp_path)):
+        def read_text(self, *args, **kwargs):
+            raise RuntimeError("read hook ran")
+
+        def is_absolute(self):
+            raise RuntimeError("path hook ran")
+
+    path = HostilePath(tmp_path / "nodes.yaml")
+    with pytest.raises(
+        FleetConfigError, match="path" if boundary == "load" else "state root"
+    ):
+        if boundary == "load":
+            load_fleet_config(path)
+        else:
+            get_fleet_dir(standalone_home=path)
+
+
+def test_config_schema_failures_use_fleet_config_error(tmp_path) -> None:
+    """Schema validation uses one Fleet-owned ValueError subtype."""
+    from hermes_fleet.config import FleetConfigError, load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text("schema_version: true\ndefaults: {}\nnodes: []\n", encoding="utf-8")
+    with pytest.raises(FleetConfigError, match="schema_version") as error:
+        load_fleet_config(path)
+    assert type(error.value) is FleetConfigError
+
+
+def test_config_converts_oversized_integer_parser_error(tmp_path) -> None:
+    """Python's YAML integer digit limit cannot leak parser-specific text."""
+    from hermes_fleet.config import FleetConfigError, load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text(
+        "schema_version: " + "9" * 5_000 + "\ndefaults: {}\nnodes: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(FleetConfigError) as error:
+        load_fleet_config(path)
+    assert str(error.value) == "schema_version 1 configuration file is required"
+
+
+def test_config_converts_parser_recursion_to_fleet_error(tmp_path) -> None:
+    """Deep YAML cannot leak a parser recursion exception."""
+    from hermes_fleet.config import FleetConfigError, load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text("{a:" * 10_000 + "1" + "}" * 10_000, encoding="utf-8")
+    with pytest.raises(FleetConfigError) as error:
+        load_fleet_config(path)
+    assert str(error.value) == "schema_version 1 configuration file is required"
 
 
 def test_config_rejects_duplicate_names_peer_ids_and_non_integer_defaults(

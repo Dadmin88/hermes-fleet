@@ -74,3 +74,79 @@ def test_selection_rejects_scalar_non_string_and_empty_selectors(
 
     with pytest.raises(ValueError, match=message):
         cast(Any, select_nodes)(nodes, **{keyword: value})
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "nodes-iterator",
+        "names-iterator",
+        "tags-iterator",
+        "name-subclass",
+        "tag-subclass",
+        "node-subclass",
+    ),
+)
+def test_selection_normalizes_adversarial_public_inputs(case: str) -> None:
+    """Selector collaborators cannot leak hooks across the public boundary."""
+    from hermes_fleet.models import NodeConfig
+    from hermes_fleet.selection import select_nodes
+
+    class ExplosiveIterable:
+        def __iter__(self):
+            raise KeyError("iterator hook ran")
+
+    class NodeSubclass(NodeConfig):
+        armed = False
+
+        def __getattribute__(self, name):
+            if type(self).armed and name == "enabled":
+                raise KeyError("node hook ran")
+            return object.__getattribute__(self, name)
+
+    def explode(self):
+        raise KeyError("string hook ran")
+
+    nodes = (NodeConfig(name="alpha", peer_id="peer-a", tags=("linux",)),)
+    kwargs = {}
+    error = "must be strings"
+    if case == "nodes-iterator":
+        nodes = ExplosiveIterable()
+        error = "nodes must be NodeConfig values"
+    elif case in {"names-iterator", "tags-iterator"}:
+        kwargs[case.removesuffix("-iterator")] = ExplosiveIterable()
+    elif case in {"name-subclass", "tag-subclass"}:
+        Element = type("Element", (str,), {"strip": explode})
+        kwargs[case.removesuffix("-subclass") + "s"] = (Element("alpha"),)
+    else:
+        node = NodeSubclass(name="alpha", peer_id="peer-a", tags=("linux",))
+        NodeSubclass.armed = True
+        nodes = (node,)
+        error = "nodes must be NodeConfig values"
+
+    with pytest.raises(ValueError, match=error) as raised:
+        select_nodes(nodes, **kwargs)
+    assert type(raised.value) is ValueError
+
+
+def test_selection_preserves_one_shot_generators() -> None:
+    """Valid node and selector generators are each materialized exactly once."""
+    from hermes_fleet.models import NodeConfig
+    from hermes_fleet.selection import select_nodes
+
+    nodes = (
+        NodeConfig(name="alpha", peer_id="peer-a", tags=("linux",)),
+        NodeConfig(name="bravo", peer_id="peer-b", tags=("linux",)),
+    )
+
+    selected_names = select_nodes(
+        (node for node in nodes),
+        names=(name for name in ("bravo",)),
+    )
+    selected_tags = select_nodes(
+        (node for node in nodes),
+        tags=(tag for tag in ("linux",)),
+    )
+
+    assert [node.name for node in selected_names] == ["bravo"]
+    assert [node.name for node in selected_tags] == ["alpha", "bravo"]

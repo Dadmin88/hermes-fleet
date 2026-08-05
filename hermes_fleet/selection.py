@@ -12,9 +12,9 @@ def _requested(values: Iterable[str], label: str) -> tuple[str, ...]:
         raise ValueError(f"{label} must be strings")
     try:
         requested = tuple(values)
-    except TypeError as error:
+    except Exception as error:
         raise ValueError(f"{label} must be strings") from error
-    if not all(isinstance(value, str) for value in requested):
+    if not all(type(value) is str for value in requested):
         raise ValueError(f"{label} must be strings")
     normalized = tuple(value.strip().lower() for value in requested)
     if any(not value for value in normalized):
@@ -29,7 +29,12 @@ def select_nodes(
     tags: Iterable[str] = (),
 ) -> tuple[NodeConfig, ...]:
     """Return enabled configured targets by exact names or AND-matched tags."""
-    configured = tuple(nodes)
+    try:
+        configured = tuple(nodes)
+    except Exception as error:
+        raise ValueError("nodes must be NodeConfig values") from error
+    if not all(type(node) is NodeConfig for node in configured):
+        raise ValueError("nodes must be NodeConfig values")
     requested_names = _requested(names, "names")
     requested_tags = _requested(tags, "tags")
     if requested_names and requested_tags:

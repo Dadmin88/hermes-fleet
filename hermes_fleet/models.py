@@ -11,7 +11,7 @@ _OPERATIONS = frozenset({"fleet.health", "fleet.inventory", "fleet.hermes.run"})
 
 
 def _identifier(value: str, label: str) -> str:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise ValueError(f"{label} must be a string")
     normalized = value.strip().lower()
     if not _IDENTIFIER.fullmatch(normalized):
@@ -20,7 +20,7 @@ def _identifier(value: str, label: str) -> str:
 
 
 def _peer_id(value: str) -> str:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise ValueError("peer_id must be a string")
     if not value or value != value.strip() or len(value) > _PEER_ID_LIMIT:
         raise ValueError("peer_id must be a nonempty trimmed bounded identifier")
@@ -32,7 +32,7 @@ def _peer_id(value: str) -> str:
 
 
 def _positive_int(value: object, label: str, maximum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is not int:
         raise ValueError(f"{label} must be a positive integer")
     if not 0 < value <= maximum:
         raise ValueError(f"{label} must be between 1 and {maximum}")
@@ -63,8 +63,8 @@ class NodePolicy(FleetDefaults):
 
     def __post_init__(self) -> None:
         super(NodePolicy, self).__post_init__()
-        if not isinstance(self.allowed_operations, (list, tuple)) or not all(
-            isinstance(operation, str) for operation in self.allowed_operations
+        if type(self.allowed_operations) not in (list, tuple) or not all(
+            type(operation) is str for operation in self.allowed_operations
         ):
             raise ValueError("allowed_operations must be a list or tuple of strings")
         normalized = tuple(sorted(set(self.allowed_operations)))
@@ -87,8 +87,8 @@ class NodeConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _identifier(self.name, "name"))
         object.__setattr__(self, "peer_id", _peer_id(self.peer_id))
-        if not isinstance(self.tags, (list, tuple)) or not all(
-            isinstance(tag, str) for tag in self.tags
+        if type(self.tags) not in (list, tuple) or not all(
+            type(tag) is str for tag in self.tags
         ):
             raise ValueError("tags must be a list or tuple of strings")
         object.__setattr__(
@@ -98,9 +98,9 @@ class NodeConfig:
         )
         if not isinstance(self.enabled, bool):
             raise ValueError("enabled must be a boolean")
-        if isinstance(self.priority, bool) or not isinstance(self.priority, int):
+        if type(self.priority) is not int:
             raise ValueError("priority must be an integer")
-        if not isinstance(self.policy, NodePolicy):
+        if type(self.policy) is not NodePolicy:
             raise ValueError("policy must be a NodePolicy")
 
 
@@ -112,5 +112,5 @@ class RemoteOutput:
     untrusted: bool = field(default=True, init=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.text, str):
+        if type(self.text) is not str:
             raise ValueError("remote output must be text")

@@ -12,6 +12,8 @@ from yaml.resolver import BaseResolver
 
 from .models import FleetDefaults, NodeConfig, NodePolicy
 
+_CONCRETE_PATH_TYPE = type(Path())
+
 
 class FleetConfigError(ValueError):
     """Stable public configuration error for Fleet-owned parser boundaries."""
@@ -53,10 +55,12 @@ class FleetConfig:
 
 def _require_absolute_state_root(path: Path) -> Path:
     """Reject ambiguous roots before callers derive local Fleet state paths."""
+    if type(path) is not _CONCRETE_PATH_TYPE:
+        raise FleetConfigError("state root must be a Path")
     if not path.is_absolute():
-        raise ValueError("state root must be absolute")
+        raise FleetConfigError("state root must be absolute")
     if ".." in path.parts:
-        raise ValueError("state root must not contain parent traversal")
+        raise FleetConfigError("state root must not contain parent traversal")
     return path
 
 
@@ -80,7 +84,7 @@ def get_fleet_dir(*, standalone_home: Path | None = None) -> Path:
 
 def _mapping(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a mapping")
+        raise FleetConfigError(f"{label} must be a mapping")
     return value
 
 
@@ -89,7 +93,9 @@ def _node(value: Any) -> NodeConfig:
     allowed = {"name", "peer_id", "tags", "enabled", "priority", "policy"}
     unknown = set(raw).difference(allowed)
     if unknown:
-        raise ValueError(f"node contains unknown keys: {sorted(unknown, key=repr)}")
+        raise FleetConfigError(
+            f"node contains unknown keys: {sorted(unknown, key=repr)}"
+        )
     policy_raw = _mapping(raw.get("policy", {}), "policy")
     allowed_policy = {
         "allowed_operations",
@@ -100,7 +106,7 @@ def _node(value: Any) -> NodeConfig:
     }
     unknown_policy = set(policy_raw).difference(allowed_policy)
     if unknown_policy:
-        raise ValueError(
+        raise FleetConfigError(
             f"policy contains unknown keys: {sorted(unknown_policy, key=repr)}"
         )
     values = dict(raw)
@@ -108,25 +114,31 @@ def _node(value: Any) -> NodeConfig:
         values["policy"] = NodePolicy(**policy_raw)
         return NodeConfig(**values)
     except (TypeError, ValueError) as error:
-        raise ValueError(str(error)) from error
+        raise FleetConfigError(str(error)) from error
 
 
 def load_fleet_config(path: Path) -> FleetConfig:
     """Load strict schema-v1 inventory; no URL, secret, or transport fields exist."""
+    if type(path) is not _CONCRETE_PATH_TYPE:
+        raise FleetConfigError("configuration path must be a Path")
     try:
         raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
-        raise ValueError("schema_version 1 configuration file is required") from error
+    except FleetConfigError:
+        raise
+    except (OSError, UnicodeError, yaml.YAMLError, ValueError, RecursionError) as error:
+        raise FleetConfigError(
+            "schema_version 1 configuration file is required"
+        ) from error
     document = _mapping(raw, "configuration")
     schema_version = document.get("schema_version")
     if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise ValueError("schema_version must be 1")
+        raise FleetConfigError("schema_version must be 1")
     if schema_version != 1:
-        raise ValueError("schema_version must be 1")
+        raise FleetConfigError("schema_version must be 1")
     allowed_document = {"schema_version", "defaults", "nodes"}
     unknown_document = set(document).difference(allowed_document)
     if unknown_document:
-        raise ValueError(
+        raise FleetConfigError(
             f"unknown configuration keys: {sorted(unknown_document, key=repr)}"
         )
 
@@ -138,20 +150,20 @@ def load_fleet_config(path: Path) -> FleetConfig:
         "max_export_paths",
     }
     if set(defaults_raw).difference(allowed_defaults):
-        raise ValueError("defaults contains unknown keys")
+        raise FleetConfigError("defaults contains unknown keys")
     try:
         defaults = FleetDefaults(**defaults_raw)
     except (TypeError, ValueError) as error:
-        raise ValueError(str(error)) from error
+        raise FleetConfigError(str(error)) from error
 
     nodes_raw = document.get("nodes", [])
     if not isinstance(nodes_raw, list):
-        raise ValueError("nodes must be a list")
+        raise FleetConfigError("nodes must be a list")
     nodes = tuple(_node(node) for node in nodes_raw)
     names = [node.name for node in nodes]
     peer_ids = [node.peer_id for node in nodes]
     if len(set(names)) != len(names):
-        raise ValueError("node names must be unique")
+        raise FleetConfigError("node names must be unique")
     if len(set(peer_ids)) != len(peer_ids):
-        raise ValueError("node peer IDs must be unique")
+        raise FleetConfigError("node peer IDs must be unique")
     return FleetConfig(schema_version=1, defaults=defaults, nodes=nodes)

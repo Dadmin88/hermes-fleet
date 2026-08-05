@@ -32,6 +32,263 @@ def test_envelope_accepts_a_bounded_hermes_run_for_its_configured_peer() -> None
     assert envelope.input["export_paths"] == ("reports/out.txt",)
 
 
+@pytest.mark.parametrize("input_kind", ("non-json", "cyclic", "hostile-nested-list"))
+def test_envelope_serialization_normalizes_encoder_errors(input_kind: str) -> None:
+    """Direct construction cannot expose raw JSON encoder exceptions."""
+    from hermes_fleet.envelope import FleetEnvelope
+
+    input_data = {"bad": object()}
+    if input_kind == "cyclic":
+        input_data = {}
+        input_data["self"] = input_data
+    elif input_kind == "hostile-nested-list":
+
+        class ExplosiveList(list):
+            def __iter__(self):
+                raise RuntimeError("list hook ran")
+
+        input_data = {"nested": ExplosiveList()}
+    envelope = FleetEnvelope(
+        version=1,
+        operation="fleet.health",
+        target_name="alpha",
+        target_peer_id="peer-alpha",
+        input=input_data,
+        deadline_seconds=1,
+    )
+
+    with pytest.raises(ValueError, match="JSON serializable") as error:
+        envelope.to_json()
+    assert type(error.value) is ValueError
+
+
+@pytest.mark.parametrize("behavior", ("plain-subclass", "hostile-subclass"))
+def test_envelope_serialization_requires_an_exact_input_mapping(behavior: str) -> None:
+    """Mapping subclasses cannot invoke hooks during direct serialization."""
+    from hermes_fleet.envelope import FleetEnvelope
+
+    attributes = {}
+    if behavior == "hostile-subclass":
+
+        def explode(self):
+            raise RuntimeError("items hook ran")
+
+        attributes["items"] = explode
+    Input = type("Input", (dict,), attributes)
+    envelope = FleetEnvelope(
+        version=1,
+        operation="fleet.health",
+        target_name="alpha",
+        target_peer_id="peer-alpha",
+        input=Input(),
+        deadline_seconds=1,
+    )
+
+    with pytest.raises(ValueError, match="input must be a JSON object"):
+        envelope.to_json()
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("version", "operation", "target_name", "target_peer_id", "deadline_seconds"),
+)
+def test_envelope_serialization_requires_exact_scalar_primitives(field: str) -> None:
+    """Direct envelope scalar fields cannot retain primitive subclasses."""
+    from hermes_fleet.envelope import FleetEnvelope
+
+    values = {
+        "version": 1,
+        "operation": "fleet.health",
+        "target_name": "alpha",
+        "target_peer_id": "peer-alpha",
+        "input": {},
+        "deadline_seconds": 1,
+    }
+    base = int if field in {"version", "deadline_seconds"} else str
+    Primitive = type("Primitive", (base,), {})
+    values[field] = Primitive(values[field])
+
+    with pytest.raises(ValueError, match=field):
+        FleetEnvelope(**values).to_json()
+
+
+@pytest.mark.parametrize(
+    ("container_type", "hook_name"),
+    ((dict, "items"), (list, "__iter__"), (tuple, "__iter__")),
+)
+@pytest.mark.parametrize("error_type", (RuntimeError, KeyError))
+def test_envelope_serialization_rejects_nested_container_subclasses(
+    container_type, hook_name: str, error_type: type[Exception]
+) -> None:
+    """Nested container hooks cannot escape the serializer boundary."""
+    from hermes_fleet.envelope import FleetEnvelope
+
+    def explode(self):
+        raise error_type("nested container hook ran")
+
+    Container = type("Container", (container_type,), {hook_name: explode})
+    envelope = FleetEnvelope(
+        version=1,
+        operation="fleet.health",
+        target_name="alpha",
+        target_peer_id="peer-alpha",
+        input={"nested": Container()},
+        deadline_seconds=1,
+    )
+
+    with pytest.raises(ValueError, match="JSON serializable") as error:
+        envelope.to_json()
+    assert type(error.value) is ValueError
+
+
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_envelope_serialization_rejects_nonfinite_floats(value: float) -> None:
+    """Direct envelopes serialize only standards-compliant JSON numbers."""
+    from hermes_fleet.envelope import FleetEnvelope
+
+    envelope = FleetEnvelope(
+        version=1,
+        operation="fleet.hermes.run",
+        target_name="alpha",
+        target_peer_id="peer-alpha",
+        input={"prompt": "ok", "nonfinite": value},
+        deadline_seconds=1,
+    )
+
+    with pytest.raises(ValueError, match="JSON serializable") as error:
+        envelope.to_json()
+    assert type(error.value) is ValueError
+    assert str(error.value) == "envelope input must be JSON serializable"
+
+
+def test_envelope_serialization_preserves_finite_floats() -> None:
+    """Strict non-finite rejection does not reject valid JSON numbers."""
+    from hermes_fleet.envelope import FleetEnvelope
+
+    envelope = FleetEnvelope(
+        version=1,
+        operation="fleet.hermes.run",
+        target_name="alpha",
+        target_peer_id="peer-alpha",
+        input={"value": 1.5},
+        deadline_seconds=1,
+    )
+
+    assert json.loads(envelope.to_json())["input"]["value"] == 1.5
+
+
+@pytest.mark.parametrize(
+    ("target", "defaults", "error_label"),
+    (
+        ({}, None, "target"),
+        (None, {}, "defaults"),
+    ),
+)
+def test_envelope_rejects_invalid_domain_collaborators(
+    target, defaults, error_label: str
+) -> None:
+    """Wrong collaborator types cannot escape as attribute errors."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    actual_target = (
+        target if target is not None else NodeConfig(name="alpha", peer_id="peer-alpha")
+    )
+    actual_defaults = defaults if defaults is not None else FleetDefaults()
+    payload = json.dumps(
+        {
+            "version": 1,
+            "operation": "fleet.health",
+            "target": {"name": "alpha", "peer_id": "peer-alpha"},
+            "input": {},
+            "limits": {"deadline_seconds": 1},
+        }
+    )
+
+    with pytest.raises(ValueError, match=error_label):
+        parse_envelope(payload, target=actual_target, defaults=actual_defaults)
+
+
+@pytest.mark.parametrize("field", ("target", "defaults"))
+@pytest.mark.parametrize("behavior", ("plain-subclass", "hostile-subclass"))
+def test_envelope_rejects_domain_collaborator_subclasses(
+    field: str, behavior: str
+) -> None:
+    """Domain subclasses cannot carry hooks across envelope boundaries."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    class TargetSubclass(NodeConfig):
+        armed = False
+
+        def __getattribute__(self, name):
+            if type(self).armed and name == "name":
+                raise RuntimeError("target hook ran")
+            return object.__getattribute__(self, name)
+
+    class DefaultsSubclass(FleetDefaults):
+        armed = False
+
+        def __getattribute__(self, name):
+            if type(self).armed and name == "max_payload_bytes":
+                raise RuntimeError("defaults hook ran")
+            return object.__getattribute__(self, name)
+
+    target = TargetSubclass(name="alpha", peer_id="peer-alpha")
+    defaults = DefaultsSubclass()
+    if behavior == "hostile-subclass":
+        TargetSubclass.armed = True
+        DefaultsSubclass.armed = True
+    payload = json.dumps(
+        {
+            "version": 1,
+            "operation": "fleet.health",
+            "target": {"name": "alpha", "peer_id": "peer-alpha"},
+            "input": {},
+            "limits": {"deadline_seconds": 1},
+        }
+    )
+
+    with pytest.raises(ValueError, match=f"{field} must be"):
+        parse_envelope(
+            payload,
+            target=target
+            if field == "target"
+            else NodeConfig(name="alpha", peer_id="peer-alpha"),
+            defaults=defaults if field == "defaults" else FleetDefaults(),
+        )
+
+
+@pytest.mark.parametrize("behavior", ("plain-subclass", "bad-encode"))
+def test_envelope_requires_an_exact_primitive_payload_string(behavior: str) -> None:
+    """Payload subclasses cannot override encoding or parsing behavior."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    attributes = {}
+    if behavior == "bad-encode":
+        attributes["encode"] = lambda self, encoding: object()
+    Payload = type("Payload", (str,), attributes)
+    payload = Payload(
+        json.dumps(
+            {
+                "version": 1,
+                "operation": "fleet.health",
+                "target": {"name": "alpha", "peer_id": "peer-alpha"},
+                "input": {},
+                "limits": {"deadline_seconds": 1},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="payload must be a string"):
+        parse_envelope(
+            payload,
+            target=NodeConfig(name="alpha", peer_id="peer-alpha"),
+            defaults=FleetDefaults(),
+        )
+
+
 def test_envelope_rejects_target_mismatches_bad_json_and_unsafe_bounds() -> None:
     """Inputs are not routing guesses and size/path limits are checked locally."""
     from hermes_fleet.envelope import parse_envelope
@@ -77,6 +334,36 @@ def test_envelope_rejects_oversize_bytes_before_json_parsing() -> None:
             target=NodeConfig(name="alpha", peer_id="peer-alpha"),
             defaults=FleetDefaults(max_payload_bytes=8),
         )
+
+
+def test_envelope_converts_parser_recursion_to_value_error() -> None:
+    """Deep byte-bounded JSON cannot leak a parser recursion exception."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    payload = "[" * 10_000 + "]" * 10_000
+    with pytest.raises(ValueError, match="JSON object") as error:
+        parse_envelope(
+            payload,
+            target=NodeConfig(name="alpha", peer_id="peer-alpha"),
+            defaults=FleetDefaults(),
+        )
+    assert type(error.value) is ValueError
+
+
+def test_envelope_converts_oversized_integer_parser_error() -> None:
+    """Python's JSON integer digit limit cannot leak parser-specific text."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    payload = '{"version":' + "9" * 5_000 + "}"
+    with pytest.raises(ValueError, match="JSON object") as error:
+        parse_envelope(
+            payload,
+            target=NodeConfig(name="alpha", peer_id="peer-alpha"),
+            defaults=FleetDefaults(),
+        )
+    assert str(error.value) == "payload must be a JSON object"
 
 
 @pytest.mark.parametrize(
