@@ -31,7 +31,9 @@ Focused Hermes validation passed:
 
 ### Keryx
 
-Fleet's current Keryx integration baseline was audited in the owned `Dadmin88/hermes-keryx` repository at product-truth commit `22d66ecf452eb6c1f87bd3710dda5ec665f5f32c` on 2026-08-05.
+Fleet's current Keryx integration baseline is the owned `Dadmin88/hermes-keryx`
+commit `203aaa0cd03986333eff7b7532d3d19daca73ea9`, whose Python SDK adds
+public task reattachment by ID. Exact-SHA CI passed on 2026-08-05.
 
 Source-confirmed facilities include:
 
@@ -47,7 +49,9 @@ The audited public APIs already provide authenticated registration ownership, TT
 Fleet must still respect these limits:
 
 1. **Relay mailbox persistence:** offline mailboxes are bounded in-memory queues and do not survive a relay restart.
-2. **Task reopen:** a new controller process cannot yet reconstruct a public `TaskHandle` from only a known task ID. A narrow SDK reattach method is a Phase 5 candidate, not a blocker for the first two live smokes.
+2. **Task reopen:** `KeryxNode.task_handle(task_id)` reconstructs the public
+   refresh/cancel handle; Fleet uses refresh for durable status but still does
+   not claim that origin cancellation interrupts a remote worker.
 3. **Cross-node cancellation:** origin cancellation is public, but there is no relay cancellation frame, typed canceled terminal result, or Python worker cancellation observation. Fleet does not claim remote running-task interruption.
 4. **Cross-node artifacts:** descriptor/text metadata can route, but artifact bytes remain destination-local and the high-level SDK has no download contract.
 5. **Reachability semantics:** registry presence, direct connection, actual submission route, and a proven request/result round trip remain distinct states.

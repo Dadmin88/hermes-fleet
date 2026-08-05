@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 
 def _payload(operation: str, input_data: dict[str, Any] | None = None) -> str:
     if input_data is None:
@@ -79,6 +81,7 @@ class _Hermes:
     def __init__(self) -> None:
         self.health_calls = 0
         self.start_calls: list[tuple[str, str | None]] = []
+        self.start_timeouts: list[float | None] = []
         self.wait_calls: list[tuple[str, float]] = []
         self.stop_calls: list[str] = []
 
@@ -91,8 +94,15 @@ class _Hermes:
             "run_stop": True,
         }
 
-    def start(self, *, prompt: str, session_id: str | None = None) -> str:
+    def start(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
         self.start_calls.append((prompt, session_id))
+        self.start_timeouts.append(timeout_seconds)
         return "run-vps-1"
 
     def wait(self, *, run_id: str, timeout_seconds: float):
@@ -101,11 +111,18 @@ class _Hermes:
         self.wait_calls.append((run_id, timeout_seconds))
         return HermesRunResult(run_id=run_id, text="terminal answer")
 
-    def stop(self, run_id: str) -> None:
+    def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None:
+        del timeout_seconds
         self.stop_calls.append(run_id)
 
 
-def _worker(hermes: Any, state_path: Path):
+def _worker(
+    hermes: Any,
+    state_path: Path,
+    *,
+    now_ms=None,
+    advertised_operations=None,
+):
     from hermes_fleet.fleet_node import FleetNodeWorker
     from hermes_fleet.models import FleetDefaults, NodeConfig, NodePolicy
     from hermes_fleet.run_binding import RunBindingStore
@@ -128,7 +145,8 @@ def _worker(hermes: Any, state_path: Path):
         hermes=hermes,
         bindings=RunBindingStore(state_path),
         controller_peer_ids=("peer-katana",),
-        now_ms=lambda: 10_000,
+        advertised_operations=advertised_operations,
+        now_ms=now_ms or (lambda: 10_000),
     )
 
 
@@ -145,6 +163,7 @@ def test_fleet_node_binds_one_keryx_task_to_one_hermes_run(tmp_path) -> None:
     asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
 
     assert hermes.start_calls == [("Return a short text result.", "fleet:vps:task-1")]
+    assert hermes.start_timeouts == [4.0]
     assert hermes.wait_calls == [("run-vps-1", 4.0)]
     assert incoming.failed is None
     assert _completed_text(incoming) == "terminal answer"
@@ -255,11 +274,27 @@ def test_fleet_node_health_and_inventory_never_start_hermes(tmp_path) -> None:
             "fleet.inventory",
             "fleet.message",
         ],
-        "name": "vps",
+        "node": {"name": "vps", "peer_id": "peer-vps", "version": "0.1.0"},
         "operation": "fleet.inventory",
-        "peer_id": "peer-vps",
-        "version": "0.1.0",
+        "status": "ok",
     }
+
+
+def test_fleet_node_inventory_reports_only_advertised_operations(tmp_path) -> None:
+    direct_operations = ("fleet.health", "fleet.inventory", "fleet.message")
+    inventory = _IncomingTask(_payload("fleet.inventory"), "fleet.inventory")
+
+    asyncio.run(
+        _worker(
+            _Hermes(),
+            tmp_path / "bindings.db",
+            advertised_operations=direct_operations,
+        ).handle_task(inventory)
+    )
+
+    assert json.loads(_completed_text(inventory))["capabilities"] == list(
+        direct_operations
+    )
 
 
 def test_fleet_node_rejects_untrusted_sender_without_calling_hermes(tmp_path) -> None:
@@ -290,6 +325,47 @@ def test_fleet_node_rejects_keryx_metadata_mismatch_without_calling_hermes(
 
     assert hermes.start_calls == []
     assert incoming.failed == "Fleet delivery metadata does not match envelope"
+
+
+@pytest.mark.parametrize("deadline", (None, "not-a-deadline", "9223372036854775808"))
+def test_fleet_node_rejects_missing_or_malformed_absolute_deadline(
+    tmp_path,
+    deadline,
+) -> None:
+    operation = "fleet.message"
+    metadata = {
+        "fleet.envelope_version": "1",
+        "fleet.operation": operation,
+        "fleet.target_peer_id": "peer-vps",
+    }
+    if deadline is not None:
+        metadata["fleet_deadline_ms"] = deadline
+    incoming = _IncomingTask(_payload(operation), operation, metadata=metadata)
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet delivery metadata does not match envelope"
+
+
+@pytest.mark.parametrize("task_id", ("", " task-1", "task\n1"))
+def test_fleet_node_rejects_invalid_task_identity_before_binding(
+    tmp_path,
+    task_id,
+) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    operation = "fleet.hermes.run"
+    state_path = tmp_path / "bindings.db"
+    incoming = _IncomingTask(_payload(operation), operation, task_id=task_id)
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, state_path).handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet delivery has invalid Keryx task identity"
+    assert RunBindingStore(state_path).get("task-1") is None
 
 
 def test_fleet_node_rejects_deferred_export_paths_without_calling_hermes(
@@ -329,6 +405,24 @@ def test_fleet_node_rejects_expired_absolute_deadline_without_calling_hermes(
 
     assert hermes.start_calls == []
     assert incoming.failed == "Fleet task deadline has expired"
+
+
+def test_fleet_node_rechecks_deadline_immediately_before_run_start(tmp_path) -> None:
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(_payload(operation), operation)
+    hermes = _Hermes()
+    clock = iter((10_000, 14_000))
+
+    asyncio.run(
+        _worker(
+            hermes,
+            tmp_path / "bindings.db",
+            now_ms=lambda: next(clock),
+        ).handle_task(incoming)
+    )
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet Hermes submission is indeterminate"
 
 
 def test_fleet_node_normalizes_invalid_remote_envelopes(tmp_path) -> None:

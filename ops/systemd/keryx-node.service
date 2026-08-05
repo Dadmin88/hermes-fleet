@@ -6,6 +6,9 @@ Wants=network-online.target keryxd.service
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/hermes-fleet/keryx-node.env
+# Fleet's Python node is the sole skill-registration owner. The Rust edge
+# remains delivery-only and skips registration when this value is empty.
+Environment=HERMES_KERYX_NODE_SKILLS=
 ExecStart=%h/.local/share/hermes-fleet/bin/keryx-node
 Restart=on-failure
 RestartSec=5

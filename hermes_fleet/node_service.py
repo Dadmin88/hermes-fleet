@@ -77,32 +77,43 @@ class NodeRuntimeConfig:
             raise ValueError("registration_ttl_seconds must be between 30 and 86400")
 
 
-def operation_specs() -> tuple[tuple[str, str], ...]:
+def operation_specs(*, include_hermes_run: bool = True) -> tuple[tuple[str, str], ...]:
     """Return the fixed v0.1 operation card; this is not a plugin registry."""
-    return (
+    direct = (
         ("fleet.health", "Bounded Fleet, Keryx, and Hermes capability health"),
         ("fleet.inventory", "Safe Fleet node identity and capability summary"),
         ("fleet.message", "Bounded direct text message acknowledgment"),
-        ("fleet.hermes.run", "Deliberate authenticated local Hermes run"),
     )
+    if not include_hermes_run:
+        return direct
+    return direct + (("fleet.hermes.run", "Deliberate authenticated local Hermes run"),)
 
 
 async def run_node_service(
     runtime: NodeRuntimeConfig,
     *,
-    card: object,
+    card_factory: Callable[[bool], object],
     node_factory: Callable[..., _Node],
     shutdown: asyncio.Event,
+    hermes_factory: Callable[..., Any] = HermesRunsClient,
 ) -> None:
     """Run one registered Keryx worker until shutdown or worker failure."""
     if type(runtime) is not NodeRuntimeConfig:
         raise ValueError("runtime must be a NodeRuntimeConfig")
     if type(shutdown) is not asyncio.Event:
         raise ValueError("shutdown must be an asyncio.Event")
+    hermes = hermes_factory(
+        endpoint=runtime.hermes_endpoint,
+        api_key=runtime.hermes_api_key,
+    )
+    health = await asyncio.to_thread(hermes.health)
+    include_hermes_run = _runs_available(health)
+    card = card_factory(include_hermes_run)
+    expected_specs = operation_specs(include_hermes_run=include_hermes_run)
     skill_ids = tuple(
         getattr(skill, "id", None) for skill in getattr(card, "skills", ())
     )
-    if skill_ids != tuple(operation for operation, _description in operation_specs()):
+    if skill_ids != tuple(operation for operation, _description in expected_specs):
         raise ValueError("card must contain the exact Fleet operation set")
 
     node = node_factory(
@@ -122,12 +133,12 @@ async def run_node_service(
         worker = FleetNodeWorker(
             target=runtime.target,
             defaults=runtime.defaults,
-            hermes=HermesRunsClient(
-                endpoint=runtime.hermes_endpoint,
-                api_key=runtime.hermes_api_key,
-            ),
+            hermes=hermes,
             bindings=RunBindingStore(runtime.binding_path),
             controller_peer_ids=runtime.controller_peer_ids,
+            advertised_operations=tuple(
+                operation for operation, _description in expected_specs
+            ),
         )
         worker.bind(node)
         registration = await node.start_registration(
@@ -139,7 +150,7 @@ async def run_node_service(
             "fleet-node ready name=%s peer_id=%s operations=%s",
             runtime.target.name,
             runtime.target.peer_id,
-            len(operation_specs()),
+            len(expected_specs),
         )
 
         serve_task = asyncio.create_task(node.serve_forever(), name="fleet-node-worker")
@@ -211,7 +222,7 @@ def _runtime_from_args(
     )
 
 
-def _build_card() -> object:
+def _build_card(include_hermes_run: bool) -> object:
     try:
         from keryx.card import AgentCard, Skill
     except ImportError as error:
@@ -224,7 +235,9 @@ def _build_card() -> object:
         version="0.1.0",
         skills=[
             Skill(id=operation, description=description)
-            for operation, description in operation_specs()
+            for operation, description in operation_specs(
+                include_hermes_run=include_hermes_run
+            )
         ],
     )
 
@@ -250,9 +263,20 @@ async def _async_main(args: argparse.Namespace) -> None:
             pass
     await run_node_service(
         runtime,
-        card=_build_card(),
+        card_factory=_build_card,
         node_factory=_node_factory,
         shutdown=shutdown,
+    )
+
+
+def _runs_available(health: object) -> bool:
+    return (
+        type(health) is dict
+        and health.get("api") == "healthy"
+        and all(
+            health.get(field) is True
+            for field in ("run_submission", "run_status", "run_stop")
+        )
     )
 
 

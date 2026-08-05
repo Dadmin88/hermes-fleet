@@ -217,3 +217,31 @@ def test_high_level_controller_returns_message_ack_and_actual_route() -> None:
         "received_by": "peer-vps",
         "status": "received",
     }
+
+
+def test_high_level_controller_accepts_worker_inventory_response() -> None:
+    from hermes_fleet.controller import FleetController
+
+    keryx = _Keryx()
+    expected = {
+        "operation": "fleet.inventory",
+        "status": "ok",
+        "node": {"name": "vps", "peer_id": "peer-vps", "version": "0.1.0"},
+        "capabilities": [
+            "fleet.health",
+            "fleet.hermes.run",
+            "fleet.inventory",
+            "fleet.message",
+        ],
+    }
+    keryx.handle = _Handle(text=json.dumps(expected))
+
+    result = asyncio.run(
+        FleetController(keryx=keryx, config=_config()).get_inventory(
+            "vps",
+            deadline_seconds=30,
+        )
+    )
+
+    assert result.response == expected
+    assert result.routed_to == "peer-vps"

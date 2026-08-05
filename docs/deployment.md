@@ -27,6 +27,10 @@ Katana's local `vps` Hermes profile is a client-side route to the VPS gateway. T
 - The Hermes Runs API binds only to `127.0.0.1:8642`.
 - Keryx daemons bind only to loopback gRPC.
 - The relay libp2p listener binds only to the VPS Tailscale address.
+- `fleet-node` is the sole Fleet skill-registration owner. The Rust edge unit
+  clears `HERMES_KERYX_NODE_SKILLS`, so `keryx-node` remains delivery-only.
+- `fleet.hermes.run` is advertised only after the public Runs capability probe
+  confirms authenticated submission, status, and stop support.
 
 ## Runtime layout
 
@@ -79,8 +83,9 @@ The historical refresh-loop units are also replaced by the supervised `keryx-nod
 ## Install sequence
 
 1. Validate and freeze exact Fleet and Keryx source bytes.
-2. Build Keryx release binaries from the accepted Keryx SHA.
-3. Install the same binaries and pinned Python SDK revision on both hosts.
+2. Build Keryx release binaries from accepted SHA
+   `203aaa0cd03986333eff7b7532d3d19daca73ea9`.
+3. Install the same binaries and that exact Python SDK revision on both hosts.
 4. Install Fleet into an isolated runtime venv and install/enable the Fleet Hermes plugin on Katana.
 5. Generate persistent node/relay identities and node tokens without printing secrets.
 6. Create a private CA and VPS certificate for the Tailscale IP/DNS name; distribute only the CA certificate to Katana.

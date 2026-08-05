@@ -24,11 +24,17 @@ _EXECUTABLE_OPERATION = "fleet.hermes.run"
 class _HermesRunner(Protocol):
     def health(self) -> dict[str, object]: ...
 
-    def start(self, *, prompt: str, session_id: str | None = None) -> str: ...
+    def start(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str: ...
 
     def wait(self, *, run_id: str, timeout_seconds: float) -> HermesRunResult: ...
 
-    def stop(self, run_id: str) -> None: ...
+    def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None: ...
 
 
 class FleetNodeWorker:
@@ -42,6 +48,7 @@ class FleetNodeWorker:
         hermes: _HermesRunner,
         bindings: RunBindingStore,
         controller_peer_ids: tuple[str, ...],
+        advertised_operations: tuple[str, ...] | None = None,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._target = _require_exact_type(
@@ -72,6 +79,14 @@ class FleetNodeWorker:
             raise ValueError("controller_peer_ids contains an invalid peer ID")
         self._hermes = hermes
         self._controller_peer_ids = frozenset(controller_peer_ids)
+        operations = advertised_operations or tuple(sorted(OPERATIONS))
+        if (
+            type(operations) is not tuple
+            or not operations
+            or any(operation not in OPERATIONS for operation in operations)
+        ):
+            raise ValueError("advertised_operations must be known Fleet operations")
+        self._advertised_operations = operations
         self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
 
     def bind(self, node: object) -> None:
@@ -83,7 +98,10 @@ class FleetNodeWorker:
 
     async def handle_task(self, incoming: object) -> None:
         """Validate and route one communication to a direct or executable handler."""
-        task_id = _bounded_label(getattr(incoming, "task_id", ""), "unknown")
+        task_id = _task_id(getattr(incoming, "task_id", ""))
+        if task_id is None:
+            await _fail(incoming, "Fleet delivery has invalid Keryx task identity")
+            return
         peer_id = _bounded_label(getattr(incoming, "peer_id", ""), "unknown")
 
         if peer_id not in self._controller_peer_ids:
@@ -173,7 +191,13 @@ class FleetNodeWorker:
             hermes_health = None
             if envelope.operation == "fleet.health":
                 hermes_health = await asyncio.to_thread(self._hermes.health)
-            response = direct_handler(self._target, envelope, peer_id, hermes_health)
+            response = direct_handler(
+                self._target,
+                envelope,
+                peer_id,
+                hermes_health,
+                self._advertised_operations,
+            )
             await _complete_text(
                 incoming,
                 name="fleet-response.json",
@@ -232,6 +256,11 @@ class FleetNodeWorker:
                     self._hermes.start,
                     prompt=envelope.input["prompt"],
                     session_id=f"fleet:{self._target.name}:{task_id}",
+                    timeout_seconds=_remaining_timeout(
+                        envelope,
+                        metadata,
+                        now_ms=self._now_ms(),
+                    ),
                 )
                 self._bindings.bind_run(task_id, run_id)
             except (HermesRunError, ValueError):
@@ -244,6 +273,22 @@ class FleetNodeWorker:
             await _fail(incoming, "Fleet execution binding is indeterminate")
             return
         assert run_id is not None
+
+        try:
+            timeout_seconds = _remaining_timeout(
+                envelope,
+                metadata,
+                now_ms=self._now_ms(),
+            )
+        except ValueError:
+            await asyncio.to_thread(
+                self._hermes.stop,
+                run_id,
+                timeout_seconds=0.25,
+            )
+            self._bindings.mark_indeterminate(task_id)
+            await _fail(incoming, "Fleet task deadline has expired")
+            return
 
         try:
             result = await asyncio.to_thread(
@@ -284,8 +329,9 @@ def _health_response(
     envelope: FleetEnvelope,
     sender_peer_id: str,
     hermes_health: dict[str, object] | None,
+    advertised_operations: tuple[str, ...],
 ) -> dict[str, Any]:
-    del target, envelope, sender_peer_id
+    del target, envelope, sender_peer_id, advertised_operations
     health = hermes_health or {
         "api": "unavailable",
         "run_submission": False,
@@ -310,14 +356,18 @@ def _inventory_response(
     envelope: FleetEnvelope,
     sender_peer_id: str,
     hermes_health: dict[str, object] | None,
+    advertised_operations: tuple[str, ...],
 ) -> dict[str, Any]:
     del envelope, sender_peer_id, hermes_health
     return {
         "operation": "fleet.inventory",
-        "name": target.name,
-        "peer_id": target.peer_id,
-        "version": _FLEET_VERSION,
-        "capabilities": sorted(OPERATIONS),
+        "status": "ok",
+        "node": {
+            "name": target.name,
+            "peer_id": target.peer_id,
+            "version": _FLEET_VERSION,
+        },
+        "capabilities": list(advertised_operations),
     }
 
 
@@ -326,8 +376,9 @@ def _message_response(
     envelope: FleetEnvelope,
     sender_peer_id: str,
     hermes_health: dict[str, object] | None,
+    advertised_operations: tuple[str, ...],
 ) -> dict[str, Any]:
-    del hermes_health
+    del hermes_health, advertised_operations
     response = {
         "operation": "fleet.message",
         "status": "received",
@@ -342,7 +393,13 @@ def _message_response(
 
 
 _DirectHandler = Callable[
-    [NodeConfig, FleetEnvelope, str, dict[str, object] | None],
+    [
+        NodeConfig,
+        FleetEnvelope,
+        str,
+        dict[str, object] | None,
+        tuple[str, ...],
+    ],
     dict[str, Any],
 ]
 _DIRECT_HANDLERS: dict[str, _DirectHandler] = {
@@ -362,7 +419,9 @@ def _metadata_matches(
         "fleet.operation": envelope.operation,
         "fleet.target_peer_id": target.peer_id,
     }
-    return all(metadata.get(key) == value for key, value in expected.items())
+    return all(metadata.get(key) == value for key, value in expected.items()) and (
+        _deadline_ms(metadata) is not None
+    )
 
 
 def _incoming_text(incoming: object) -> str:
@@ -385,19 +444,28 @@ def _remaining_timeout(
     envelope: FleetEnvelope, metadata: object, *, now_ms: int
 ) -> float:
     timeout = float(envelope.deadline_seconds)
-    if type(metadata) is not dict or "fleet_deadline_ms" not in metadata:
-        return timeout
-    raw_deadline = metadata["fleet_deadline_ms"]
+    absolute_deadline = _deadline_ms(metadata)
+    if absolute_deadline is None:
+        raise ValueError("invalid Fleet deadline")
+    remaining = (absolute_deadline - now_ms) / 1_000
+    if remaining <= 0:
+        raise ValueError("expired Fleet deadline")
+    return min(timeout, remaining)
+
+
+def _deadline_ms(metadata: object) -> int | None:
+    if type(metadata) is not dict:
+        return None
+    raw_deadline = metadata.get("fleet_deadline_ms")
     if (
         type(raw_deadline) is not str
         or not raw_deadline.isascii()
         or not raw_deadline.isdigit()
+        or len(raw_deadline) > 19
     ):
-        raise ValueError("invalid Fleet deadline")
-    remaining = (int(raw_deadline) - now_ms) / 1_000
-    if remaining <= 0:
-        raise ValueError("expired Fleet deadline")
-    return min(timeout, remaining)
+        return None
+    deadline = int(raw_deadline)
+    return deadline if deadline <= 2**63 - 1 else None
 
 
 async def _complete_text(
@@ -428,4 +496,16 @@ async def _fail(incoming: object, message: str) -> None:
 def _bounded_label(value: object, fallback: str) -> str:
     if type(value) is not str or not value or len(value) > 256:
         return fallback
+    return value
+
+
+def _task_id(value: object) -> str | None:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 256
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return None
     return value

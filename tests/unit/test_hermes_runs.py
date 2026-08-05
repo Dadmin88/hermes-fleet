@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +15,7 @@ class _RunsAPI:
     def __init__(self, statuses: list[dict[str, Any]]) -> None:
         self.statuses = list(statuses)
         self.requests: list[tuple[str, str, str, dict[str, Any] | None]] = []
+        self.post_delay_seconds = 0.0
 
     @contextmanager
     def serve(self) -> Iterator[str]:
@@ -28,6 +30,8 @@ class _RunsAPI:
                     ("POST", self.path, self.headers.get("Authorization", ""), body)
                 )
                 if self.path == "/v1/runs":
+                    if api.post_delay_seconds:
+                        time.sleep(api.post_delay_seconds)
                     self._json(202, {"run_id": "run-test", "status": "started"})
                     return
                 if self.path == "/v1/runs/run-test/stop":
@@ -127,6 +131,43 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_stop": True,
     }
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
+
+
+def test_hermes_runs_client_expired_submission_budget_sends_no_post() -> None:
+    from hermes_fleet.hermes_runs import (
+        HermesRunsClient,
+        HermesRunSubmissionUnknown,
+    )
+
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="secret-token-for-test")
+        with pytest.raises(HermesRunSubmissionUnknown, match="outcome is unknown"):
+            client.start(prompt="Do not send.", timeout_seconds=0)
+
+    assert api.requests == []
+
+
+def test_hermes_runs_client_bounds_blocking_post_by_remaining_deadline() -> None:
+    from hermes_fleet.hermes_runs import (
+        HermesRunsClient,
+        HermesRunSubmissionUnknown,
+    )
+
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    api.post_delay_seconds = 0.2
+    with api.serve() as endpoint:
+        client = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="secret-token-for-test",
+            request_timeout_seconds=1,
+        )
+        started = time.monotonic()
+        with pytest.raises(HermesRunSubmissionUnknown, match="outcome is unknown"):
+            client.start(prompt="Bounded request.", timeout_seconds=0.03)
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 0.15
 
 
 def test_hermes_runs_client_fails_closed_when_approval_is_required() -> None:

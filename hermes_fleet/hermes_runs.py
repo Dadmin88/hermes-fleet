@@ -72,8 +72,13 @@ class HermesRunsClient:
 
     def run(self, *, prompt: str, timeout_seconds: float) -> HermesRunResult:
         """Compatibility helper that starts and waits for one run."""
-        run_id = self.start(prompt=prompt)
-        return self.wait(run_id=run_id, timeout_seconds=timeout_seconds)
+        deadline = time.monotonic() + float(timeout_seconds)
+        run_id = self.start(prompt=prompt, timeout_seconds=timeout_seconds)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            self.stop(run_id, timeout_seconds=0.25)
+            raise HermesRunError("Hermes run exceeded Fleet deadline")
+        return self.wait(run_id=run_id, timeout_seconds=remaining)
 
     def health(self) -> dict[str, object]:
         """Return bounded public Runs capability health without creating a run."""
@@ -105,7 +110,13 @@ class HermesRunsClient:
             "run_stop": features.get("run_stop") is True,
         }
 
-    def start(self, *, prompt: str, session_id: str | None = None) -> str:
+    def start(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
         """Create exactly one run and return its server-generated ID."""
         if type(prompt) is not str or not prompt.strip():
             raise ValueError("Hermes run prompt must be a nonempty string")
@@ -120,7 +131,12 @@ class HermesRunsClient:
         if session_id is not None:
             request["session_id"] = session_id
         try:
-            status_code, document = self._request_json("POST", "/v1/runs", request)
+            status_code, document = self._request_json(
+                "POST",
+                "/v1/runs",
+                request,
+                timeout_seconds=timeout_seconds,
+            )
         except HermesRunError:
             raise HermesRunSubmissionUnknown(
                 "Hermes run submission outcome is unknown"
@@ -145,10 +161,14 @@ class HermesRunsClient:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self.stop(run_id)
+                self.stop(run_id, timeout_seconds=0.25)
                 raise HermesRunError("Hermes run exceeded Fleet deadline")
 
-            status_code, document = self._request_json("GET", f"/v1/runs/{run_id}")
+            status_code, document = self._request_json(
+                "GET",
+                f"/v1/runs/{run_id}",
+                timeout_seconds=remaining,
+            )
             if status_code == 404:
                 raise HermesRunIndeterminate("Hermes run status is indeterminate")
             if status_code != 200:
@@ -160,7 +180,7 @@ class HermesRunsClient:
                     raise HermesRunError("Hermes completed without terminal text")
                 return HermesRunResult(run_id=run_id, text=output)
             if state == "waiting_for_approval":
-                self.stop(run_id)
+                self.stop(run_id, timeout_seconds=min(0.25, remaining))
                 raise HermesRunError("Hermes run requires approval")
             if state == "failed":
                 raise HermesRunError("Hermes run failed")
@@ -170,10 +190,14 @@ class HermesRunsClient:
                 raise HermesRunError("Hermes returned an unsupported run status")
             time.sleep(min(self._poll_interval_seconds, remaining))
 
-    def stop(self, run_id: str) -> None:
+    def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None:
         """Best-effort cooperative stop for one known run."""
         try:
-            self._request_json("POST", f"/v1/runs/{run_id}/stop")
+            self._request_json(
+                "POST",
+                f"/v1/runs/{run_id}/stop",
+                timeout_seconds=timeout_seconds,
+            )
         except HermesRunError:
             pass
 
@@ -182,7 +206,18 @@ class HermesRunsClient:
         method: str,
         path: str,
         document: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
     ) -> tuple[int, dict[str, Any]]:
+        request_timeout = self._request_timeout_seconds
+        if timeout_seconds is not None:
+            if (
+                isinstance(timeout_seconds, bool)
+                or not isinstance(timeout_seconds, int | float)
+                or timeout_seconds <= 0
+            ):
+                raise HermesRunError("Hermes request deadline has expired")
+            request_timeout = min(request_timeout, float(timeout_seconds))
         payload = None
         headers = {
             "Accept": "application/json",
@@ -199,9 +234,7 @@ class HermesRunsClient:
         )
         error_message: str | None = None
         try:
-            with urllib.request.urlopen(
-                request, timeout=self._request_timeout_seconds
-            ) as response:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 status = response.status
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
