@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from yaml.constructor import ConstructorError
 from yaml.resolver import BaseResolver
 
 from .models import FleetDefaults, NodeConfig, NodePolicy
+
+
+class FleetConfigError(ValueError):
+    """Stable public configuration error for Fleet-owned parser boundaries."""
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -27,19 +30,9 @@ def _construct_unique_mapping(
         try:
             duplicate = key in mapping
         except TypeError as error:
-            raise ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found an unhashable key",
-                key_node.start_mark,
-            ) from error
+            raise FleetConfigError("inventory mapping keys must be hashable") from error
         if duplicate:
-            raise ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                f"found duplicate key ({key!r})",
-                key_node.start_mark,
-            )
+            raise FleetConfigError(f"duplicate inventory key {key!r}")
         mapping[key] = loader.construct_object(value_node, deep=deep)
     return mapping
 

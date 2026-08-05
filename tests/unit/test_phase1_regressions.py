@@ -50,7 +50,7 @@ nodes: []
 
 def test_config_rejects_duplicate_top_level_yaml_keys(tmp_path) -> None:
     """A duplicate document key is a configuration error rather than last-key wins."""
-    from hermes_fleet.config import load_fleet_config
+    from hermes_fleet.config import FleetConfigError, load_fleet_config
 
     path = tmp_path / "nodes.yaml"
     path.write_text(
@@ -58,8 +58,11 @@ def test_config_rejects_duplicate_top_level_yaml_keys(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="configuration file is required"):
+    with pytest.raises(
+        FleetConfigError, match="duplicate inventory key 'schema_version'"
+    ) as error:
         load_fleet_config(path)
+    assert type(error.value) is FleetConfigError
 
 
 @pytest.mark.parametrize(
@@ -84,13 +87,14 @@ nodes:
 )
 def test_config_rejects_duplicate_nested_yaml_keys(tmp_path, contents: str) -> None:
     """Duplicate defaults and policy keys are rejected at their mapping depth."""
-    from hermes_fleet.config import load_fleet_config
+    from hermes_fleet.config import FleetConfigError, load_fleet_config
 
     path = tmp_path / "nodes.yaml"
     path.write_text(contents, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="configuration file is required"):
+    with pytest.raises(FleetConfigError, match="duplicate inventory key") as error:
         load_fleet_config(path)
+    assert type(error.value) is FleetConfigError
 
 
 def test_node_config_rejects_url_like_peer_id_but_preserves_opaque_token() -> None:
