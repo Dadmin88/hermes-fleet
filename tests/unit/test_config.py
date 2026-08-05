@@ -54,3 +54,47 @@ nodes: []
     )
     with pytest.raises(ValueError, match="max_deadline_seconds"):
         load_fleet_config(path)
+
+
+def test_config_rejects_duplicate_normalized_names(tmp_path) -> None:
+    """Friendly names remain unique after case normalization."""
+    from hermes_fleet.config import load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text(
+        """schema_version: 1
+defaults: {}
+nodes:
+  - name: Alpha
+    peer_id: peer-alpha
+  - name: alpha
+    peer_id: peer-beta
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="node names"):
+        load_fleet_config(path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "max_deadline_seconds",
+        "max_payload_bytes",
+        "max_prompt_chars",
+        "max_export_paths",
+    ),
+)
+def test_config_rejects_boolean_default_bounds(tmp_path, field: str) -> None:
+    """YAML booleans cannot masquerade as integer resource bounds."""
+    from hermes_fleet.config import load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text(
+        f"schema_version: 1\ndefaults:\n  {field}: true\nnodes: []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=field):
+        load_fleet_config(path)

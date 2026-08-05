@@ -64,3 +64,68 @@ def test_envelope_rejects_target_mismatches_bad_json_and_unsafe_bounds() -> None
     base["version"] = 1
     with pytest.raises(ValueError, match="deadline_seconds"):
         parse_envelope(json.dumps(base), target=node, defaults=defaults)
+
+
+def test_envelope_rejects_oversize_bytes_before_json_parsing() -> None:
+    """The byte ceiling wins even when an oversized payload is malformed JSON."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    with pytest.raises(ValueError, match="size limit"):
+        parse_envelope(
+            "not-json-at-all",
+            target=NodeConfig(name="alpha", peer_id="peer-alpha"),
+            defaults=FleetDefaults(max_payload_bytes=8),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation", ("extra-top-level", "missing-target", "extra-limit")
+)
+def test_envelope_requires_exact_top_level_and_limits_shapes(mutation: str) -> None:
+    """Envelope and limits objects reject missing or additional members."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    document = {
+        "version": 1,
+        "operation": "fleet.health",
+        "target": {"name": "alpha", "peer_id": "peer-alpha"},
+        "input": {},
+        "limits": {"deadline_seconds": 1},
+    }
+    if mutation == "extra-top-level":
+        document["extra"] = True
+    elif mutation == "missing-target":
+        del document["target"]
+    else:
+        document["limits"]["extra"] = True
+
+    with pytest.raises(ValueError, match="shape"):
+        parse_envelope(
+            json.dumps(document),
+            target=NodeConfig(name="alpha", peer_id="peer-alpha"),
+            defaults=FleetDefaults(),
+        )
+
+
+@pytest.mark.parametrize("operation", ("fleet.health", "fleet.inventory"))
+def test_health_and_inventory_envelopes_reject_nonempty_input(operation: str) -> None:
+    """Read-only operations accept no caller-controlled input fields."""
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    document = {
+        "version": 1,
+        "operation": operation,
+        "target": {"name": "alpha", "peer_id": "peer-alpha"},
+        "input": {"unexpected": True},
+        "limits": {"deadline_seconds": 1},
+    }
+
+    with pytest.raises(ValueError, match="input must be empty"):
+        parse_envelope(
+            json.dumps(document),
+            target=NodeConfig(name="alpha", peer_id="peer-alpha"),
+            defaults=FleetDefaults(),
+        )

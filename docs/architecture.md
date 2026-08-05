@@ -96,7 +96,6 @@ nodes:
     policy:
       allowed_operations: [fleet.health, fleet.inventory, fleet.hermes.run]
       max_deadline_seconds: 900
-      max_parallel: 1
 ```
 
 Fleet never stores Keryx node private keys, relay bearer tokens, or Hermes API keys in inventory. Secrets stay in existing Keryx/Hermes credential files or environment references.
@@ -111,10 +110,12 @@ Every Fleet request is a normal Keryx task. The versioned Fleet envelope is seri
 {
   "version": 1,
   "operation": "fleet.hermes.run",
+  "target": {
+    "name": "katana",
+    "peer_id": "12D3KooW..."
+  },
   "input": {
     "prompt": "Run the focused tests and summarize failures.",
-    "session_id": null,
-    "instructions": null,
     "export_paths": ["reports/focused-tests.txt"]
   },
   "limits": {

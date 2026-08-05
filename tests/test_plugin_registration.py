@@ -6,7 +6,11 @@ import argparse
 import importlib.util
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 
 class PublicContext:
@@ -55,11 +59,37 @@ def test_plugin_uses_public_registration_and_returns_stable_json_tool_result() -
 
     plugin.register(context)
 
-    assert context.cli[0]["name"] == "fleet"
+    assert len(context.cli) == 1
+    assert len(context.tools) == 1
+    command = context.cli[0]
+    assert set(command) == {
+        "name",
+        "help",
+        "setup_fn",
+        "handler_fn",
+        "description",
+    }
+    assert command["name"] == "fleet"
+    assert callable(command["setup_fn"])
+    assert callable(command["handler_fn"])
+    parser = argparse.ArgumentParser()
+    command["setup_fn"](parser)
+    assert vars(parser.parse_args(["init"])) == {"fleet_command": "init"}
+    with pytest.raises(SystemExit):
+        parser.parse_args(["list"])
+
     tool = context.tools[0]
     assert tool["name"] == "fleet_list_nodes"
+    assert tool["toolset"] == "fleet"
+    assert callable(tool["handler"])
     assert set(tool["schema"]) == {"name", "description", "parameters"}
-    assert json.loads(tool["handler"]({})) == {
+    assert tool["schema"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+    handler = cast(Callable[[dict[str, Any]], str], tool["handler"])
+    assert json.loads(handler({})) == {
         "success": True,
         "data": [],
         "errors": [],
