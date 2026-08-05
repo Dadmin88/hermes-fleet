@@ -11,7 +11,7 @@ The responsibility boundary is:
 3. **Fleet** owns friendly node names, operator tags, selection, Hermes-specific envelopes, node policy, CLI/model tools, and operational presentation.
 4. **Tailscale/private networking** is the deployment boundary around relay, registry, daemons, and local Hermes API servers.
 
-Fleet must not implement a relay, node daemon, transport protocol, task database, result poller, artifact transport, offline queue, WebSocket controller, SSH executor, scheduler, or workflow engine.
+Fleet must not implement a Keryx relay/data-plane daemon, transport protocol, task lifecycle database, independent Keryx result poller, parallel artifact channel, offline queue, WebSocket controller, SSH executor, scheduler, or workflow engine. A supervised `fleet-node` execution adapter and its bounded loopback Hermes Runs polling are Fleet responsibilities.
 
 ## Verified baselines
 
@@ -44,10 +44,12 @@ The audit found several narrower limits than the former product docs implied:
 
 1. **Relay mailbox persistence:** offline mailboxes are bounded in-memory queues. They survive a node disconnect/reconnect while the relay stays up, but not a relay restart.
 2. **SDK skill tags:** registry protocol records support skill tags, but the current Python `Skill` and `register_skills()` path does not propagate them. Fleet operator tags therefore remain in Fleet inventory until a small SDK tag slice is added.
-3. **Task deadlines:** `TaskEnvelope.deadline_ms` and store enforcement exist, but high-level Python `send_task()` does not expose a deadline parameter. Fleet must not emulate deadlines in a second task store; it should add a narrow SDK parameter or clearly constrain v0.1.
+3. **Remote task deadlines:** local Keryx `TaskRecord.deadline_ms` storage/enforcement exists, but `TaskEnvelope` has no deadline field and remote acceptance constructs records without one. Fleet needs an absolute deadline wire field propagated through SDK, daemon, relay, destination acceptance, and store before claiming remote deadline enforcement.
 4. **Cancellation execution:** `TaskHandle.cancel()` persists and routes cancellation, but the Python worker handler does not currently receive a cooperative cancellation signal. A cancelled Keryx task can therefore leave local Hermes work running until it exits. Fleet needs a narrow worker cancellation hook before claiming end-to-end stop behavior.
 5. **Cross-node artifacts:** daemon artifact CRUD is local to each node. Phase 17 routes descriptors and bounded text previews, not artifact bytes, to the origin; the high-level Python SDK also lacks artifact list/get/download helpers. Fleet cannot claim remote artifact retrieval until Keryx adds content/reference transport and SDK access.
 6. **Reachability semantics:** registry presence, direct peer connection, the actual route reported after submission, and a proven task/result round trip are different states. The high-level Python SDK currently discards `SendTaskResponse.delivery_route`/`routed_to`, so Fleet needs a narrow submission-receipt extension and must not pre-label a node as mailbox-eligible.
+7. **Registry ownership/authentication:** relay task/result control can require node tokens, but the separate registry gRPC surface currently allows unauthenticated register/replace/unregister calls. Fleet deployment needs authenticated peer-owned mutation plus Tailscale isolation; network privacy alone is not authorization.
+8. **Registration lifecycle:** Python registration is one-shot with a default 300-second TTL. `fleet-node` must refresh before expiry and deregister on graceful shutdown.
 
 These are upstream integration slices, not justification for a parallel Fleet transport, database, or file channel.
 
@@ -112,7 +114,8 @@ Every Fleet request is a normal Keryx task. The versioned Fleet envelope is seri
   "input": {
     "prompt": "Run the focused tests and summarize failures.",
     "session_id": null,
-    "instructions": null
+    "instructions": null,
+    "export_paths": ["reports/focused-tests.txt"]
   },
   "limits": {
     "deadline_seconds": 600
@@ -135,7 +138,7 @@ The dispatcher rejects unknown versions, unknown operations, malformed/multiple 
 
 ## Local Hermes execution seam
 
-`fleet-node` is a small Python worker built on `KeryxNode`; it is not another daemon and does not replace `keryxd`.
+`fleet-node` is a small supervised Python execution worker built on `KeryxNode`; it is not a Keryx data-plane daemon and does not replace `keryxd`.
 
 For `fleet.hermes.run`, the worker calls the local Hermes API server over loopback:
 
@@ -147,6 +150,27 @@ For `fleet.hermes.run`, the worker calls the local Hermes API server over loopba
 6. Convert the terminal Hermes run into Keryx result metadata and artifact descriptors.
 
 The API server is a public Hermes surface with bearer authentication, runs, polling, progress, approval, and stop endpoints. The worker uses only `127.0.0.1`; the API server must not be exposed to the relay or public network. `API_SERVER_KEY` remains an environment/config secret and is never returned in Fleet output.
+
+### Crash-safe execution binding
+
+Hermes Runs has no durable idempotency key and run state is process-memory retained. To avoid duplicate model/tool execution after a worker crash, `fleet-node` maintains only a narrow atomic execution-binding record keyed by Keryx task ID:
+
+1. Persist `state=preparing` before `POST /v1/runs`.
+2. Persist the returned Hermes `run_id` as `state=running` before normal polling.
+3. On reclaim with `state=running`, resume polling that exact run; never submit another.
+4. On reclaim with `state=preparing`, or when the bound run is missing after Hermes restart, fail closed as `execution_uncertain`; never auto-resubmit.
+5. Remove the binding only after one terminal Keryx completion/failure is durably accepted.
+
+This is an execution-correlation record, not a second Fleet task lifecycle database.
+
+### Artifact export contract
+
+Hermes Runs returns final text/status, not a list of created files. Fleet therefore never scans the node filesystem. `fleet.hermes.run` may return:
+
+- a bounded `result.txt` artifact produced from final Hermes output; and
+- explicitly requested relative files under a configured export root.
+
+`input.export_paths` is optional, contains only bounded relative paths, and is exposed by `hermes fleet run --export <relative-path>` and the model tool's `export_paths` array through one shared schema. Before Hermes starts, Fleet rejects absolute, empty, duplicate, `.`/`..`, control-character, and over-limit paths and creates a private per-task export directory. Because Hermes may create the files later, post-run collection repeats containment checks and opens every directory component and final regular file relative to the task-root directory descriptor with no-follow semantics; it never trusts a preflight path resolution. Collected files are size/count bounded, hashed, and handed to Keryx. Keryx routes authenticated artifact bytes inline in the result envelope with a default **4 MiB aggregate cross-node limit**, ingests them into the origin daemon's existing content-addressed artifact store, and exposes safe Python download helpers. The existing 256 MiB node-local blob ceiling does not imply a 256 MiB relay payload.
 
 If a node does not expose the Runs capability, `fleet.hermes.run` is not registered. Fleet does not import Hermes private runtime internals as a fallback.
 
@@ -181,6 +205,8 @@ There is no automatic retry after ambiguous submission. Repeated submissions req
 - **Hermes:** tool permissions and approval behavior during execution.
 
 Fleet never promotes an authenticated remote request into an approval decision. Human approval remains local to Hermes/operator policy.
+
+Every node is default-deny. Only explicitly listed authenticated sender peer IDs and `fleet.*` operation IDs may reach the dispatcher; rejection occurs before any Hermes Runs request.
 
 Authentication never implies authorization.
 

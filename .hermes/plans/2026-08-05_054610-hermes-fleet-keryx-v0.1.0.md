@@ -70,12 +70,12 @@ Do not start a dependent phase while its gate is open.
 
 **Acceptance**
 
-- [ ] Keryx source and PR/issue history agree on Phase 17 completion.
-- [ ] Rust workspace passes.
+- [x] Keryx source and PR/issue history agree on Phase 17 completion.
+- [x] Rust workspace passes.
 - [x] Python SDK baseline passes: 29 tests on Python 3.11.
-- [ ] Authenticated two-node task/result/artifact E2E passes.
-- [ ] Product docs contain no stale “Phase 17 pending” claim.
-- [ ] No secrets or generated test keys are committed.
+- [x] Authenticated two-node task/result/artifact-descriptor E2E passes.
+- [x] Product docs contain no stale “Phase 17 pending” claim.
+- [x] No secrets or generated test keys are committed.
 
 ## Phase 1 — Reconcile and scaffold Fleet domain
 
@@ -87,6 +87,8 @@ Do not start a dependent phase while its gate is open.
 - `hermes_fleet/{models,config,inventory,selection,envelope,policy,formatting}.py`
 - `tests/unit/test_{models,config,inventory,selection,envelope,policy}.py`
 - `tests/test_plugin_registration.py`
+
+The recovered untracked Phase-1 scaffold is input, not accepted architecture. Preserve its public plugin registration and atomic profile-state helpers where tests prove them; remove URL/token fields, Agent Card models, and the generic `FleetTransport` A2A seam. Fix valid-empty-cache rewrites, non-integer default validation, SPDX license metadata, and duplicate friendly-name/peer-ID handling under TDD.
 
 **Behaviors**
 
@@ -111,17 +113,20 @@ Prefer changes in `DeployFaith/hermes-keryx`; keep Fleet adapters thin.
 **TDD slices**
 
 1. Add optional tags to the Python SDK `Skill` model and registration path; prove `SkillInfo.tags` reaches `RegisterSkills`.
-2. Add optional `deadline_ms`/deadline input to high-level `KeryxNode.send_task()` and `DaemonClient.send_task()`; prove the `TaskEnvelope` carries it and expired work is not claimed.
+2. Add an absolute deadline field to the task wire contract and propagate it through `KeryxNode.send_task()`, `DaemonClient.send_task()`, daemon/relay transport, destination `SubmitRemoteTask`, and `TaskRecord.deadline_ms`; prove expired remote work is not claimed. `timeout_ms` remains a delivery wait timeout and must not be reused as execution deadline.
 3. Add a cooperative cancellation observation API for claimed worker tasks, or a cancellation callback/event that a handler can await.
 4. Prove a Fleet-style handler can stop a fake local run and reach a Keryx terminal cancellation without completing afterward.
-5. Add a Keryx-owned cross-node artifact-content/reference route and safe Python list/get/download wrappers, preserving identifiers, size limits, authentication, and traversal protections. Protocol changes are justified only because the current descriptor-only result is insufficient for Fleet's required artifact retrieval.
+5. Add bounded Keryx-owned artifact bytes to authenticated result routing. Default to a 4 MiB aggregate cross-node result-artifact limit, verify size and digest, ingest bytes into the origin daemon's existing content-addressed store, retain descriptors in durable result metadata, and add safe Python get/download wrappers. Test zero-byte, binary, multi-artifact, oversize, hash mismatch, duplicate ingestion, replay, and traversal names.
 6. Preserve `SendTaskResponse.delivery_route` and `routed_to` in a public submission receipt/`TaskHandle` surface so Fleet can report the actual route without guessing mailbox eligibility.
+7. Add authenticated registry mutation bound to the registering peer/node token; reject replace/unregister attempts for another peer and enforce `max_skills_per_peer`.
+8. Add a high-level registration lifecycle helper that registers after node start, refreshes before TTL expiry, and deregisters on graceful shutdown; combine it with the tag propagation slice.
 
 **Constraints**
 
 - Do not change protocol wire fields unless source proves an existing field is insufficient.
 - Regenerate committed Python stubs only if proto changes are unavoidable.
 - Preserve existing SDK signatures through optional keyword-only parameters.
+- Preserve backward decode compatibility for new deadline/artifact fields and fail closed when authenticated ownership cannot be established.
 
 **Gate**
 
@@ -132,14 +137,14 @@ Prefer changes in `DeployFaith/hermes-keryx`; keep Fleet adapters thin.
 
 **Files**
 
-- `hermes_fleet/node/{service,handlers,hermes_runs,policy,artifacts}.py`
+- `hermes_fleet/node/{service,handlers,hermes_runs,bindings,policy,artifacts}.py`
 - `hermes_fleet/node_cli.py`
 - `tests/node/test_{health,inventory,hermes_runs,policy,cancellation,artifacts}.py`
 - fake authenticated Hermes Runs API fixture
 
 **Behaviors**
 
-1. Start `KeryxNode`, register the three Fleet skills, and run its worker loop.
+1. Start `KeryxNode`, register the three Fleet skills, refresh registration before TTL expiry, deregister on graceful shutdown, and run its worker loop.
 2. Register one dispatcher handler, not one handler per skill; validate `target_skill_id`, parse the sole JSON text part, and cross-check operation metadata before dispatch.
 3. `fleet.health`: return adapter/Keryx/Hermes capability health without a model call.
 4. `fleet.inventory`: return bounded safe identity/version/capability data.
@@ -149,15 +154,20 @@ Prefer changes in `DeployFaith/hermes-keryx`; keep Fleet adapters thin.
    - poll `GET /v1/runs/{id}`;
    - stop through `/v1/runs/{id}/stop` on cooperative Keryx cancellation;
    - stop/fail as `approval_required` if Hermes enters `waiting_approval`; never call the approval endpoint;
+   - persist a crash-safe Keryx-task-ID → Hermes-run-ID binding;
+   - on reclaim resume only the bound run; fail `execution_uncertain` for a pre-submit crash window or missing bound run; never auto-resubmit;
+   - accept bounded optional `input.export_paths` through one shared envelope/CLI/tool schema; preflight path syntax/count before Hermes, create a private per-task export root, then post-run open each requested path root-relative with no-follow component traversal and regular-file/size checks before packaging bounded `result.txt` plus requested files;
    - map completed/failed/cancelled output to Keryx result metadata/artifacts.
 6. Register `fleet.hermes.run` only when required Runs capabilities are available.
-7. Enforce sender peer, operation, deadline, payload size, max-parallel, and local policy before Hermes invocation.
+7. Enforce default-deny sender peer, `fleet.*` operation, deadline, payload size, artifact path/count/size, max-parallel, and local policy before Hermes invocation.
 8. Keep API key in environment/config secret scope; redact errors.
 9. Use a true foreground `serve_forever()` entry point suitable for systemd/Termux supervision.
 
 **Gate**
 
-- Fake API tests cover success, auth failure, malformed response, timeout, approval wait, cancellation, adapter restart, and secret redaction.
+- Fake API tests cover success, auth failure, malformed response, timeout, approval wait, cancellation, registration expiry/refresh/shutdown, pre-submit crash, POST-success-before-`run_id`-persistence crash, bound-run resume, missing-run fail-closed behavior, shared CLI/tool/envelope `export_paths` schema, count/size/traversal/symlink and symlink-swap safety, and secret redaction.
+- A no-duplicate-run test proves reclaim never submits a second Hermes run for the same Keryx task ID.
+- Binding tests prove it remains until terminal Keryx complete/fail acceptance, cleanup happens exactly once after acceptance, and startup can remove a stale binding for an already-terminal Keryx task without resubmission.
 - Real local loopback smoke against one Hermes installation passes before deployment packaging.
 
 ## Phase 4 — Controller Keryx adapter and inventory views
@@ -171,7 +181,7 @@ Prefer changes in `DeployFaith/hermes-keryx`; keep Fleet adapters thin.
 
 **Behaviors**
 
-1. Wrap only public `KeryxNode`/`TaskHandle` APIs.
+1. Wrap only public Keryx Python SDK APIs added/verified in Phase 2; do not reach into generated private stubs from Fleet.
 2. Display configured, registry-visible, direct-connected, last actual submission route, unknown/offline, and proven-round-trip states separately. Never infer mailbox eligibility from registry visibility.
 3. Merge live Keryx capabilities with Fleet friendly metadata without mutating Keryx records.
 4. Implement `init`, node CRUD/tagging, `list`, `show`, and `doctor`.
@@ -194,7 +204,7 @@ Prefer changes in `DeployFaith/hermes-keryx`; keep Fleet adapters thin.
 **Behaviors**
 
 1. Resolve one configured friendly name and policy-check `fleet.hermes.run`.
-2. Submit a versioned Keryx envelope by immutable peer ID with skill/capability metadata and deadline.
+2. Submit a versioned Keryx envelope by immutable peer ID with skill/capability metadata, absolute deadline, and optional bounded `export_paths`; CLI exposes repeated `--export <relative-path>`.
 3. Return Keryx task ID immediately or wait through `TaskHandle.wait()`.
 4. Implement task status, cancel, and artifact download using Keryx APIs.
 5. Preserve durable result retrieval after the controller stops waiting/restarts.
@@ -239,7 +249,7 @@ Prefer changes in `DeployFaith/hermes-keryx`; keep Fleet adapters thin.
 
 **Behaviors**
 
-1. Register `fleet_list_nodes`, `fleet_get_node`, `fleet_run`, `fleet_get_task`, `fleet_cancel_task`, and `fleet_get_artifacts`.
+1. Register `fleet_list_nodes`, `fleet_get_node`, `fleet_run`, `fleet_get_task`, `fleet_cancel_task`, and `fleet_get_artifacts`; `fleet_run` accepts a bounded `export_paths` string array matching the CLI contract.
 2. Accept only configured names/tags and Keryx task IDs; never arbitrary URLs or shell commands.
 3. Return stable `{success,data,errors,warnings}` JSON.
 4. Mark remote output as untrusted data.
