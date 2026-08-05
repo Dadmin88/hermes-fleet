@@ -17,6 +17,8 @@ Fleet can use these public methods from `hermes_cli.plugins.PluginContext`:
 
 Tool schemas passed to `register_tool` expose top-level `name`, `description`, and `parameters`; the registry wraps them for model providers. Fleet tool handlers return JSON strings. Fleet's network-bound tool handlers register with `is_async=True`.
 
+Plugin skills are registered with a bare name (`ctx.register_skill("fleet-operator", ...)`); Hermes derives the qualified name `<plugin-manifest-name>:fleet-operator`. Passing a colon-qualified name is invalid.
+
 A standalone/user plugin remains opt-in through `plugins.enabled`. A code change requires a Hermes process or gateway restart; a new session/reset is then required for the model tool inventory.
 
 ## Native A2A API
@@ -26,6 +28,7 @@ Hermes ships `plugins/platforms/a2a`, a stdlib A2A v1.0 server and outbound tool
 - Discovery: `GET /.well-known/agent-card.json`; legacy `/.well-known/agent.json` also answers.
 - JSON-RPC: `POST` to the JSONRPC interface URL advertised in `supportedInterfaces`.
 - Canonical send method: `SendMessage`; legacy `message/send` remains accepted.
+- Request identity is split deliberately: the client generates the JSON-RPC request `id`, Message `messageId`, and optional/continuation `contextId`; the server generates the returned `Task.id`, which Fleet records separately.
 - Request Message fields: `role: ROLE_USER`, `parts: [{text, mediaType: text/plain}]`, `messageId`, optional `contextId`.
 - Canonical response result wraps either `task` or `message`.
 - Task fields include `id`, `contextId`, `status.state`, optional `status.message`, and optional `artifacts`.
