@@ -1,0 +1,248 @@
+"""Authenticated loopback client for Hermes's public Runs API."""
+
+from __future__ import annotations
+
+import ipaddress
+import json
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlsplit
+
+_MAX_RESPONSE_BYTES = 1_048_576
+_ACTIVE_STATES = frozenset({"queued", "running", "stopping"})
+
+
+class HermesRunError(RuntimeError):
+    """Stable Fleet-owned error for a local Hermes run failure."""
+
+
+class HermesRunSubmissionUnknown(HermesRunError):
+    """Run creation may have succeeded, so reposting would be unsafe."""
+
+
+class HermesRunIndeterminate(HermesRunError):
+    """A known run can no longer be observed safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class HermesRunResult:
+    """Terminal text returned by one authenticated Hermes run."""
+
+    run_id: str
+    text: str
+
+
+class HermesRunsClient:
+    """Small synchronous adapter over Hermes's authenticated loopback Runs API."""
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        poll_interval_seconds: float = 0.1,
+        request_timeout_seconds: float = 10.0,
+    ) -> None:
+        self._endpoint = _loopback_endpoint(endpoint)
+        if (
+            type(api_key) is not str
+            or not api_key
+            or "\r" in api_key
+            or "\n" in api_key
+        ):
+            raise ValueError("Hermes API key must be a nonempty string")
+        if (
+            isinstance(poll_interval_seconds, bool)
+            or not isinstance(poll_interval_seconds, int | float)
+            or poll_interval_seconds <= 0
+        ):
+            raise ValueError("poll interval must be positive")
+        if (
+            isinstance(request_timeout_seconds, bool)
+            or not isinstance(request_timeout_seconds, int | float)
+            or request_timeout_seconds <= 0
+        ):
+            raise ValueError("request timeout must be positive")
+        self._api_key = api_key
+        self._poll_interval_seconds = float(poll_interval_seconds)
+        self._request_timeout_seconds = float(request_timeout_seconds)
+
+    def run(self, *, prompt: str, timeout_seconds: float) -> HermesRunResult:
+        """Compatibility helper that starts and waits for one run."""
+        run_id = self.start(prompt=prompt)
+        return self.wait(run_id=run_id, timeout_seconds=timeout_seconds)
+
+    def health(self) -> dict[str, object]:
+        """Return bounded public Runs capability health without creating a run."""
+        unavailable = {
+            "api": "unavailable",
+            "run_submission": False,
+            "run_status": False,
+            "run_stop": False,
+        }
+        try:
+            health_status, _health = self._request_json("GET", "/health")
+            capability_status, capabilities = self._request_json(
+                "GET", "/v1/capabilities"
+            )
+        except HermesRunError:
+            return unavailable
+        if health_status != 200 or capability_status != 200:
+            return unavailable
+        features = capabilities.get("features")
+        if (
+            capabilities.get("object") != "hermes.api_server.capabilities"
+            or type(features) is not dict
+        ):
+            return unavailable
+        return {
+            "api": "healthy",
+            "run_submission": features.get("run_submission") is True,
+            "run_status": features.get("run_status") is True,
+            "run_stop": features.get("run_stop") is True,
+        }
+
+    def start(self, *, prompt: str, session_id: str | None = None) -> str:
+        """Create exactly one run and return its server-generated ID."""
+        if type(prompt) is not str or not prompt.strip():
+            raise ValueError("Hermes run prompt must be a nonempty string")
+        if session_id is not None and (
+            type(session_id) is not str
+            or not session_id
+            or len(session_id) > 512
+            or any(ord(character) < 32 for character in session_id)
+        ):
+            raise ValueError("Hermes session ID must be bounded text")
+        request = {"input": prompt}
+        if session_id is not None:
+            request["session_id"] = session_id
+        try:
+            status_code, document = self._request_json("POST", "/v1/runs", request)
+        except HermesRunError:
+            raise HermesRunSubmissionUnknown(
+                "Hermes run submission outcome is unknown"
+            ) from None
+        run_id = document.get("run_id")
+        if status_code != 202 or type(run_id) is not str or not run_id:
+            raise HermesRunError("Hermes did not accept the Fleet run")
+        return run_id
+
+    def wait(self, *, run_id: str, timeout_seconds: float) -> HermesRunResult:
+        """Poll one known run to terminal text without creating another run."""
+        if type(run_id) is not str or not run_id:
+            raise ValueError("Hermes run ID must be a nonempty string")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int | float)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("Hermes run timeout must be positive")
+
+        deadline = time.monotonic() + float(timeout_seconds)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.stop(run_id)
+                raise HermesRunError("Hermes run exceeded Fleet deadline")
+
+            status_code, document = self._request_json("GET", f"/v1/runs/{run_id}")
+            if status_code == 404:
+                raise HermesRunIndeterminate("Hermes run status is indeterminate")
+            if status_code != 200:
+                raise HermesRunError("Hermes run status is unavailable")
+            state = document.get("status")
+            if state == "completed":
+                output = document.get("output")
+                if type(output) is not str:
+                    raise HermesRunError("Hermes completed without terminal text")
+                return HermesRunResult(run_id=run_id, text=output)
+            if state == "waiting_for_approval":
+                self.stop(run_id)
+                raise HermesRunError("Hermes run requires approval")
+            if state == "failed":
+                raise HermesRunError("Hermes run failed")
+            if state == "cancelled":
+                raise HermesRunError("Hermes run was cancelled")
+            if state not in _ACTIVE_STATES:
+                raise HermesRunError("Hermes returned an unsupported run status")
+            time.sleep(min(self._poll_interval_seconds, remaining))
+
+    def stop(self, run_id: str) -> None:
+        """Best-effort cooperative stop for one known run."""
+        try:
+            self._request_json("POST", f"/v1/runs/{run_id}/stop")
+        except HermesRunError:
+            pass
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        document: dict[str, Any] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        payload = None
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+        if document is not None:
+            payload = json.dumps(document, separators=(",", ":")).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            f"{self._endpoint}{path}",
+            data=payload,
+            headers=headers,
+            method=method,
+        )
+        error_message: str | None = None
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self._request_timeout_seconds
+            ) as response:
+                status = response.status
+                raw = response.read(_MAX_RESPONSE_BYTES + 1)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            raw = error.read(_MAX_RESPONSE_BYTES + 1)
+        except (OSError, TimeoutError, urllib.error.URLError):
+            error_message = "Hermes Runs API is unavailable"
+            status = 0
+            raw = b""
+        if error_message is not None:
+            raise HermesRunError(error_message)
+        if len(raw) > _MAX_RESPONSE_BYTES:
+            raise HermesRunError("Hermes Runs API response is too large")
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError, RecursionError):
+            decoded = None
+        if type(decoded) is not dict:
+            raise HermesRunError("Hermes Runs API returned an invalid response")
+        return status, decoded
+
+
+def _loopback_endpoint(endpoint: str) -> str:
+    if type(endpoint) is not str:
+        raise ValueError("Hermes endpoint must be loopback HTTP")
+    parsed = urlsplit(endpoint)
+    host = parsed.hostname
+    loopback = host == "localhost"
+    if host and not loopback:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if (
+        parsed.scheme != "http"
+        or not loopback
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in ("", "/")
+    ):
+        raise ValueError("Hermes endpoint must be loopback HTTP without credentials")
+    return endpoint.rstrip("/")

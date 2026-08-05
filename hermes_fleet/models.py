@@ -8,7 +8,9 @@ from typing import TypeVar, cast
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _PEER_ID_LIMIT = 256
-_OPERATIONS = frozenset({"fleet.health", "fleet.inventory", "fleet.hermes.run"})
+_OPERATIONS = frozenset(
+    {"fleet.health", "fleet.inventory", "fleet.message", "fleet.hermes.run"}
+)
 _DomainType = TypeVar("_DomainType")
 
 

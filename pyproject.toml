@@ -5,12 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hermes-fleet"
 version = "0.1.0"
-description = "Keryx-first Hermes Fleet local domain package"
+description = "Keryx-backed Hermes node communication and deliberate execution"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = ["PyYAML>=6,<7"]
+
+[project.scripts]
+fleet-node = "hermes_fleet.node_service:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]

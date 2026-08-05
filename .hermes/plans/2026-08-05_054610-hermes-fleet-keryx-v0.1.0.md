@@ -4,26 +4,26 @@
 
 ## Goal
 
-Build a lean Hermes general plugin and `fleet-node` adapter that operate independent Hermes installations through Hermes Keryx. Fleet provides friendly inventory, operator tags, selection, policy, Hermes task envelopes, CLI/tools, and operational views; Keryx remains the sole transport and durable task/result data plane.
+Build a lean Hermes general plugin and `fleet-node` adapter that let independent Hermes-capable nodes communicate and deliberately delegate execution through Hermes Keryx. Fleet provides friendly inventory, operator tags, selection, communication envelopes, policy, dispatch, CLI/tools, and operational views; Keryx remains the sole transport and durable task/result data plane.
 
 ## Current status and operating rule
 
 - The local Phase 1 foundation is complete.
 - Generalized security hardening is frozen after the current local-contract packet.
 - The project is entering the functional Katana-to-VPS vertical-slice phase.
-- The first release target is one Katana controller, one VPS worker, and text-only remote execution/results.
+- The first release target is one Katana controller, one VPS worker, one direct `fleet.message` acknowledgment, and one deliberate text-only `fleet.hermes.run` result.
 - Artifact transport, capability tags, fan-out, Android/Termux, and richer orchestration are deferred backlog, not current release requirements.
 
-Before starting work, ask: **“Does this directly help complete or safely operate the Katana-to-VPS text-result round trip?”** Proceed only when the answer is yes. Otherwise record the item in the backlog and continue toward the proof. Only a concrete critical vulnerability may interrupt the milestone.
+Before starting work, ask: **“Is this required to prove one direct node message and one remote Hermes execution between Katana and the VPS?”** Proceed only when the answer is yes. Otherwise record the item in the backlog and continue toward the two proofs. Only a concrete critical vulnerability may interrupt the milestone.
 
-Report progress as working capability: controller selection, Keryx submission, worker claim, Hermes run creation, returned result, observed cancellation, and the two-machine smoke result. Test totals and edge-case coverage are supporting evidence, not milestones.
+Report progress as working capability: a message reached the VPS without calling Hermes, the acknowledgment returned with the actual Keryx route, a deliberate execution created one Hermes run, terminal text returned, duplicate execution was prevented, and both two-machine smokes passed. Test totals are supporting evidence, not milestones.
 
 ## Authoritative inputs
 
 - Fleet repository: `/home/kyle/Create/repos/hermes-fleet`, branch `main`.
-- Keryx repository: `DeployFaith/hermes-keryx`, audited `main` at `97fcb5d`.
+- Keryx repository: `Dadmin88/hermes-keryx`, integration baseline `22d66ecf452eb6c1f87bd3710dda5ec665f5f32c`.
 - Keryx Phase 17 implementation: PR #29, merge commit `906823badac04fd9d159c4da927dda5c25d712dc`.
-- Hermes source: `/home/kyle/.hermes/hermes-agent`, validated clean `main` at `a991dfc25`.
+- Hermes source: `/home/kyle/.hermes/hermes-agent`, audited at `aec331899e4748739927fddf02a54327e64419a0`.
 - Architecture: `docs/architecture.md`.
 - Superseded plan: `.hermes/plans/2026-08-05_052149-hermes-fleet-v0.1.0.md`; do not execute it.
 
@@ -37,7 +37,7 @@ Direct Hermes A2A is not a v0.1 transport or fallback.
 
 First verify each seam against the current public Keryx API. Use it directly when it exists. Make a narrow upstream change only for a concrete missing behavior; never emulate Keryx inside Fleet.
 
-Current-proof seams are authenticated peer-owned registry mutation, registration refresh/deregistration, absolute remote deadline, cooperative cancellation observation, actual-route/routed-peer receipt, and durable terminal text result retrieval.
+Current-proof seams are authenticated peer-owned registry mutation, registration refresh/deregistration, exact-peer submission, absolute remote deadline transport, authenticated sender identity, actual-route/routed-peer receipt, and durable completed/failed terminal text result retrieval. Cross-node running-task cancellation and controller task-handle reattachment remain incomplete and are not blockers for the first two smokes.
 
 Capability-tag propagation, artifact-byte transport/retrieval, and relay-mailbox durability are deferred.
 
@@ -56,13 +56,13 @@ Do not start a dependent phase while its gate is open.
 
 ### Test priority for the current milestone
 
-1. Controller-to-Keryx submission.
-2. `fleet-node` task receipt.
-3. Authenticated Hermes run creation.
+1. Controller-to-Keryx `fleet.message` submission and direct acknowledgment without Hermes.
+2. `fleet-node` authenticated receipt, metadata validation, and explicit dispatch.
+3. Authenticated Hermes run creation only for `fleet.hermes.run`.
 4. Task/run binding and duplicate prevention.
 5. Terminal text result propagation.
-6. Deadline and cancellation behavior.
-7. One real Katana/VPS smoke test.
+6. Deadline behavior and truthful cancellation limitations.
+7. Both real Katana/VPS smoke tests.
 
 Do not maximize test count. Prefer a smaller deterministic set that proves the real path.
 
@@ -117,7 +117,7 @@ The recovered untracked Phase-1 scaffold is input, not accepted architecture. Pr
 2. Resolve state under active `HERMES_HOME/fleet/` with standalone-test override.
 3. Atomic, owner-safe YAML writes for operator inventory only.
 4. Friendly name → immutable Keryx peer ID mapping; operator tags, enabled, priority, and node policy.
-5. Versioned `fleet.health`, `fleet.inventory`, and `fleet.hermes.run` envelopes.
+5. Versioned `fleet.health`, `fleet.inventory`, `fleet.message`, and `fleet.hermes.run` envelopes.
 6. Reject unknown versions/operations, invalid peer IDs, malformed tags, duplicate names, and unsafe limits.
 7. No URLs, bearer values, private keys, or duplicated task lifecycle state in Fleet inventory.
 
@@ -127,18 +127,15 @@ The recovered untracked Phase-1 scaffold is input, not accepted architecture. Pr
 - `ruff check` and `ruff format --check` pass for changed paths.
 - Independent review confirms no direct-A2A or duplicate Keryx machinery remains.
 
-## Phase 2A — First safe text-result Fleet
+## Phase 2A — First safe node communication and text-result execution
 
 Inspect current public Keryx behavior first. Prefer direct use of existing APIs; if a required seam is genuinely absent, make the smallest upstream change. Keep Fleet adapters thin. Artifact and capability-tag work is explicitly excluded from this gate.
 
-**Required seams and TDD slices**
+**Compatibility result**
 
-1. Add authenticated registry mutation bound to peer ownership. Register/replace/unregister must require the registering peer or node token, reject cross-peer mutation, and enforce `max_skills_per_peer`.
-2. Add registration refresh before TTL expiry through a high-level lifecycle helper that starts after the node is ready.
-3. Add graceful deregistration through that same lifecycle, with idempotent shutdown behavior.
-4. Add an absolute remote deadline field and propagate it through `KeryxNode.send_task()`, daemon/relay transport, destination acceptance, and `TaskRecord.deadline_ms`; prove expired remote work is not claimed. Delivery `timeout_ms` remains distinct.
-5. Add cooperative cancellation observation for claimed worker tasks and prove a Fleet-style handler can stop a fake local run, reach one terminal Keryx cancellation, and never complete afterward.
-6. Preserve `SendTaskResponse.delivery_route` and `routed_to` in an immutable public submission receipt/`TaskHandle` surface so Fleet reports the actual route and routed peer rather than guessing mailbox eligibility.
+Public Keryx already supports authenticated registration ownership, lifecycle refresh/deregistration, exact-peer submission, absolute deadline transport, authenticated sender identity, immutable route receipts, worker claim/complete/fail, and durable completed/failed text results. No Rust/protobuf Keryx patch blocks the first communication or execution smoke.
+
+Supported but incomplete seams are controller task-handle reattachment after restart and cross-node running-task cancellation. Defer both unless a concrete first-release proof requires them; do not create Fleet-owned result polling or cancellation machinery.
 
 **Target vertical slice**
 
@@ -146,13 +143,13 @@ Inspect current public Keryx behavior first. Prefer direct use of existing APIs;
 Fleet controller
 → Keryx task submission
 → remote fleet-node
-→ authenticated loopback Hermes Runs API
-→ Hermes terminal text result
+→ explicit direct handler OR authenticated loopback Hermes Runs API
+→ acknowledgment OR Hermes terminal text result
 → Keryx durable result
 → Fleet controller retrieval
 ```
 
-The first real proof uses Katana as controller and the VPS as the remote node. It carries final text only; no artifact transport, export collection, capability tags, or download helper is required.
+The first real proof uses Katana as controller and the VPS as the remote node. It must prove both `fleet.message` without a Runs API call and `fleet.hermes.run` with exactly one Runs API call. Both carry text only; no artifact transport, export collection, capability tags, or download helper is required.
 
 **Constraints**
 
@@ -166,8 +163,9 @@ The first real proof uses Katana as controller and the VPS as the remote node. I
 
 - Full Keryx Rust, Python, and authenticated two-node gates pass after each upstream slice.
 - Fleet pins or declares a Keryx version/commit containing all Phase 2A seams.
-- One real Katana-to-VPS Hermes run returns a terminal text result through Keryx and reports the actual route and routed peer.
-- Deadline, cancellation, ownership denial, TTL refresh, and graceful deregistration are each observed through their public surfaces.
+- One real Katana-to-VPS direct message returns an acknowledgment without invoking Hermes and reports the actual route/routed peer.
+- One real Katana-to-VPS Hermes run returns terminal text through Keryx, reports the actual route/routed peer, and cannot execute twice on reclaim.
+- Deadline, ownership denial, TTL refresh, and graceful deregistration are observed through public surfaces; cancellation is reported only to the extent Keryx actually supports it.
 
 ## Deferred backlog — Phase 2B capability tags and cross-node artifacts
 
@@ -210,30 +208,30 @@ This is not a first-release requirement. Start only after the Katana/VPS text-re
 
 **Behaviors**
 
-1. Start `KeryxNode`, register the three Fleet skills, refresh registration before TTL expiry, deregister on graceful shutdown, and run its worker loop.
-2. Register one dispatcher handler, not one handler per skill; validate `target_skill_id`, parse the sole JSON text part, and cross-check operation metadata before dispatch.
+1. Start `KeryxNode`, register the four Fleet operations, refresh registration before TTL expiry, deregister on graceful shutdown, and run its worker loop.
+2. Register one dispatcher handler, not one handler per operation; validate authenticated sender identity, parse the sole JSON text part, and cross-check target/version/operation metadata before dispatch.
 3. `fleet.health`: return adapter/Keryx/Hermes capability health without a model call.
 4. `fleet.inventory`: return bounded safe identity/version/capability data.
-5. `fleet.hermes.run`:
+5. `fleet.message`: accept bounded text and optional topic/correlation ID, return safe delivery acknowledgment metadata, and never invoke Hermes.
+6. `fleet.hermes.run`:
    - authenticated loopback `GET /v1/capabilities`;
    - `POST /v1/runs`;
    - poll `GET /v1/runs/{id}`;
-   - stop through `/v1/runs/{id}/stop` on cooperative Keryx cancellation;
-   - stop/fail as `approval_required` if Hermes enters `waiting_approval`; never call the approval endpoint;
+   - stop/fail if Hermes enters `waiting_for_approval`; never call the approval endpoint;
    - persist a crash-safe Keryx-task-ID → Hermes-run-ID binding;
    - on reclaim resume only the bound run; fail `execution_uncertain` for a pre-submit crash window or missing bound run; never auto-resubmit;
    - require empty `input.export_paths` during the text-only Phase 2A proof;
    - map completed/failed/cancelled output to Keryx result metadata and bounded terminal text.
-6. Register `fleet.hermes.run` only when required Runs capabilities are available.
-7. Enforce default-deny sender peer, `fleet.*` operation, deadline, payload size, zero Phase 2A export paths, max-parallel, and local policy before Hermes invocation.
-8. Keep API key in environment/config secret scope; redact errors.
-9. Use a true foreground `serve_forever()` entry point suitable for systemd/Termux supervision.
+7. Register `fleet.hermes.run` only when required Runs capabilities are available.
+8. Enforce default-deny sender peer, `fleet.*` operation, metadata/envelope agreement, deadline, payload size, zero Phase 2A export paths, and local policy before dispatch.
+9. Keep API key in environment/config secret scope; redact errors.
+10. Use a true foreground `serve_forever()` entry point suitable for systemd supervision.
 
 **Gate**
 
-- Fake API tests cover success, auth failure, malformed response, timeout, approval wait, cancellation, registration expiry/refresh/shutdown, pre-submit crash, POST-success-before-`run_id`-persistence crash, bound-run resume, missing-run fail-closed behavior, nonempty Phase 2A `export_paths` rejection, and secret redaction.
+- Tests prove health/inventory/message never call Hermes; message acknowledgments contain only bounded safe metadata; sender/target/operation metadata mismatches fail closed; and the Runs client covers success, auth failure, malformed response, timeout, approval wait, and secret redaction.
 - A no-duplicate-run test proves reclaim never submits a second Hermes run for the same Keryx task ID.
-- Binding tests prove it remains until terminal Keryx complete/fail acceptance, cleanup happens exactly once after acceptance, and startup can remove a stale binding for an already-terminal Keryx task without resubmission.
+- Binding tests prove atomic first reservation, known-run resume, completed-text replay, and fail-closed handling of uncertain creation without resubmission.
 - Real local loopback smoke against one Hermes installation passes before deployment packaging.
 
 After Phase 2B is accepted, extend the adapter with `artifacts.py`, focused artifact tests, private per-task export roots, no-follow post-run collection, and bounded packaging. Those additions are not part of the first text-result gate.
@@ -260,7 +258,7 @@ After Phase 2B is accepted, extend the adapter with `artifacts.py`, focused arti
 - Partial/disconnected state is deterministic and never reported as online solely from registry presence.
 - No registry or task database duplication.
 
-## Phase 5 — Single-node text dispatch, results, and cancellation
+## Phase 5 — Exact-node communication/execution dispatch and results
 
 **Files**
 
@@ -271,18 +269,18 @@ After Phase 2B is accepted, extend the adapter with `artifacts.py`, focused arti
 
 **Behaviors**
 
-1. Resolve one configured friendly name and policy-check `fleet.hermes.run`.
-2. Submit a versioned Keryx envelope by immutable peer ID with skill/capability metadata, absolute deadline, and empty `export_paths` for Phase 2A. Repeated `--export <relative-path>` is enabled only after Phase 2B.
+1. Resolve one configured friendly name and policy-check health, inventory, message, or run.
+2. Submit one versioned Keryx envelope by immutable peer ID with operation/target metadata and absolute deadline; require empty `export_paths` for Phase 2A.
 3. Return Keryx task ID immediately or wait through `TaskHandle.wait()`.
-4. Implement task status and cancellation using Keryx APIs.
-5. Preserve durable result retrieval after the controller stops waiting/restarts.
+4. Implement task status through public Keryx APIs and expose cancellation only with its truthful current limitations.
+5. Add public Keryx task-handle reattachment only if required for controller restart/status acceptance; never poll Keryx privately from Fleet.
 6. Never retry an ambiguous submission automatically.
 7. Store at most bounded operational selection/policy events keyed to Keryx task ID; no duplicate lifecycle database.
 
 **Gate**
 
 - Fake Keryx tests cover direct, mailbox, timeout, ambiguous submit, durable late text result, and cancellation.
-- Real two-node Fleet run passes on Linux before fan-out.
+- Real two-node Fleet message and Fleet run both pass on Linux before fan-out.
 
 Artifact download and content-retrieval tests are added to this phase only after Phase 2B provides accepted public Keryx APIs.
 
@@ -321,7 +319,7 @@ This phase is not required for the first one-controller/one-worker release.
 
 **Behaviors**
 
-1. Register `fleet_list_nodes`, `fleet_get_node`, `fleet_run`, `fleet_get_task`, and `fleet_cancel_task` for the text-result slice. Register `fleet_get_artifacts` and enable nonempty `export_paths` only after Phase 2B.
+1. Register `fleet_list_nodes`, `fleet_get_node`, `fleet_get_health`, `fleet_send_message`, `fleet_run`, `fleet_get_task`, and `fleet_cancel_task`. Register artifact tools and enable nonempty `export_paths` only after Phase 2B.
 2. Accept only configured names/tags and Keryx task IDs; never arbitrary URLs or shell commands.
 3. Return stable `{success,data,errors,warnings}` JSON.
 4. Mark remote output as untrusted data.
@@ -351,19 +349,19 @@ This phase is not required for the first one-controller/one-worker release.
 - No `sudo`, service stop/restart, firewall, port, or production config mutation without explicit approval and exact values.
 - Never write credentials into repo, chat, fixtures, unit files, or command output.
 
-## Phase 9 — Katana/VPS text-result acceptance and first release
+## Phase 9 — Katana/VPS communication/execution acceptance and first release
 
 Do not declare this phase complete until a repeatable real proof shows:
 
 1. Katana selected the VPS through Fleet inventory.
-2. Fleet submitted the task through Keryx.
-3. The VPS executed the task through its local Hermes instance.
-4. The terminal text result returned to Katana.
-5. Logs identify the Keryx task, peer, Hermes run, and final status.
-6. GitHub Actions remains green on the released commit.
-7. The two-machine smoke-test procedure is documented and repeatable.
+2. `fleet.message` reached the VPS through Keryx, was handled directly without a Runs API call, and returned an acknowledgment plus actual route.
+3. `fleet.hermes.run` reached the VPS and created exactly one authenticated local Hermes run.
+4. Hermes returned exactly `FLEET_OK` through Keryx, and reclaim did not create a second run.
+5. Logs identify the Keryx task, sender/target peer, operation, actual route, Hermes run when applicable, and final status.
+6. GitHub Actions remains green on the exact released commit.
+7. Both two-machine smoke procedures are documented and repeatable.
 
-The proof must also exercise the implemented deadline and cooperative-cancellation surfaces. Artifacts, tag fan-out, Android/Termux, and richer orchestration do not block this release.
+The proof must also exercise the implemented deadline behavior and state cancellation limitations truthfully. Artifacts, fan-out, Android/Termux, pub/sub, inboxes, Kanban integration, and richer orchestration do not block this release.
 
 ## Full validation bundle
 
@@ -379,7 +377,7 @@ Also run:
 - Keryx full Rust/Python/two-node E2E for any Keryx change.
 - Clean temporary `HERMES_HOME` plugin install and registration check.
 - Real local Hermes Runs smoke.
-- Real Katana/VPS text-result smoke procedure.
+- Real Katana/VPS direct-message and Hermes-execution smoke procedures.
 - Leakage search over Fleet/Keryx generated state and captured logs.
 - `git diff --check` and scoped `git status --short` in both repositories.
 
@@ -388,7 +386,7 @@ Also run:
 1. Existing Katana Keryx services target a missing VPS registry and are restart-looping; migrate rather than layering a second stack.
 2. The live pre-Phase-17 task bridge fabricates successful completions and must be retired before Fleet traffic.
 3. Relay mailbox data is not restart-durable.
-4. Cooperative cancellation and deadline propagation must be verified through current public Keryx APIs before adding upstream code.
+4. Cross-node running-task cancellation is incomplete in Keryx; do not claim or emulate it. Absolute deadline transport exists, but already-running handler interruption remains limited.
 5. Keryx registry presence is not proof of routability; always prove a task/result round trip.
 6. Hermes Runs state has different retention/restart semantics from Keryx durable results; the node adapter must finalize into Keryx before claiming success.
 
@@ -400,5 +398,6 @@ Also run:
 - Defensive checks inside trusted helpers, generic validation frameworks, and purity-only refactors.
 - Hypothetical future multi-tenant attacks and parser cases that cannot traverse the real transport.
 - Relay-mailbox restart durability and other noncritical future-scale architecture.
+- Pub/sub, broadcast, multi-node chat, persistent inboxes, agent-session routing, priorities, workflow graphs, Kanban integration, public exposure, and multi-tenancy.
 
 Backlog items do not interrupt the vertical slice unless they expose a concrete critical vulnerability.

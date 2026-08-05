@@ -1,4 +1,4 @@
-"""Strict versioned payloads for the three Fleet Keryx operations."""
+"""Strict versioned payloads for the initial Fleet communication operations."""
 
 from __future__ import annotations
 
@@ -9,7 +9,12 @@ from typing import Any, cast
 from .models import FleetDefaults, NodeConfig, _require_exact_type
 
 ENVELOPE_VERSION = 1
-OPERATIONS = frozenset({"fleet.health", "fleet.inventory", "fleet.hermes.run"})
+OPERATIONS = frozenset(
+    {"fleet.health", "fleet.inventory", "fleet.message", "fleet.hermes.run"}
+)
+_MAX_MESSAGE_CHARS = 4_096
+_MAX_TOPIC_CHARS = 64
+_MAX_CORRELATION_ID_CHARS = 128
 
 
 class _DuplicateJsonObjectKey(ValueError):
@@ -195,6 +200,26 @@ def _export_paths(value: object, maximum: int) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def _message_text(value: object) -> str:
+    if type(value) is not str or not value.strip() or len(value) > _MAX_MESSAGE_CHARS:
+        raise ValueError("message text must be a bounded nonempty string")
+    return value
+
+
+def _optional_message_field(value: object, label: str, maximum: int) -> str:
+    if value is None:
+        return ""
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or len(value) > maximum
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError(f"message {label} must be a bounded printable string")
+    return value
+
+
 def parse_envelope(
     payload: str, *, target: NodeConfig, defaults: FleetDefaults
 ) -> FleetEnvelope:
@@ -245,6 +270,20 @@ def parse_envelope(
         if input_data:
             raise ValueError("health and inventory input must be empty")
         normalized_input: dict[str, Any] = {}
+    elif operation == "fleet.message":
+        if set(input_data).difference({"text", "topic", "correlation_id"}):
+            raise ValueError("message input has unknown keys")
+        normalized_input = {
+            "text": _message_text(input_data.get("text")),
+            "topic": _optional_message_field(
+                input_data.get("topic"), "topic", _MAX_TOPIC_CHARS
+            ),
+            "correlation_id": _optional_message_field(
+                input_data.get("correlation_id"),
+                "correlation_id",
+                _MAX_CORRELATION_ID_CHARS,
+            ),
+        }
     else:
         if set(input_data).difference({"prompt", "export_paths"}):
             raise ValueError("run input has unknown keys")

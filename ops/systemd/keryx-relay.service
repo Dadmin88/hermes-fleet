@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes Keryx relay for Fleet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/hermes-fleet/keryx-relay.env
+ExecStart=%h/.local/share/hermes-fleet/bin/keryx-relay
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/hermes-fleet %h/.config/hermes-fleet
+
+[Install]
+WantedBy=default.target

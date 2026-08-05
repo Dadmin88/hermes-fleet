@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes Runs API for Fleet worker profile
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/hermes-fleet/hermes-api.env
+ExecStart=%h/.local/bin/hermes -p admin gateway run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

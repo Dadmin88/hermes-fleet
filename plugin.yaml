@@ -1,8 +1,15 @@
-manifest_version: 1
 name: hermes-fleet
 version: 0.1.0
-description: "Keryx-first local Fleet inventory, policy, envelope, and selection domain (no dispatch)"
-author: "Hermes Fleet contributors"
-kind: standalone
+description: "Keryx-backed Hermes node communication, coordination, and deliberate remote execution."
+author: Kyle French
+license: MIT
+platforms:
+  - linux
 provides_tools:
   - fleet_list_nodes
+  - fleet_get_node
+  - fleet_get_health
+  - fleet_send_message
+  - fleet_run
+  - fleet_get_task
+  - fleet_cancel_task

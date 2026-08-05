@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib.util
 import json
 import os
@@ -10,8 +11,6 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
-
-import pytest
 
 
 class PublicContext:
@@ -31,7 +30,6 @@ class PublicContext:
 def test_fleet_init_is_profile_scoped_and_idempotent_for_valid_empty_cache(
     tmp_path, monkeypatch
 ) -> None:
-    """The placeholder command initializes only its active profile state root."""
     from hermes_fleet import cli
 
     state_dir = tmp_path / "profile" / "fleet"
@@ -49,8 +47,7 @@ def test_fleet_init_is_profile_scoped_and_idempotent_for_valid_empty_cache(
     assert cache_path.stat().st_mtime_ns == expected_mtime
 
 
-def test_plugin_uses_public_registration_and_returns_stable_json_tool_result() -> None:
-    """Phase 1 exposes only ``fleet init`` and its non-networking list placeholder."""
+def test_plugin_registers_bounded_async_fleet_surfaces() -> None:
     root = Path(__file__).resolve().parents[1]
     module_name = "fleet_plugin"
     spec = importlib.util.spec_from_file_location(
@@ -71,46 +68,42 @@ def test_plugin_uses_public_registration_and_returns_stable_json_tool_result() -
                 sys.modules.pop(loaded_name, None)
 
     assert len(context.cli) == 1
-    assert len(context.tools) == 1
-    command = context.cli[0]
-    assert set(command) == {
-        "name",
-        "help",
-        "setup_fn",
-        "handler_fn",
-        "description",
+    assert {tool["name"] for tool in context.tools} == {
+        "fleet_list_nodes",
+        "fleet_get_node",
+        "fleet_get_health",
+        "fleet_send_message",
+        "fleet_run",
+        "fleet_get_task",
+        "fleet_cancel_task",
     }
+    assert all(tool["toolset"] == "fleet" for tool in context.tools)
+    assert all(tool["is_async"] is True for tool in context.tools)
+    assert all(callable(tool["handler"]) for tool in context.tools)
+    assert all(
+        set(tool["schema"]) == {"name", "description", "parameters"}
+        for tool in context.tools
+    )
+
+    command = context.cli[0]
     assert command["name"] == "fleet"
     assert callable(command["setup_fn"])
     assert callable(command["handler_fn"])
     parser = argparse.ArgumentParser()
     command["setup_fn"](parser)
     assert vars(parser.parse_args(["init"])) == {"fleet_command": "init"}
-    with pytest.raises(SystemExit):
-        parser.parse_args(["list"])
+    parsed = vars(parser.parse_args(["message", "vps", "hello", "--topic", "smoke"]))
+    assert parsed == {
+        "fleet_command": "message",
+        "name": "vps",
+        "text": "hello",
+        "topic": "smoke",
+        "correlation_id": "",
+        "deadline_seconds": 30,
+    }
 
-    tool = context.tools[0]
-    assert tool["name"] == "fleet_list_nodes"
-    assert tool["toolset"] == "fleet"
-    assert callable(tool["handler"])
-    assert set(tool["schema"]) == {"name", "description", "parameters"}
-    assert tool["schema"]["description"] == (
-        "Report that live Hermes Fleet inventory is unavailable in Phase 1."
-    )
-    assert tool["schema"]["parameters"] == {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": False,
-    }
-    handler = cast(Callable[[dict[str, Any]], str], tool["handler"])
-    assert json.loads(handler({})) == {
-        "success": False,
-        "data": None,
-        "errors": [
-            {
-                "code": "FEATURE_NOT_IMPLEMENTED",
-                "message": "Live Fleet inventory is not available in Phase 1.",
-            }
-        ],
-        "warnings": [],
-    }
+    task_tool = next(tool for tool in context.tools if tool["name"] == "fleet_get_task")
+    handler = cast(Callable[[dict[str, Any]], Any], task_tool["handler"])
+    result = json.loads(asyncio.run(handler({"task_id": "task-1"})))
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "FLEET_TASK_UNAVAILABLE"

@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes Keryx daemon for Fleet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/hermes-fleet/keryxd.env
+ExecStart=%h/.local/share/hermes-fleet/bin/keryxd
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/hermes-fleet %h/.config/hermes-fleet
+
+[Install]
+WantedBy=default.target

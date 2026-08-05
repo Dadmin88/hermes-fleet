@@ -32,6 +32,67 @@ def test_envelope_accepts_a_bounded_hermes_run_for_its_configured_peer() -> None
     assert envelope.input["export_paths"] == ("reports/out.txt",)
 
 
+def test_envelope_accepts_a_bounded_direct_node_message() -> None:
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    node = NodeConfig(name="vps", peer_id="peer-vps")
+    message = json.dumps(
+        {
+            "version": 1,
+            "operation": "fleet.message",
+            "target": {"name": "vps", "peer_id": "peer-vps"},
+            "input": {
+                "text": "Hello from Katana",
+                "topic": "smoke-test",
+                "correlation_id": "corr-1",
+            },
+            "limits": {"deadline_seconds": 30},
+        }
+    )
+
+    envelope = parse_envelope(message, target=node, defaults=FleetDefaults())
+
+    assert envelope.operation == "fleet.message"
+    assert envelope.input == {
+        "text": "Hello from Katana",
+        "topic": "smoke-test",
+        "correlation_id": "corr-1",
+    }
+
+
+@pytest.mark.parametrize(
+    "input_data",
+    (
+        {},
+        {"text": "x" * 4_097},
+        {"text": "ok", "topic": "x" * 65},
+        {"text": "ok", "correlation_id": "x" * 129},
+        {"text": "ok", "extra": "not allowed"},
+    ),
+)
+def test_envelope_rejects_invalid_direct_node_messages(input_data) -> None:
+    from hermes_fleet.envelope import parse_envelope
+    from hermes_fleet.models import FleetDefaults, NodeConfig
+
+    message = json.dumps(
+        {
+            "version": 1,
+            "operation": "fleet.message",
+            "target": {"name": "vps", "peer_id": "peer-vps"},
+            "input": input_data,
+            "limits": {"deadline_seconds": 30},
+        }
+    )
+
+    with pytest.raises(ValueError, match="message"):
+        parse_envelope(
+            message,
+            target=NodeConfig(name="vps", peer_id="peer-vps"),
+            defaults=FleetDefaults(),
+        )
+
+
 @pytest.mark.parametrize("input_kind", ("non-json", "cyclic", "hostile-nested-list"))
 def test_envelope_serialization_normalizes_encoder_errors(input_kind: str) -> None:
     """Direct construction cannot expose raw JSON encoder exceptions."""

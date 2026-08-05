@@ -1,22 +1,53 @@
 # Hermes Fleet
 
-Hermes Fleet is a **Keryx-first Phase 1** standalone Hermes plugin. It provides a local, transport-independent domain boundary for selecting named Keryx peers and validating the work intended for them.
+Hermes Fleet is a Keryx-backed communication and coordination layer for Hermes-capable nodes. It gives operators friendly node identity, bounded communication envelopes, exact-node selection, local policy, dispatch, and safe presentation while Keryx remains the authenticated transport and durable task/result ledger.
 
-## What Phase 1 provides
+Remote Hermes execution is one Fleet capability, not Fleet's entire communication model. Receiving a Fleet communication does not automatically start Hermes.
 
-- An operator-managed schema-v1 inventory at `HERMES_HOME/fleet/nodes.yaml`.
-- A friendly, normalized node name mapped to an immutable opaque Keryx `peer_id`; no URL, credential, or direct transport field is part of the inventory.
-- Per-peer default-deny operation policy and bounded deadline, payload, prompt, and export-path limits.
-- Strict JSON envelopes for `fleet.health`, `fleet.inventory`, and `fleet.hermes.run`.
-- Deterministic enabled-node selection by exact name or AND-matched tags, sorted by priority then name.
-- Owner-safe local initialization of `nodes.yaml` and recoverable `cache.json` with private state permissions.
-- A public `hermes fleet init` CLI command and an honest `fleet_list_nodes` placeholder. The tool retains the stable `{success,data,errors,warnings}` shape but returns `FEATURE_NOT_IMPLEMENTED` until a Keryx-backed controller provides live inventory.
+## Initial operations
+
+- `fleet.health` — direct adapter/Keryx/Hermes capability health; no model call.
+- `fleet.inventory` — direct safe node identity, version, and capability summary; no broad filesystem inventory.
+- `fleet.message` — direct bounded text communication with optional topic and correlation ID; returns a deterministic acknowledgment and does not call Hermes.
+- `fleet.hermes.run` — the only initial executable operation; starts one authenticated loopback Hermes run and returns terminal text through Keryx.
+
+All four operations use the same versioned Fleet envelope and the same Keryx submission/result primitives. `fleet-node` has one explicit dispatcher that validates sender, target, envelope, metadata, local policy, limits, and deadline before selecting a direct handler or the Hermes execution handler.
+
+## Responsibility boundary
+
+- **Fleet:** friendly node identity and operator metadata, selection, communication envelopes, local policy, dispatch, CLI/model tools, execution binding, and operator presentation.
+- **Keryx:** authenticated peer identity, registration/discovery, routing, delivery, durable task/result state, claims, leases, cancellation records, and offline mailbox behavior.
+- **fleet-node:** safe local handling of incoming Fleet operations.
+- **Hermes:** local agent execution.
+
+Fleet does not create a second transport, message lifecycle database, result poller, relay, workflow engine, or artifact channel. Its narrow SQLite execution binding stores only `Keryx task ID → Hermes run ID → terminal text` to prevent duplicate Hermes execution after reclaim; it is not a competing task ledger.
+
+Kanban is not a transport, queue, router, execution engine, or source of truth. A future dashboard may visualize Keryx-backed state but must not become another state machine.
+
+## Current implementation state
+
+The repository currently provides:
+
+- schema-v1 operator inventory at `HERMES_HOME/fleet/nodes.yaml`;
+- friendly names mapped to immutable Keryx `peer_id` values, with no URLs or credentials in inventory;
+- default-deny per-node operation policy and bounded deadlines/payloads;
+- strict envelopes for all four initial operations, including bounded `fleet.message` fields;
+- deterministic exact-name/tag selection;
+- a direct Keryx controller adapter that preserves the actual routed peer and delivery route;
+- one `fleet-node` dispatcher with direct health/inventory/message handlers;
+- authenticated loopback Hermes Runs start/poll/stop support;
+- durable fail-closed task-to-run binding and completed-result replay;
+- live Keryx inventory with distinct direct/registry/unknown states;
+- durable Keryx status reattachment by task ID;
+- seven async Hermes model tools, the bounded `hermes fleet` CLI tree, and an operator skill;
+- foreground `fleet-node` and systemd deployment units;
+- owner-safe local initialization and `hermes fleet init`.
+
+The real Katana↔VPS dual smoke test has not yet passed. Cross-node cancellation remains explicitly unavailable because the current Keryx control plane cannot prove that the destination worker stopped its bound Hermes run.
 
 ## Install as a Hermes plugin
 
-Hermes Fleet is released as a standalone Git directory plugin. Install and
-enable the repository through Hermes' public plugin manager, then initialize
-the active profile's Fleet state:
+Hermes Fleet is a standalone Git directory plugin. Git must already be authorized for the repository:
 
 ```bash
 hermes plugins install Dadmin88/hermes-fleet --enable
@@ -24,45 +55,28 @@ hermes fleet init
 hermes plugins list --plain --no-bundled
 ```
 
-The repository is private, so Git must already be authorized for
-`Dadmin88/hermes-fleet`. Restart a running gateway after installation or update:
+Restart a running gateway after installation or update:
 
 ```bash
 hermes gateway restart
 ```
 
-`init` creates missing state files without overwriting valid operator state.
-The Git checkout installed by `hermes plugins install` is the supported Hermes
-plugin artifact. The wheel built from `pyproject.toml` packages the
-`hermes_fleet` Python library for development and integration use; it is not the
-Hermes plugin installation path.
+`init` creates missing state files without overwriting valid operator state. The Git checkout installed by the plugin manager is the supported Hermes plugin artifact; the wheel is for development and integration use.
 
-## Deliberately out of scope
+## First functional release gate
 
-Phase 1 has **no network traffic, Keryx SDK integration, discovery, health probing, dispatch, secrets, history/task database, daemon, or dashboard**. `fleet_list_nodes` is intentionally a non-networking placeholder; it does not expose live inventory or dispatch work.
+The first release is functional only after both real two-machine slices pass:
 
-Earlier direct Hermes A2A concepts are superseded design evidence only. Production Phase 1 makes no direct-A2A or transport assumptions. A later phase must explicitly integrate Keryx and define dispatch behavior before remote work can occur.
+1. Katana selects the configured VPS and sends `fleet.message` through Keryx; the VPS handles it directly, makes no Runs API request, and returns an acknowledgment plus the actual Keryx route.
+2. Katana sends `fleet.hermes.run`; the VPS creates exactly one authenticated local Hermes run, returns `FLEET_OK` through Keryx, and a reclaim cannot create a duplicate run.
 
-## Artifact capability boundary
+Deployment and acceptance details:
 
-### Current verified Keryx behavior
+- [`docs/deployment.md`](docs/deployment.md)
+- [`docs/smoke-test.md`](docs/smoke-test.md)
 
-- Durable results can carry result metadata, artifact descriptors, and bounded text previews where supported.
-- Artifact bytes remain in destination-local Keryx artifact storage.
-- Fleet has no proven cross-node artifact-byte retrieval path.
-- The high-level Keryx Python API exposes no artifact download contract that Fleet can use.
+## Deferred backlog
 
-These facts do not block the first real Fleet proof: a text-only Hermes run from Katana to the VPS through Keryx.
+Explicitly deferred: pub/sub, broadcast, multi-node chat, persistent inboxes, agent-session routing, priorities, workflow graphs, Kanban integration, fan-out, artifacts, Android/Termux, public-internet exposure, and multi-tenant architecture.
 
-### Deferred artifact backlog
-
-The following are possible post-release Phase 2B work, not shipped Fleet capabilities or first-release requirements:
-
-- bounded authenticated artifact-byte transport;
-- aggregate cross-node artifact limits;
-- digest and size verification;
-- origin-side content-addressed ingestion;
-- replay-safe ingestion and delivery;
-- high-level Python retrieval and download helpers.
-
-Fleet will not add a parallel artifact channel while those Keryx capabilities are absent.
+Keryx can route result metadata, artifact descriptors, and bounded text previews, but artifact bytes remain destination-local and no proven high-level cross-node download contract exists. Fleet will not add a parallel artifact channel.

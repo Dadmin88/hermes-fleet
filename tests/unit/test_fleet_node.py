@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+
+def _payload(operation: str, input_data: dict[str, Any] | None = None) -> str:
+    if input_data is None:
+        if operation == "fleet.hermes.run":
+            input_data = {
+                "prompt": "Return a short text result.",
+                "export_paths": [],
+            }
+        elif operation == "fleet.message":
+            input_data = {
+                "text": "FLEET_MESSAGE_OK",
+                "topic": "smoke-test",
+                "correlation_id": "corr-1",
+            }
+        else:
+            input_data = {}
+    return json.dumps(
+        {
+            "version": 1,
+            "operation": operation,
+            "target": {"name": "vps", "peer_id": "peer-vps"},
+            "input": input_data,
+            "limits": {"deadline_seconds": 30},
+        }
+    )
+
+
+def _metadata(operation: str, **overrides: str) -> dict[str, str]:
+    return {
+        "fleet.envelope_version": "1",
+        "fleet.operation": operation,
+        "fleet.target_peer_id": "peer-vps",
+        "fleet_deadline_ms": "14000",
+        **overrides,
+    }
+
+
+@dataclass
+class _IncomingTask:
+    payload: str
+    operation: str
+    task_id: str = "task-1"
+    peer_id: str = "peer-katana"
+    metadata: dict[str, str] = field(default_factory=dict)
+    completed: list[Any] | None = None
+    failed: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.metadata:
+            self.metadata = _metadata(self.operation)
+
+    @property
+    def messages(self) -> list[Any]:
+        return [
+            SimpleNamespace(
+                parts=[
+                    SimpleNamespace(text=self.payload, raw=b"", media_type="text/plain")
+                ]
+            )
+        ]
+
+    async def complete(self, artifacts: list[Any]) -> None:
+        self.completed = artifacts
+
+    async def fail(self, error: str) -> None:
+        self.failed = error
+
+
+class _Hermes:
+    def __init__(self) -> None:
+        self.health_calls = 0
+        self.start_calls: list[tuple[str, str | None]] = []
+        self.wait_calls: list[tuple[str, float]] = []
+        self.stop_calls: list[str] = []
+
+    def health(self) -> dict[str, object]:
+        self.health_calls += 1
+        return {
+            "api": "healthy",
+            "run_submission": True,
+            "run_status": True,
+            "run_stop": True,
+        }
+
+    def start(self, *, prompt: str, session_id: str | None = None) -> str:
+        self.start_calls.append((prompt, session_id))
+        return "run-vps-1"
+
+    def wait(self, *, run_id: str, timeout_seconds: float):
+        from hermes_fleet.hermes_runs import HermesRunResult
+
+        self.wait_calls.append((run_id, timeout_seconds))
+        return HermesRunResult(run_id=run_id, text="terminal answer")
+
+    def stop(self, run_id: str) -> None:
+        self.stop_calls.append(run_id)
+
+
+def _worker(hermes: Any, state_path: Path):
+    from hermes_fleet.fleet_node import FleetNodeWorker
+    from hermes_fleet.models import FleetDefaults, NodeConfig, NodePolicy
+    from hermes_fleet.run_binding import RunBindingStore
+
+    target = NodeConfig(
+        name="vps",
+        peer_id="peer-vps",
+        policy=NodePolicy(
+            allowed_operations=(
+                "fleet.health",
+                "fleet.inventory",
+                "fleet.message",
+                "fleet.hermes.run",
+            )
+        ),
+    )
+    return FleetNodeWorker(
+        target=target,
+        defaults=FleetDefaults(),
+        hermes=hermes,
+        bindings=RunBindingStore(state_path),
+        controller_peer_ids=("peer-katana",),
+        now_ms=lambda: 10_000,
+    )
+
+
+def _completed_text(incoming: _IncomingTask) -> str:
+    assert incoming.completed is not None
+    return incoming.completed[0]["parts"][0]["text"]
+
+
+def test_fleet_node_binds_one_keryx_task_to_one_hermes_run(tmp_path) -> None:
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(_payload(operation), operation)
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == [("Return a short text result.", "fleet:vps:task-1")]
+    assert hermes.wait_calls == [("run-vps-1", 4.0)]
+    assert incoming.failed is None
+    assert _completed_text(incoming) == "terminal answer"
+    assert incoming.completed is not None
+    assert incoming.completed[0]["name"] == "hermes-result.txt"
+
+
+def test_fleet_node_replays_completed_binding_without_second_run(tmp_path) -> None:
+    operation = "fleet.hermes.run"
+    state_path = tmp_path / "bindings.db"
+    hermes = _Hermes()
+    worker = _worker(hermes, state_path)
+    first = _IncomingTask(_payload(operation), operation)
+    reclaimed = _IncomingTask(_payload(operation), operation)
+
+    asyncio.run(worker.handle_task(first))
+    asyncio.run(worker.handle_task(reclaimed))
+
+    assert len(hermes.start_calls) == 1
+    assert len(hermes.wait_calls) == 1
+    assert _completed_text(reclaimed) == "terminal answer"
+
+
+def test_fleet_node_resumes_known_run_without_second_start(tmp_path) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    operation = "fleet.hermes.run"
+    state_path = tmp_path / "bindings.db"
+    bindings = RunBindingStore(state_path)
+    bindings.reserve("task-1")
+    bindings.bind_run("task-1", "run-vps-1")
+    hermes = _Hermes()
+    incoming = _IncomingTask(_payload(operation), operation)
+
+    asyncio.run(_worker(hermes, state_path).handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert hermes.wait_calls == [("run-vps-1", 4.0)]
+    assert _completed_text(incoming) == "terminal answer"
+
+
+def test_fleet_node_fails_closed_on_uncertain_creating_binding(tmp_path) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    operation = "fleet.hermes.run"
+    state_path = tmp_path / "bindings.db"
+    RunBindingStore(state_path).reserve("task-1")
+    hermes = _Hermes()
+    incoming = _IncomingTask(_payload(operation), operation)
+
+    asyncio.run(_worker(hermes, state_path).handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert hermes.wait_calls == []
+    assert incoming.failed == "Fleet execution binding is indeterminate"
+    assert RunBindingStore(state_path).get("task-1").state == "indeterminate"
+
+
+def test_fleet_node_message_returns_safe_ack_without_calling_hermes(tmp_path) -> None:
+    operation = "fleet.message"
+    incoming = _IncomingTask(_payload(operation), operation)
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert hermes.wait_calls == []
+    assert hermes.health_calls == 0
+    assert incoming.failed is None
+    assert json.loads(_completed_text(incoming)) == {
+        "correlation_id": "corr-1",
+        "operation": "fleet.message",
+        "received_by": "peer-vps",
+        "sender_peer_id": "peer-katana",
+        "status": "received",
+        "topic": "smoke-test",
+    }
+
+
+def test_fleet_node_health_and_inventory_never_start_hermes(tmp_path) -> None:
+    hermes = _Hermes()
+    worker = _worker(hermes, tmp_path / "bindings.db")
+
+    health = _IncomingTask(_payload("fleet.health"), "fleet.health")
+    inventory = _IncomingTask(_payload("fleet.inventory"), "fleet.inventory")
+    asyncio.run(worker.handle_task(health))
+    asyncio.run(worker.handle_task(inventory))
+
+    assert hermes.start_calls == []
+    assert hermes.wait_calls == []
+    assert hermes.health_calls == 1
+    assert json.loads(_completed_text(health)) == {
+        "adapter": "ok",
+        "hermes": {
+            "api": "healthy",
+            "run_status": True,
+            "run_stop": True,
+            "run_submission": True,
+        },
+        "keryx_delivery": "received",
+        "operation": "fleet.health",
+        "status": "ok",
+    }
+    assert json.loads(_completed_text(inventory)) == {
+        "capabilities": [
+            "fleet.health",
+            "fleet.hermes.run",
+            "fleet.inventory",
+            "fleet.message",
+        ],
+        "name": "vps",
+        "operation": "fleet.inventory",
+        "peer_id": "peer-vps",
+        "version": "0.1.0",
+    }
+
+
+def test_fleet_node_rejects_untrusted_sender_without_calling_hermes(tmp_path) -> None:
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(
+        _payload(operation), operation, peer_id="peer-not-controller"
+    )
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet sender is not authorized"
+
+
+def test_fleet_node_rejects_keryx_metadata_mismatch_without_calling_hermes(
+    tmp_path,
+) -> None:
+    operation = "fleet.message"
+    incoming = _IncomingTask(
+        _payload(operation),
+        operation,
+        metadata=_metadata(operation, **{"fleet.operation": "fleet.hermes.run"}),
+    )
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet delivery metadata does not match envelope"
+
+
+def test_fleet_node_rejects_deferred_export_paths_without_calling_hermes(
+    tmp_path,
+) -> None:
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(
+        _payload(
+            operation,
+            {
+                "prompt": "Return a short text result.",
+                "export_paths": ["reports/out.txt"],
+            },
+        ),
+        operation,
+    )
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet artifact exports are not available"
+
+
+def test_fleet_node_rejects_expired_absolute_deadline_without_calling_hermes(
+    tmp_path,
+) -> None:
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(
+        _payload(operation),
+        operation,
+        metadata=_metadata(operation, fleet_deadline_ms="9999"),
+    )
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet task deadline has expired"
+
+
+def test_fleet_node_normalizes_invalid_remote_envelopes(tmp_path) -> None:
+    operation = "fleet.message"
+    incoming = _IncomingTask("not-json", operation)
+    hermes = _Hermes()
+
+    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+
+    assert hermes.start_calls == []
+    assert incoming.failed == "Fleet task envelope is invalid"
+
+
+def test_fleet_node_binds_one_dispatcher_to_a_keryx_compatible_node(tmp_path) -> None:
+    handlers: list[Any] = []
+    node = SimpleNamespace(on_task=handlers.append)
+    worker = _worker(_Hermes(), tmp_path / "bindings.db")
+
+    worker.bind(node)
+
+    assert handlers == [worker.handle_task]

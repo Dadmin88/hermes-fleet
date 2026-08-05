@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes Fleet node dispatcher
+After=network-online.target keryxd.service keryx-node.service hermes-fleet-api.service
+Wants=network-online.target keryxd.service keryx-node.service hermes-fleet-api.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/hermes-fleet/fleet-node.env
+ExecStart=%h/.local/share/hermes-fleet/venv/bin/fleet-node --config %h/.hermes/profiles/admin/fleet/nodes.yaml --binding-db %h/.local/state/hermes-fleet/run-bindings.sqlite3
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/hermes-fleet
+
+[Install]
+WantedBy=default.target
