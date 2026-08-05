@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -70,3 +72,67 @@ def test_load_cache_recovers_invalid_or_non_mapping_json(
     cache_path.write_text(cache_contents, encoding="utf-8")
 
     assert load_cache(cache_path) == {}
+
+
+def _untrusted_path(tmp_path, behavior: str) -> tuple[Any, Any]:
+    if behavior == "wrong-type":
+        return object(), None
+
+    class ProbePath(type(Path())):
+        touched = False
+
+        def __getattribute__(self, name: str):
+            if name in {"is_absolute", "parts", "parent", "name"}:
+                type(self).touched = True
+                if behavior == "hostile-subclass":
+                    raise RuntimeError("path hook ran")
+            return super().__getattribute__(name)
+
+    return ProbePath(tmp_path / "state.json"), ProbePath
+
+
+@pytest.mark.parametrize(
+    ("operation", "error_message"),
+    (
+        ("initialize", "state directory path must be a Path"),
+        ("write-json", "state file path must be a Path"),
+        ("write-yaml", "state file path must be a Path"),
+        ("load-cache", None),
+    ),
+)
+@pytest.mark.parametrize(
+    "behavior", ("wrong-type", "benign-subclass", "hostile-subclass")
+)
+def test_inventory_public_paths_reject_untrusted_runtime_types(
+    tmp_path, operation: str, error_message: str | None, behavior: str
+) -> None:
+    """State APIs reject path hooks while cache loading remains recoverable."""
+    from hermes_fleet import inventory
+
+    path, probe_type = _untrusted_path(tmp_path, behavior)
+
+    if operation == "load-cache":
+        assert inventory.load_cache(path) == {}
+    else:
+        with pytest.raises(ValueError) as error:
+            if operation == "initialize":
+                inventory.initialize_inventory_state(path)
+            elif operation == "write-json":
+                inventory.write_json_atomic(path, {"safe": True})
+            else:
+                inventory.write_yaml_atomic(path, {"safe": True})
+        assert type(error.value) is ValueError
+        assert str(error.value) == error_message
+
+    if probe_type is not None:
+        assert probe_type.touched is False
+
+
+def test_atomic_json_write_accepts_concrete_path(tmp_path) -> None:
+    """The exact platform Path remains valid after the public type gate."""
+    from hermes_fleet.inventory import load_cache, write_json_atomic
+
+    target = tmp_path / "cache.json"
+    write_json_atomic(target, {"safe": True})
+
+    assert load_cache(target) == {"safe": True}

@@ -10,9 +10,8 @@ from typing import Any
 import yaml
 from yaml.resolver import BaseResolver
 
+from ._paths import is_concrete_path
 from .models import FleetDefaults, NodeConfig, NodePolicy
-
-_CONCRETE_PATH_TYPE = type(Path())
 
 
 class FleetConfigError(ValueError):
@@ -55,7 +54,7 @@ class FleetConfig:
 
 def _require_absolute_state_root(path: Path) -> Path:
     """Reject ambiguous roots before callers derive local Fleet state paths."""
-    if type(path) is not _CONCRETE_PATH_TYPE:
+    if not is_concrete_path(path):
         raise FleetConfigError("state root must be a Path")
     if not path.is_absolute():
         raise FleetConfigError("state root must be absolute")
@@ -119,7 +118,7 @@ def _node(value: Any) -> NodeConfig:
 
 def load_fleet_config(path: Path) -> FleetConfig:
     """Load strict schema-v1 inventory; no URL, secret, or transport fields exist."""
-    if type(path) is not _CONCRETE_PATH_TYPE:
+    if not is_concrete_path(path):
         raise FleetConfigError("configuration path must be a Path")
     try:
         raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)

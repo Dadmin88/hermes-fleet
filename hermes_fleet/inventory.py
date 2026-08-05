@@ -11,6 +11,8 @@ from typing import Any
 
 import yaml
 
+from ._paths import is_concrete_path
+
 _INITIAL_INVENTORY = {"schema_version": 1, "defaults": {}, "nodes": []}
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
@@ -35,6 +37,8 @@ def _tighten_owner_directory(descriptor: int) -> None:
 
 def _require_absolute_state_path(path: Path) -> Path:
     """Reject ambiguous state paths before any directory descriptor is opened."""
+    if not is_concrete_path(path):
+        raise ValueError("state directory path must be a Path")
     if not path.is_absolute():
         raise ValueError("state directory path must be absolute")
     if ".." in path.parts:
@@ -225,11 +229,15 @@ def _atomic_write(path: Path, content: str) -> None:
 
 def write_json_atomic(path: Path, value: Any) -> None:
     """Replace recoverable cache JSON only after full serialization."""
+    if not is_concrete_path(path):
+        raise ValueError("state file path must be a Path")
     _atomic_write(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 def write_yaml_atomic(path: Path, value: Any) -> None:
     """Replace operator inventory YAML atomically and owner-safely."""
+    if not is_concrete_path(path):
+        raise ValueError("state file path must be a Path")
     _atomic_write(path, yaml.safe_dump(value, sort_keys=False))
 
 
@@ -257,6 +265,8 @@ def _valid_cache_at(directory_descriptor: int, name: str) -> bool:
 
 def load_cache(path: Path) -> dict[str, Any]:
     """Read cache data or return a recoverable empty mapping for malformed input."""
+    if not is_concrete_path(path):
+        return {}
     try:
         directory_descriptor = _open_owner_directory(path.parent)
     except ValueError:
