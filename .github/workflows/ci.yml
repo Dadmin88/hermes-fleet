@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-fleet-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  quality:
+    name: Quality (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Fleet development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" build
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Run tests without the Hermes integration smoke
+        run: python -m pytest -q --ignore=tests/test_plugin_installation.py
+
+      - name: Lint
+        run: ruff check hermes_fleet tests
+
+      - name: Check formatting
+        run: ruff format --check hermes_fleet tests
+
+      - name: Build Python package
+        run: python -m build
+
+      - name: Upload built package
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-fleet-dist-python-${{ matrix.python-version }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  plugin-smoke:
+    name: Hermes plugin clean-install smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: quality
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install verified Hermes and Fleet test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "git+https://github.com/NousResearch/hermes-agent.git@a991dfc25daf68994c21d6adcdfbafb1b3dc23cf"
+          python -m pip install -e ".[dev]" build
+
+      - name: Verify Hermes CLI
+        run: hermes --help >/dev/null
+
+      - name: Run complete Fleet test suite
+        run: python -m pytest -q
