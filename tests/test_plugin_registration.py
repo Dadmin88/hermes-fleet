@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -51,13 +52,23 @@ def test_fleet_init_is_profile_scoped_and_idempotent_for_valid_empty_cache(
 def test_plugin_uses_public_registration_and_returns_stable_json_tool_result() -> None:
     """Phase 1 exposes only ``fleet init`` and its non-networking list placeholder."""
     root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location("fleet_plugin", root / "__init__.py")
+    module_name = "fleet_plugin"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        root / "__init__.py",
+        submodule_search_locations=[str(root)],
+    )
     assert spec and spec.loader
     plugin = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(plugin)
-    context = PublicContext()
-
-    plugin.register(context)
+    sys.modules[module_name] = plugin
+    try:
+        spec.loader.exec_module(plugin)
+        context = PublicContext()
+        plugin.register(context)
+    finally:
+        for loaded_name in tuple(sys.modules):
+            if loaded_name == module_name or loaded_name.startswith(f"{module_name}."):
+                sys.modules.pop(loaded_name, None)
 
     assert len(context.cli) == 1
     assert len(context.tools) == 1

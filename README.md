@@ -12,13 +12,30 @@ Hermes Fleet is a **Keryx-first Phase 1** standalone Hermes plugin. It provides 
 - Owner-safe local initialization of `nodes.yaml` and recoverable `cache.json` with private state permissions.
 - A public `hermes fleet init` CLI command and `fleet_list_nodes` tool placeholder. Tool results retain the stable `{success,data,errors,warnings}` shape.
 
-Enable this standalone plugin through Hermes' normal `plugins.enabled` configuration, then initialize the active profile's state:
+## Install as a Hermes plugin
+
+Hermes Fleet is released as a standalone Git directory plugin. Install and
+enable the repository through Hermes' public plugin manager, then initialize
+the active profile's Fleet state:
 
 ```bash
+hermes plugins install Dadmin88/hermes-fleet --enable
 hermes fleet init
+hermes plugins list --plain --no-bundled
 ```
 
-`init` creates missing state files without overwriting valid operator state. The source repository root is the standalone Hermes plugin; the built wheel contains the `hermes_fleet` Python domain package, not a separately proven plugin-root installation format.
+The repository is private, so Git must already be authorized for
+`Dadmin88/hermes-fleet`. Restart a running gateway after installation or update:
+
+```bash
+hermes gateway restart
+```
+
+`init` creates missing state files without overwriting valid operator state.
+The Git checkout installed by `hermes plugins install` is the supported Hermes
+plugin artifact. The wheel built from `pyproject.toml` packages the
+`hermes_fleet` Python library for development and integration use; it is not the
+Hermes plugin installation path.
 
 ## Deliberately out of scope
 
