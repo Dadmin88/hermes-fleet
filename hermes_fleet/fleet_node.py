@@ -22,7 +22,7 @@ _EXECUTABLE_OPERATION = "fleet.hermes.run"
 
 
 class _HermesRunner(Protocol):
-    def health(self) -> dict[str, object]: ...
+    def health(self, *, timeout_seconds: float | None = None) -> dict[str, object]: ...
 
     def start(
         self,
@@ -190,7 +190,17 @@ class FleetNodeWorker:
         if direct_handler is not None:
             hermes_health = None
             if envelope.operation == "fleet.health":
-                hermes_health = await asyncio.to_thread(self._hermes.health)
+                try:
+                    hermes_health = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._hermes.health,
+                            timeout_seconds=timeout_seconds,
+                        ),
+                        timeout=timeout_seconds,
+                    )
+                except (TimeoutError, HermesRunError, ValueError):
+                    await _fail(incoming, "Fleet task deadline has expired")
+                    return
             response = direct_handler(
                 self._target,
                 envelope,

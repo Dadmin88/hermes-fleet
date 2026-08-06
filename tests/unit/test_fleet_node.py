@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,13 +81,15 @@ class _IncomingTask:
 class _Hermes:
     def __init__(self) -> None:
         self.health_calls = 0
+        self.health_timeouts: list[float | None] = []
         self.start_calls: list[tuple[str, str | None]] = []
         self.start_timeouts: list[float | None] = []
         self.wait_calls: list[tuple[str, float]] = []
         self.stop_calls: list[str] = []
 
-    def health(self) -> dict[str, object]:
+    def health(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
         self.health_calls += 1
+        self.health_timeouts.append(timeout_seconds)
         return {
             "api": "healthy",
             "run_submission": True,
@@ -278,6 +281,40 @@ def test_fleet_node_health_and_inventory_never_start_hermes(tmp_path) -> None:
         "operation": "fleet.inventory",
         "status": "ok",
     }
+
+
+def test_fleet_node_health_fails_within_remaining_absolute_deadline(tmp_path) -> None:
+    class SlowHermes(_Hermes):
+        def health(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
+            self.health_calls += 1
+            self.health_timeouts.append(timeout_seconds)
+            time.sleep(0.3)
+            return {
+                "api": "healthy",
+                "run_submission": True,
+                "run_status": True,
+                "run_stop": True,
+            }
+
+    operation = "fleet.health"
+    incoming = _IncomingTask(
+        _payload(operation),
+        operation,
+        metadata=_metadata(operation, fleet_deadline_ms="10020"),
+    )
+    hermes = SlowHermes()
+
+    async def exercise() -> float:
+        started = time.monotonic()
+        await _worker(hermes, tmp_path / "bindings.db").handle_task(incoming)
+        return time.monotonic() - started
+
+    elapsed = asyncio.run(exercise())
+
+    assert elapsed < 0.15
+    assert incoming.completed is None
+    assert incoming.failed == "Fleet task deadline has expired"
+    assert hermes.health_timeouts == [pytest.approx(0.02)]
 
 
 def test_fleet_node_inventory_reports_only_advertised_operations(tmp_path) -> None:

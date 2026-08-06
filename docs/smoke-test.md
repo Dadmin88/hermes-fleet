@@ -31,6 +31,7 @@ Required result evidence:
 - `success` is true;
 - operation is `fleet.message`;
 - status is `received`;
+- `untrusted` is true because the acknowledgment originated on a peer;
 - `received_by` is the real VPS Keryx peer ID;
 - `sender_peer_id` is the real Katana Keryx peer ID;
 - returned `task_id`, `routed_to`, and `delivery_route` are nonempty Keryx values;

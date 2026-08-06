@@ -133,6 +133,45 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
 
 
+def test_hermes_runs_client_health_shares_one_absolute_request_budget(
+    monkeypatch,
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    client = HermesRunsClient(
+        endpoint="http://127.0.0.1:8642",
+        api_key="secret-token-for-test",
+    )
+    request_timeouts: list[float | None] = []
+    monotonic_values = iter((10.0, 10.0, 10.25))
+
+    monkeypatch.setattr(
+        "hermes_fleet.hermes_runs.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    def request_json(method, path, document=None, *, timeout_seconds=None):
+        del method, document
+        request_timeouts.append(timeout_seconds)
+        if path == "/health":
+            return 200, {"status": "ok"}
+        return 200, {
+            "object": "hermes.api_server.capabilities",
+            "features": {
+                "run_submission": True,
+                "run_status": True,
+                "run_stop": True,
+            },
+        }
+
+    monkeypatch.setattr(client, "_request_json", request_json)
+
+    health = client.health(timeout_seconds=0.5)
+
+    assert health["api"] == "healthy"
+    assert request_timeouts == [pytest.approx(0.5), pytest.approx(0.25)]
+
+
 def test_hermes_runs_client_expired_submission_budget_sends_no_post() -> None:
     from hermes_fleet.hermes_runs import (
         HermesRunsClient,

@@ -80,7 +80,7 @@ class HermesRunsClient:
             raise HermesRunError("Hermes run exceeded Fleet deadline")
         return self.wait(run_id=run_id, timeout_seconds=remaining)
 
-    def health(self) -> dict[str, object]:
+    def health(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
         """Return bounded public Runs capability health without creating a run."""
         unavailable = {
             "api": "unavailable",
@@ -88,10 +88,30 @@ class HermesRunsClient:
             "run_status": False,
             "run_stop": False,
         }
+        deadline = None
+        if timeout_seconds is not None:
+            if (
+                isinstance(timeout_seconds, bool)
+                or not isinstance(timeout_seconds, int | float)
+                or timeout_seconds <= 0
+            ):
+                return unavailable
+            deadline = time.monotonic() + float(timeout_seconds)
+
+        def remaining() -> float | None:
+            if deadline is None:
+                return None
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise HermesRunError("Hermes health deadline has expired")
+            return value
+
         try:
-            health_status, _health = self._request_json("GET", "/health")
+            health_status, _health = self._request_json(
+                "GET", "/health", timeout_seconds=remaining()
+            )
             capability_status, capabilities = self._request_json(
-                "GET", "/v1/capabilities"
+                "GET", "/v1/capabilities", timeout_seconds=remaining()
             )
         except HermesRunError:
             return unavailable

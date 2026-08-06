@@ -149,7 +149,7 @@ A successful communication result includes:
 - `routed_to`: Keryx-reported destination peer;
 - `delivery_route`: Keryx-reported route;
 - `response`: direct JSON response or terminal Hermes text;
-- `untrusted`: true for remote Hermes/model output.
+- `untrusted`: true for all peer-originated direct responses and remote Hermes/model output.
 
 Do not infer a route from configuration. Use only `routed_to` and `delivery_route` returned by Keryx.
 

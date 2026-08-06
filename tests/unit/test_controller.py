@@ -213,6 +213,7 @@ def test_high_level_controller_returns_message_ack_and_actual_route() -> None:
     assert result.task_id == "task-keryx-1"
     assert result.routed_to == "peer-vps"
     assert result.delivery_route == "relay"
+    assert result.untrusted is True
     assert result.response == {
         "operation": "fleet.message",
         "received_by": "peer-vps",
@@ -246,3 +247,4 @@ def test_high_level_controller_accepts_worker_inventory_response() -> None:
 
     assert result.response == expected
     assert result.routed_to == "peer-vps"
+    assert result.untrusted is True

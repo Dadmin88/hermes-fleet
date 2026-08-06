@@ -129,10 +129,8 @@ class FleetController:
         )
         if operation == "fleet.hermes.run":
             response: dict[str, Any] | str = output.text
-            untrusted = True
         else:
             response = _direct_response(output.text, operation)
-            untrusted = False
         return FleetOperationResult(
             operation=operation,
             target=submission.target.name,
@@ -140,7 +138,7 @@ class FleetController:
             routed_to=submission.routed_to,
             delivery_route=submission.delivery_route,
             response=response,
-            untrusted=untrusted,
+            untrusted=True,
         )
 
 
