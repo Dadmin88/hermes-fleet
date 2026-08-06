@@ -1,143 +1,226 @@
-# Fleet Deployment
+# Hermes Fleet Deployment Guide
 
-This document describes the accepted v0.1 deployment with Katana as controller and the VPS as worker and relay host.
+This guide describes a generic private-network deployment with one controller node and one worker node. It intentionally uses placeholders and does not include real hostnames, peer IDs, credentials, addresses, task IDs, or operational evidence.
 
-## Accepted revisions
+Hermes Fleet is experimental. Deploy it only on machines and networks you control.
 
-- Fleet runtime acceptance SHA: `29876e9b2afa0de8b9f2bce4e1edb5671f412438`
-- Fleet CI: run `31062104463`, passed
-- Keryx deployed SHA: `f4ee645e415600a959ea8062d1143140bd6c2616`
-- Keryx integration PR: [Dadmin88/hermes-keryx#36](https://github.com/Dadmin88/hermes-keryx/pull/36)
-- Hermes compatibility SHA used by Fleet CI: `a991dfc25daf68994c21d6adcdfbafb1b3dc23cf`
-
-Documentation-only commits may advance Fleet `main` beyond the runtime acceptance SHA without changing deployed Python behavior.
-
-## Topology
+## Reference topology
 
 ```text
-Katana Hermes profile: katana
-  -> Fleet CLI/model tools
+controller-node
+  -> Hermes Fleet CLI or model tools
   -> local keryxd on loopback
-  -> Katana keryx-node
-  -> Keryx relay on the VPS over Tailscale
-  -> VPS keryx-node
-  -> VPS local keryxd on loopback
+  -> Keryx edge node
+  -> private network or authenticated Keryx relay
+  -> worker Keryx edge node
+  -> worker keryxd on loopback
   -> fleet-node dispatcher
-  -> VPS Hermes admin profile Runs API on loopback HTTP
+  -> local Hermes Runs API on loopback
 ```
 
-Katana's local `vps` Hermes profile is a client-side route to the VPS gateway. The VPS worker uses the `admin` profile. `hermes-fleet-api.service` therefore starts the Hermes gateway with `-p admin`, and Fleet worker state belongs to the VPS `admin` profile.
+The controller may use Fleet without a long-running Fleet controller service. The worker requires a supervised `fleet-node` process. Remote Hermes execution additionally requires a local Hermes gateway exposing the authenticated Runs API.
 
-## Current service state
+## Prerequisites
 
-### Katana - active and enabled
+On each participating machine:
 
-- `keryxd.service`
-- `keryx-node.service`
+- Linux with Python 3.11 or newer;
+- a compatible Hermes Agent installation;
+- a compatible Keryx daemon and SDK;
+- Git access to the Fleet repository;
+- systemd user services or another process supervisor;
+- private network reachability between required Keryx endpoints;
+- synchronized system clocks;
+- owner-protected locations for keys, tokens, TLS material, and API credentials.
 
-### Katana - disabled and inactive
+Freeze compatible Fleet, Keryx, and Hermes revisions before deploying. Do not assume arbitrary versions are interoperable.
 
-- `keryx-task-bridge.service`
-- `keryx-node-refresh.service`
+## Security boundary
 
-The historical task bridge read Keryx SQLite directly and fabricated terminal completions. It must remain disabled and must never be used as a fallback.
+Recommended exposure:
 
-### VPS - active and enabled
+| Component | Bind or exposure |
+| --- | --- |
+| Local Keryx daemon | Loopback only |
+| Local Hermes Runs API | Loopback only |
+| Fleet node dispatcher | Consumes through local Keryx; no public HTTP listener required |
+| Keryx relay and registry | TLS over a private network |
+| Keryx peer transport | Private-network address or explicitly secured relay path |
 
-- `keryx-relay.service`
-- `keryxd.service`
-- `keryx-node.service`
-- `hermes-fleet-api.service`
-- `fleet-node.service`
+Never commit:
 
-The accepted rollout reported zero service restart loops after activation.
-
-## Trust and network boundaries
-
-- Keryx owns peer identity, relay transport, registry ownership, durable task/result state, route receipts, and mailbox behavior.
-- Fleet owns friendly node names, bounded envelopes, exact-node selection, direct-vs-executable dispatch, policy, task-to-Hermes-run binding, and presentation.
-- Hermes `admin` owns local model execution.
-- Registry and relay-control gRPC use TLS when bound to the VPS Tailscale address.
-- Node keys, node tokens, TLS private keys, and the Hermes API key never belong in Git.
-- The Hermes Runs API binds only to `127.0.0.1:8642`.
-- Keryx daemons bind only to loopback gRPC.
-- The relay libp2p listener binds only to the VPS Tailscale address.
-- `fleet-node` is the sole Fleet skill-registration owner. The Rust edge service remains delivery-only.
-- `fleet.hermes.run` is advertised only when the local Runs capability probe confirms authenticated submission, status, and stop support.
-- Peer-originated direct responses and model text remain untrusted even when Keryx authenticated the sender.
+- Keryx node keys;
+- node tokens;
+- Headscale or Tailscale credentials;
+- TLS private keys;
+- Hermes API keys;
+- model-provider credentials;
+- real peer IDs or private topology evidence in reusable documentation.
 
 ## Runtime layout
 
-Both hosts use:
+The reference units assume a user-level installation using locations similar to:
 
 ```text
-~/.local/share/hermes-fleet/bin/        Keryx release binaries
-~/.local/share/hermes-fleet/venv/       Fleet worker/runtime Python environment where required
-~/.local/state/hermes-fleet/            Keryx and Fleet durable state
-~/.config/hermes-fleet/                 non-Git configuration and secret environment files
-~/.config/systemd/user/                  installed user units
+~/.local/share/hermes-fleet/bin/       Keryx release binaries
+~/.local/share/hermes-fleet/venv/      Fleet runtime virtual environment
+~/.local/state/hermes-fleet/           Keryx and Fleet durable state
+~/.config/hermes-fleet/                configuration and secret environment files
+~/.config/systemd/user/                installed user units
 ```
 
-VPS-specific paths:
+Fleet inventory belongs under the active Hermes home:
 
 ```text
-~/.hermes/profiles/admin/fleet/nodes.yaml
-~/.config/hermes-fleet/relay.toml
-~/.config/hermes-fleet/allowlist.toml
-~/.config/hermes-fleet/node-tokens.toml
-~/.config/hermes-fleet/tls/
+$HERMES_HOME/fleet/nodes.yaml
 ```
 
-Katana-specific paths:
+When Hermes profiles use separate homes, each profile receives its own Fleet state and inventory.
+
+## Install the Fleet plugin
+
+On a controller or any Hermes environment that should expose Fleet CLI/model tools:
+
+```bash
+hermes plugins install Dadmin88/hermes-fleet --enable
+hermes fleet init
+```
+
+Restart an existing gateway after installing or updating the plugin:
+
+```bash
+hermes gateway restart
+```
+
+## Configure Fleet inventory
+
+Edit the active `nodes.yaml` with generic friendly names and immutable Keryx peer IDs:
+
+```yaml
+schema_version: 1
+
+defaults:
+  max_deadline_seconds: 300
+  max_payload_bytes: 65536
+  max_prompt_chars: 16000
+  max_export_paths: 8
+
+nodes:
+  - name: worker-1
+    peer_id: "<worker-keryx-peer-id>"
+    tags: [worker]
+    enabled: true
+    priority: 0
+    policy:
+      allowed_operations:
+        - fleet.health
+        - fleet.inventory
+        - fleet.message
+      max_deadline_seconds: 120
+      max_payload_bytes: 65536
+      max_prompt_chars: 16000
+      max_export_paths: 0
+```
+
+Enable `fleet.hermes.run` only after the worker's local Hermes Runs API, sender authorization, deadlines, and execution-binding path have been validated.
+
+## Configure Keryx
+
+Keryx configuration is outside Fleet's repository and must follow the Keryx version being deployed.
+
+Typical local variables include:
 
 ```text
-~/.hermes/profiles/katana/fleet/nodes.yaml
-~/.hermes/profiles/katana/plugins/hermes-fleet/
+HERMES_KERYX_DAEMON_ADDR=127.0.0.1:50051
+HERMES_KERYX_DATA_DIR=<owner-protected-state-directory>
+HERMES_KERYX_DAEMON_PEER_ID=<local-peer-id>
 ```
 
-## Runtime compatibility contracts
+The Rust edge service and Python SDK may require differently formatted daemon endpoint variables. Keep component-specific environment files separate and follow the exact documentation for the pinned Keryx release.
 
-- `keryxd` uses `HERMES_KERYX_DAEMON_ADDR=127.0.0.1:50051`, `HERMES_KERYX_DATA_DIR=<directory>`, and `HERMES_KERYX_DAEMON_PEER_ID=<peer-id>`.
-- Rust `keryx-node` uses `HERMES_KERYX_DAEMON_ENDPOINT=http://127.0.0.1:50051`; Python Keryx uses `HERMES_KERYX_DAEMON_ENDPOINT=127.0.0.1:50051` without a URI scheme. Keep them in separate environment files.
-- Rust edge identity/bootstrap variables include `HERMES_KERYX_NODE_KEYPAIR_PATH`, `HERMES_KERYX_NODE_BOOTSTRAP_PEERS`, and `HERMES_KERYX_REGISTRY_CA_CERT`.
-- Exact-peer Fleet submissions include canonical Keryx metadata `skill=<Fleet operation>` so the destination worker's accepted-skill filter can claim them.
-- Relay-control and registry gRPC use the Tailscale-managed certificate for `hermes.tail6c8d50.ts.net`. Python gRPC receives the public full chain through `HERMES_KERYX_REGISTRY_CA_CERT`; the relay private key remains on the VPS.
-- Fleet inventory files use `schema_version: 1`, `max_deadline_seconds`, `max_payload_bytes`, `max_prompt_chars`, and `max_export_paths`.
+Configure relay, registry, allowlist, node-token, and TLS files with mode `0600` where applicable. Do not print their contents during installation or diagnostics.
 
-## Reinstall or redeploy sequence
+## Configure the worker
 
-1. Freeze exact Fleet and Keryx source SHAs.
-2. Confirm the Keryx revision contains the public SDK surfaces required by Fleet.
-3. Build Keryx release binaries and install the same accepted revision on both hosts.
-4. Install Fleet into the worker runtime and install/enable the Fleet Hermes plugin on Katana.
-5. Preserve valid persistent node and relay identities. Generate replacement credentials only when necessary and never print them.
-6. Write security-enabled relay configuration, allowlist, node-token file, and per-host environment files with mode `0600`.
-7. Write exact `nodes.yaml` files for the Katana `katana` and VPS `admin` profile homes.
-8. Install units from `ops/systemd/`, run `systemd-analyze verify`, and reload the user manager.
-9. Confirm the historical bridge and refresh-loop units are disabled before Fleet traffic.
-10. Start and verify one layer at a time: VPS relay, both daemons, both edge nodes, VPS Hermes `admin` API, then VPS `fleet-node`.
-11. Verify peer identity, registry ownership, service health, and log cleanliness.
-12. Run the procedures in `docs/smoke-test.md`.
-13. Restart the Katana Hermes gateway at a safe time after a plugin update so the running gateway loads the seven Fleet model tools.
+The worker needs:
 
-## Operational notes
+1. A local Keryx daemon.
+2. A Keryx edge node connected to the selected relay or peer topology.
+3. A local Hermes gateway when executable Fleet operations are enabled.
+4. A `fleet-node` process using the worker's Fleet config and execution-binding database.
 
-- CLI operations are available without a dedicated long-running Fleet controller daemon.
-- A Hermes gateway process that was already running before Fleet installation or update must be restarted before model tools appear in that process.
-- The deployed Tailscale TLS certificate expires on `2026-09-17`. Renew it before that date and restart `keryx-relay.service` after installing the renewed certificate.
-- Periodic relay AutoNAT `NoServer` probe notices are nonblocking in the accepted private relay topology. Authenticated relay routing was proven live.
-- Cross-node cancellation remains unavailable. Fleet returns an explicit error rather than claiming the remote Hermes run stopped.
-- `node_service.py` may call `node.stop()` twice during normal shutdown. This is nonblocking cleanup outside the accepted request paths.
+Reference units are provided in `ops/systemd/`. They are templates, not universal drop-in configuration. Review profile names, paths, environment files, service dependencies, and hardening directives before installing them.
 
-## Rollback snapshots
+Example installation:
 
-- Katana: `/home/kyle/.local/state/hermes-fleet/backups/20260806T000339Z-pre-deploy`
-- VPS: `/home/dadmin/.local/state/hermes-fleet/backups/20260806T000341Z-pre-deploy`
+```bash
+mkdir -p ~/.config/systemd/user
+cp ops/systemd/*.service ~/.config/systemd/user/
+systemd-analyze --user verify ~/.config/systemd/user/*.service
+systemctl --user daemon-reload
+```
+
+Start one layer at a time and inspect each layer before continuing:
+
+```text
+relay or private peer path
+→ local Keryx daemons
+→ Keryx edge nodes
+→ local Hermes Runs API
+→ fleet-node
+```
+
+## Worker authorization
+
+The current release uses configured Keryx controller membership plus local node operation policy. Keep the worker default-deny and admit only known controller peer IDs.
+
+Granular destination-owned per-sender grants are under development. Until they are available, avoid sharing one worker with mutually untrusted controllers.
+
+## Deployment verification
+
+Before sending executable work, verify:
+
+- exact Fleet, Keryx, and Hermes versions;
+- private-network and TLS health;
+- local daemon readiness;
+- worker registration for the expected Fleet operations;
+- authenticated sender identity at the worker;
+- local Hermes health and capabilities;
+- disabled legacy bridges or fallback services;
+- writable owner-only execution-binding state;
+- clean service logs without restart loops.
+
+Then follow [Two-node smoke test](smoke-test.md).
+
+## Upgrade procedure
+
+1. Record deployed revisions and service states.
+2. Back up configuration, state, units, and credentials without printing secrets.
+3. Review release notes and compatibility requirements.
+4. Upgrade one component and one machine at a time.
+5. Restart only affected services.
+6. Re-run direct-operation smoke tests before executable tests.
+7. Confirm the running Hermes gateway loaded updated Fleet tools.
+8. Preserve the previous binaries and units until acceptance completes.
+
+Do not automatically retry ambiguous executable submissions during an upgrade test.
 
 ## Rollback
 
-A rollback stops and disables only the Fleet/Keryx units introduced or replaced by this deployment, restores prior unit files from the timestamped backups, and leaves new state/config in place for inspection.
+A safe rollback should:
 
-Do not re-enable `keryx-task-bridge.service`. It fabricates terminal results and is not a safe fallback.
+1. Stop only services changed by the deployment.
+2. Restore the previous reviewed binaries, environment files, and units.
+3. Preserve Keryx databases, Fleet execution bindings, identities, logs, and evidence for investigation.
+4. Re-run direct health and inventory checks.
+5. Re-enable execution only after duplicate-prevention behavior is confirmed.
 
-Do not delete Keryx databases, Fleet binding state, identities, keys, TLS material, or logs while investigating a rollback. Preserve them until correlated task, route, run, and result evidence has been reviewed.
+Never use a bridge that reads Keryx storage directly or fabricates terminal results as a rollback path.
+
+## Operational notes
+
+- CLI operations do not require a permanent Fleet controller daemon.
+- A gateway already running before a plugin update must be restarted to load updated tools.
+- Cross-node cancellation is not currently supported and fails closed.
+- Peer-produced responses and model output remain untrusted even when the sender was authenticated.
+- Store deployment-specific evidence outside the repository in an owner-protected location.
