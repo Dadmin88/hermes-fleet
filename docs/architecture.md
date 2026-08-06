@@ -1,97 +1,128 @@
 # Hermes Fleet Architecture
 
-## Decision
+## Overview
 
-Hermes Fleet v0.1 is a node communication and coordination layer built on [Hermes Keryx](https://github.com/Dadmin88/hermes-keryx). Keryx is the authenticated transport and durable task/result data plane. Direct Hermes A2A is not a v0.1 transport or fallback.
+Hermes Fleet is a communication and management layer for Hermes-capable nodes. It uses Hermes Keryx as the authenticated transport and durable task/result data plane, while Fleet adds operator-friendly node identity, explicit operations, local authorization policy, request validation, dispatch, and safe presentation.
 
-The responsibility boundary is:
+Fleet deliberately distinguishes ordinary communication from AI execution. Health checks, inventory requests, and messages use direct handlers. Only `fleet.hermes.run` may create a Hermes run.
 
-1. **Hermes** owns local agent execution, models, tools, skills, files, credentials, permissions, memory, and sessions.
-2. **Keryx** owns peer identity, registration/discovery, relay transport, routing, durable task/result storage, claims, leases, heartbeats, terminal states, result routing, cancellation records, and offline mailbox delivery.
-3. **Fleet** owns friendly node names, operator metadata, exact-node selection, communication envelopes, node policy, dispatch, CLI/model tools, execution binding, and operational presentation.
-4. **Tailscale/private networking** is the deployment boundary around relay, registry, daemons, and local Hermes API servers.
+## Responsibility boundary
 
-Fleet does not implement another relay, transport protocol, task lifecycle database, result poller, offline queue, WebSocket controller, SSH executor, scheduler, workflow engine, or artifact channel. Kanban is not a transport, queue, router, execution engine, or source of truth.
+### Hermes Agent
 
-## Accepted release baseline
+Hermes owns local execution concerns:
 
-The first Katana-to-VPS release was accepted on 2026-08-05 against:
+- models and providers;
+- tools and skills;
+- sessions and memory;
+- files and workspaces;
+- credentials and approvals;
+- local agent runs.
 
-- Fleet runtime code: `29876e9b2afa0de8b9f2bce4e1edb5671f412438`
-- Keryx integration code: `f4ee645e415600a959ea8062d1143140bd6c2616`
-- Keryx integration PR: [Dadmin88/hermes-keryx#36](https://github.com/Dadmin88/hermes-keryx/pull/36)
-- Hermes plugin compatibility baseline: `a991dfc25daf68994c21d6adcdfbafb1b3dc23cf`
+### Hermes Keryx
 
-Fleet CI run `31062104463` passed the Python 3.11 and 3.13 quality jobs plus the complete clean-install Hermes plugin smoke. The accepted live paths used the relay route and proved ordinary communication, deliberate execution, durable result reattachment, duplicate prevention, and deadline-bounded health probing.
+Keryx owns transport and task lifecycle concerns:
+
+- cryptographic peer identity;
+- registration and discovery;
+- direct and relay routing;
+- durable task and result state;
+- claims, leases, heartbeats, and deadlines;
+- terminal outcomes and transport receipts;
+- cancellation records;
+- transport-level mailbox behavior where supported.
+
+### Hermes Fleet
+
+Fleet owns the operator-facing coordination layer:
+
+- friendly node names and tags;
+- mapping friendly names to immutable Keryx peer IDs;
+- exact-node selection;
+- versioned communication envelopes;
+- operation and size limits;
+- direct-versus-executable dispatch;
+- local execution binding;
+- CLI and Hermes model tools;
+- live operational presentation.
+
+### Private networking
+
+A private network such as Tailscale should limit which machines can reach Keryx and Fleet services. Private reachability is not a substitute for Keryx authentication or Fleet authorization.
+
+## Non-goals
+
+The current Fleet release does not implement:
+
+- another relay or transport protocol;
+- a duplicate Keryx task/result database;
+- a general offline queue;
+- an SSH executor;
+- a workflow engine;
+- a scheduler;
+- an artifact transport;
+- a Kanban state machine;
+- public-internet hardening.
+
+Kanban or dashboard integrations may project Fleet and Keryx state later, but they must not become a competing execution source of truth.
 
 ## Runtime topology
 
+A typical two-node deployment looks like this:
+
 ```text
-Katana Hermes profile: katana
-  -> Fleet CLI/model controller
-  -> local keryxd on loopback
-  -> Katana Keryx edge node
-  -> authenticated relay on the VPS over Tailscale
-  -> VPS Keryx edge node
-  -> VPS local keryxd on loopback
+Controller node
+  -> Hermes Fleet CLI or model tools
+  -> local Keryx daemon
+  -> private network or Keryx relay
+  -> worker Keryx daemon
   -> fleet-node dispatcher
        -> direct handler
-       -> or VPS Hermes admin Runs API on 127.0.0.1:8642
+       -> or local Hermes Runs API
 ```
 
-Katana's local `vps` Hermes profile is a client-side route to the VPS gateway. The remote Fleet worker uses the VPS `admin` profile for the Hermes Runs API and Fleet state.
+The controller does not need a long-running Fleet daemon. It creates a short-lived Keryx client for each operation. The worker runs `fleet-node` as a supervised service and exposes only the operations allowed by its local policy.
 
 ## Trust model
 
-Authenticated peer identity and trusted content are separate properties.
+Fleet separates four questions that are often accidentally conflated:
 
-Keryx authenticates which peer sent a communication. It does not make peer-produced JSON or model text trusted. Fleet therefore returns `untrusted: true` for:
+1. **Who sent the request?** Keryx authenticated sender identity answers this.
+2. **Was the sender allowed to request the operation?** Fleet and destination policy answer this.
+3. **Was the request routed to the expected peer?** Keryx transport receipts answer this within their documented scope.
+4. **Is the returned content safe to trust?** Peer-produced JSON and model text remain untrusted.
 
-- `fleet.health` responses;
-- `fleet.inventory` responses;
-- `fleet.message` acknowledgments;
-- `fleet.hermes.run` terminal text;
-- reopened remote `result_text` values.
+Authentication never makes remote content trusted. Fleet marks peer-produced direct responses and Hermes output with `untrusted: true`.
 
-Controller-owned configuration and Keryx-provided typed submission receipt fields are interpreted only at their specific trusted boundaries. Peer response fields cannot override the selected target, Keryx task ID, routed peer, or delivery route.
-
-Authentication never implies authorization. Every worker is default-deny and validates the authenticated sender peer, destination peer, operation, envelope version, canonical Keryx metadata, deadline, payload limits, and local operation policy before dispatch.
+Controller-owned configuration and typed Keryx receipt fields are trusted only at their narrow boundaries. A peer response cannot override the controller-selected target, Keryx task ID, routed peer, or delivery route.
 
 ## Operation model
 
-Keryx internally transports every exchange as a task/result. Fleet-facing terminology distinguishes messages, queries, acknowledgments, status requests, and executable work.
-
-The v0.1 operation table is explicit:
-
-| Operation | Handler class | Hermes run created? | Purpose |
+| Operation | Handler | Hermes run? | Purpose |
 | --- | --- | ---: | --- |
 | `fleet.health` | direct | No | Bounded adapter, Keryx, and Hermes API capability health |
 | `fleet.inventory` | direct | No | Safe node identity, version, and capability summary |
-| `fleet.message` | direct | No | Bounded text communication and deterministic acknowledgment |
-| `fleet.hermes.run` | executable | Yes | One deliberate authenticated loopback Hermes run |
+| `fleet.message` | direct | No | Bounded text communication and acknowledgment |
+| `fleet.hermes.run` | executable | Yes | One deliberate authenticated local Hermes run |
 
-`fleet.health` may call bounded `GET /health` and authenticated `GET /v1/capabilities` probes. It never calls `POST /v1/runs`. `fleet.inventory` and `fleet.message` do not depend on the Hermes HTTP server.
+`fleet.health` may perform bounded local HTTP health and capability probes. It must never call the Hermes run-creation endpoint. `fleet.inventory` and `fleet.message` do not require a Hermes HTTP server.
 
-Only a validated, authorized `fleet.hermes.run` reaches the executable handler.
+## Fleet envelope
 
-## Fleet communication envelope
-
-Every Fleet request uses one strict schema-v1 JSON envelope in the Keryx task's sole text message part. Canonical routing and policy values are repeated in Keryx metadata and cross-checked at the worker.
-
-Example:
+Every request is carried as one strict, versioned JSON envelope in a Keryx task message. Routing and policy-critical values are repeated in Keryx metadata and cross-checked by the destination.
 
 ```json
 {
   "version": 1,
   "operation": "fleet.message",
   "target": {
-    "name": "vps",
+    "name": "worker-1",
     "peer_id": "12D3KooW..."
   },
   "input": {
-    "text": "Hello from Katana",
-    "topic": "smoke-test",
-    "correlation_id": "corr-1"
+    "text": "Hello from the controller",
+    "topic": "operations",
+    "correlation_id": "example-1"
   },
   "limits": {
     "deadline_seconds": 30
@@ -99,79 +130,105 @@ Example:
 }
 ```
 
-Canonical Keryx metadata includes the Fleet envelope version, operation, target peer ID, skill, and absolute deadline. The authenticated sender identity comes from the Keryx delivery context, never from a sender value supplied inside JSON.
+The authenticated sender comes from Keryx delivery context, never from a sender value inside the JSON payload.
 
-The parser rejects duplicate object members, non-standard numeric values, malformed Unicode, unknown versions or operations, malformed/multiple parts, metadata/envelope disagreement, invalid target identity, expired requests, oversized fields, and disallowed operations.
+The parser fails closed on:
+
+- duplicate JSON members;
+- malformed Unicode;
+- non-standard numeric values;
+- unknown versions or operations;
+- malformed or multiple message parts;
+- target or metadata disagreement;
+- expired requests;
+- oversized payloads;
+- disabled operations.
 
 ## Controller path
 
 The controller:
 
-1. Loads schema-v1 Fleet inventory from the active Hermes profile.
-2. Resolves one exact friendly node name to an immutable Keryx peer ID.
-3. Applies the configured operation and limit policy.
-4. Builds one Fleet envelope with an absolute deadline.
-5. Submits through the public Keryx Python SDK.
-6. Preserves Keryx's actual `task_id`, `routed_to`, and `delivery_route` receipt.
-7. Waits through the public task handle or reopens durable status by task ID.
+1. Loads Fleet inventory from the active Hermes environment.
+2. Resolves one exact friendly name to one immutable Keryx peer ID.
+3. Applies the configured request policy and limits.
+4. Creates a versioned Fleet envelope and absolute deadline.
+5. Submits through the public Keryx SDK.
+6. Preserves the actual Keryx task ID and route receipt.
+7. Waits for terminal state or reopens status by task ID.
 8. Returns peer-produced content as untrusted.
 
-Configuration alone never proves reachability. Live inventory distinguishes direct-connected, registry-visible, not-visible, and unknown states. The actual route is known only after Keryx returns a submission receipt.
+Configuration alone never proves that a node is reachable. Live inventory distinguishes direct connectivity, registry visibility, absence, and unknown registry state.
 
-There is no automatic retry after ambiguous submission. A new operator request creates a new Keryx task ID.
+Fleet does not automatically retry an ambiguous side-effecting submission. A new operator request creates a new Keryx task.
 
 ## Worker path
 
-`fleet-node` is one supervised foreground worker built on the public `KeryxNode` API. It registers the four Fleet operations as one card and uses one explicit dispatcher.
+`fleet-node` is a supervised foreground process built on the public Keryx node API.
 
-For every claimed task it:
+For each claimed task it:
 
 1. Reads authenticated sender and destination identity from Keryx.
-2. Parses the single Fleet envelope.
+2. Parses the Fleet envelope.
 3. Cross-checks Keryx metadata and envelope values.
 4. Computes the remaining absolute deadline.
-5. Applies local policy and size limits.
-6. Dispatches to a direct handler or the executable handler.
+5. Applies local authorization and resource limits.
+6. Selects a direct or executable handler.
 7. Completes or fails the normal Keryx task/result record.
 
-Direct communication is stateless from Fleet's perspective. No Fleet inbox or message-history database is created.
+Direct communication creates no Fleet inbox or duplicate message-history database.
 
 ## Deadline handling
 
-The Keryx absolute deadline is the source of truth.
+The absolute Keryx deadline is the source of truth.
 
-The worker rejects already-expired work before starting a handler. `fleet.health` shares one remaining deadline across both synchronous Hermes HTTP probes, recomputes the remaining budget between calls, and wraps the thread call with `asyncio.wait_for` so the Fleet task cannot complete after its deadline.
+The worker rejects expired work before starting a handler. Health probes share one remaining deadline rather than receiving independent full timeouts. Executable requests propagate the remaining budget to Hermes start, polling, and stop attempts.
 
-The production `HermesRunsClient` also propagates the remaining HTTP timeout. A custom thread implementation that ignores its own timeout cannot be forcibly killed by `asyncio.wait_for`; this is a documented Python runtime limitation, not the production client behavior.
+Fleet must not report success after the request deadline.
 
 ## Deliberate Hermes execution
 
-For `fleet.hermes.run`, the worker uses the loopback authenticated Hermes Runs API:
+For `fleet.hermes.run`, the worker:
 
-1. Reserve the Keryx task in the execution-binding store as `creating`.
-2. Call `POST /v1/runs` exactly once.
-3. Persist the returned Hermes run ID as `running` before polling.
-4. Poll the exact run until terminal while Keryx maintains the task claim heartbeat.
-5. Stop and fail closed if Hermes enters an approval-wait state; Fleet never auto-approves.
-6. Persist bounded terminal status/text as `completed` before completing the Keryx result.
-7. Replay a stored terminal result to Keryx after reclaim without creating another Hermes run.
+1. Reserves the Keryx task in a narrow execution-binding store.
+2. Calls the local Hermes run-creation endpoint once.
+3. Persists the returned Hermes run ID before polling.
+4. Polls the exact run while Keryx maintains the claim heartbeat.
+5. Fails closed if Hermes enters an approval-wait state.
+6. Stores bounded terminal status and text.
+7. Replays the stored result after task reclaim without creating a second Hermes run.
 
-## Crash-safe execution binding
+Fleet never auto-approves remote tool or model actions.
 
-Hermes Runs has no durable idempotency key and its live run state is process-memory retained. Fleet therefore keeps one narrow SQLite correlation ledger keyed by Keryx task ID.
+## Execution binding
+
+Hermes Runs does not currently provide the durable idempotency primitive Fleet needs for reclaim safety. Fleet therefore stores a narrow SQLite correlation record keyed by Keryx task ID.
 
 States:
 
-- `creating`: reservation exists but the run ID is not durably known;
-- `running`: the exact Hermes run ID is known and polling may resume;
-- `completed`: bounded terminal text is stored for idempotent Keryx replay;
+- `creating`: a reservation exists, but the run ID is not durably known;
+- `running`: the exact run ID is known and polling may resume;
+- `completed`: bounded terminal text is available for replay;
 - `indeterminate`: execution state cannot be proven and Fleet fails closed.
 
-The store contains no prompt, credential, route history, duplicate Keryx lifecycle, or user-facing message history. It is not a second task database.
+The binding store contains no credentials, routes, general message history, or duplicate Keryx lifecycle. It is not a second task ledger.
+
+## Configuration and live state
+
+Fleet configuration contains operator-authored identity and policy:
+
+- friendly name;
+- immutable Keryx peer ID;
+- tags;
+- enabled state;
+- priority;
+- allowed operations;
+- request limits.
+
+Live state comes from Keryx observations and operation responses. Fleet never treats a configured node as online merely because it appears in `nodes.yaml`.
 
 ## Public surfaces
 
-Implemented CLI:
+CLI:
 
 ```text
 hermes fleet init
@@ -179,13 +236,13 @@ hermes fleet list
 hermes fleet show NODE
 hermes fleet health NODE
 hermes fleet inventory NODE
-hermes fleet message NODE "TEXT" [--topic TOPIC] [--correlation-id ID]
+hermes fleet message NODE "TEXT"
 hermes fleet run NODE "PROMPT"
 hermes fleet status TASK_ID
 hermes fleet cancel TASK_ID
 ```
 
-Implemented async model tools:
+Hermes model tools:
 
 - `fleet_list_nodes`
 - `fleet_get_node`
@@ -195,50 +252,21 @@ Implemented async model tools:
 - `fleet_get_task`
 - `fleet_cancel_task`
 
-The cancellation surface intentionally returns an unavailable error. Origin-side cancellation cannot currently prove that the remote worker observed cancellation and stopped its bound Hermes run.
-
-## Live acceptance
-
-### Direct communication
-
-- Keryx task: `7e78f4c1-240a-496f-bbf4-2a0a491018d6`
-- Operation: `fleet.message`
-- Text: `FLEET_MESSAGE_OK`
-- Route: `relay`
-- VPS acknowledgment: `received`
-- Hermes runs created: `0`
-- Binding rows created: `0`
-- Peer response presentation: `untrusted: true`
-
-### Deliberate execution
-
-- Keryx task: `913af216-2866-48e8-8f18-b479df479466`
-- Hermes run: `run_b9f345d82c3d45778b14714966922f7e`
-- Route: `relay`
-- Terminal result: `FLEET_OK`
-- Durable binding: `completed`
-- Reattached status: `completed`, result `FLEET_OK`
-
-Live health, inventory, list, and durable status retrieval also passed. The late exact-byte review corrected the peer-output trust flag and shared health deadline before final acceptance.
+The cancellation surface currently fails closed because origin-side cancellation cannot prove that a remote worker observed the request and stopped its bound Hermes run.
 
 ## Deployment boundaries
 
-- Relay registry/control endpoints use TLS on the VPS Tailscale address.
-- Keryx daemons and the Hermes Runs API bind to loopback.
-- The relay libp2p listener binds to the VPS Tailscale address.
-- Node keys, node tokens, TLS private keys, and Hermes API credentials never belong in Git.
-- `fleet-node` is the sole Fleet skill-registration owner on the VPS.
-- The historical `keryx-task-bridge.service` and refresh-loop service are disabled and inactive.
+- Keep Keryx daemons and local Hermes APIs on loopback where possible.
+- Use TLS and a private network for cross-machine relay and registry access.
+- Keep node keys, tokens, TLS private keys, and Hermes credentials outside Git.
+- Run one authoritative Fleet skill-registration owner per worker identity.
+- Do not use compatibility bridges that read Keryx databases directly or fabricate terminal results.
 
-## Known limits
+## Current limitations
 
-1. Cross-node running-task cancellation is unavailable and fails closed.
-2. Relay offline mailboxes are bounded in-memory queues and do not survive relay restart.
-3. Cross-node artifact bytes are not exposed by Fleet v0.1.
-4. The Tailscale TLS certificate expires on 2026-09-17 and requires renewal plus relay restart.
-5. A running Katana Hermes gateway must be restarted after plugin updates to load new Fleet model tools.
-6. `node_service.py` may call `node.stop()` twice during normal shutdown; the call is outside the accepted communication/execution paths and is tracked as nonblocking cleanup.
-
-## Deferred backlog
-
-Deferred work includes cross-node cancellation transport, artifacts, tag fan-out, partial-result orchestration, pub/sub, broadcast, persistent inboxes, multi-node chat, agent-session routing, workflow graphs, Kanban integration, Android/Termux, public-internet exposure, and multi-tenant architecture.
+1. Granular destination-owned per-sender operation grants are under development.
+2. Cross-node cancellation is unavailable and fails closed.
+3. Relay mailbox durability depends on the deployed Keryx version.
+4. Cross-node artifact bytes are not exposed by the current Fleet release.
+5. Scheduling, profile lifecycle, persistent inboxes, and workflow graphs are future work.
+6. Public-internet and multi-tenant deployment are not supported.
