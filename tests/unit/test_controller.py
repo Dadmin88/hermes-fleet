@@ -93,6 +93,7 @@ def test_controller_submits_direct_message_to_one_exact_configured_peer() -> Non
         "fleet.operation": "fleet.message",
         "fleet.target_peer_id": "peer-vps",
         "fleet_deadline_ms": "40000",
+        "skill": "fleet.message",
     }
     payload = json.loads(call["message"]["parts"][0]["text"])
     assert payload["operation"] == "fleet.message"

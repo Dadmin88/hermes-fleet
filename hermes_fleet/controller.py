@@ -201,6 +201,7 @@ async def submit_communication(
         "fleet.operation": envelope.operation,
         "fleet.target_peer_id": target.peer_id,
         "fleet_deadline_ms": str(deadline_ms),
+        "skill": envelope.operation,
     }
     handle = await keryx.send_task(
         {"role": "user", "parts": [{"text": payload, "media_type": "text/plain"}]},

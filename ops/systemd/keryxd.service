@@ -12,7 +12,7 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=false
 ReadWritePaths=%h/.local/state/hermes-fleet %h/.config/hermes-fleet
 
 [Install]
