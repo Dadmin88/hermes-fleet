@@ -32,8 +32,8 @@ Focused Hermes validation passed:
 ### Keryx
 
 Fleet's current Keryx integration baseline is the owned `Dadmin88/hermes-keryx`
-commit `203aaa0cd03986333eff7b7532d3d19daca73ea9`, whose Python SDK adds
-public task reattachment by ID. Exact-SHA CI passed on 2026-08-05.
+commit `f4ee645e415600a959ea8062d1143140bd6c2616`, whose Python SDK adds
+public task reattachment by ID. Exact-SHA CI remains the release gate.
 
 Source-confirmed facilities include:
 

@@ -84,7 +84,7 @@ The historical refresh-loop units are also replaced by the supervised `keryx-nod
 
 1. Validate and freeze exact Fleet and Keryx source bytes.
 2. Build Keryx release binaries from accepted SHA
-   `203aaa0cd03986333eff7b7532d3d19daca73ea9`.
+   `f4ee645e415600a959ea8062d1143140bd6c2616`.
 3. Install the same binaries and that exact Python SDK revision on both hosts.
 4. Install Fleet into an isolated runtime venv and install/enable the Fleet Hermes plugin on Katana.
 5. Generate persistent node/relay identities and node tokens without printing secrets.
