@@ -1,166 +1,222 @@
-# Two-Machine Fleet Smoke Test
+# Two-Node Hermes Fleet Smoke Test
 
-This document records the accepted Katana-to-VPS v0.1 proof and the repeatable procedure for future deployments.
+This procedure validates a generic controller-to-worker deployment without relying on environment-specific hostnames, task IDs, profile names, private addresses, or prior acceptance evidence.
 
-The controller uses Katana's active `katana` profile. The VPS worker and loopback Hermes Runs API use the VPS `admin` profile.
+Use disposable or noncritical nodes first. Store real peer IDs, routes, task IDs, logs, and timestamps in an owner-protected evidence directory outside Git.
 
-## Accepted evidence
-
-Acceptance was completed against:
-
-- Fleet runtime SHA: `29876e9b2afa0de8b9f2bce4e1edb5671f412438`
-- Fleet CI run: `31062104463`, passed
-- Keryx SHA: `f4ee645e415600a959ea8062d1143140bd6c2616`
-
-### Slice A - direct communication
-
-- Task: `7e78f4c1-240a-496f-bbf4-2a0a491018d6`
-- Operation: `fleet.message`
-- Text: `FLEET_MESSAGE_OK`
-- Route: `relay`
-- VPS acknowledgment: `received`
-- Peer response: `untrusted: true`
-- Hermes Runs created: `0`
-- Binding rows created: `0`
-
-### Slice B - deliberate remote Hermes execution
-
-- Keryx task: `913af216-2866-48e8-8f18-b479df479466`
-- Hermes run: `run_b9f345d82c3d45778b14714966922f7e`
-- Route: `relay`
-- Result: `FLEET_OK`
-- Peer output: `untrusted: true`
-- Durable binding: `completed`
-- Reattached status: `completed`, result `FLEET_OK`
-
-Live `fleet.health`, `fleet.inventory`, `fleet.list`, and durable status retrieval also passed. A one-second live health deadline passed after the shared-deadline correction. Final exact-SHA reviewers found no release blockers.
-
-## Preconditions for a repeat
-
-- VPS relay health and registry gRPC are healthy over TLS.
-- Katana and VPS `keryxd` readiness pass.
-- Both edge nodes are connected to the same relay.
-- The registry shows the VPS peer with exactly:
-  - `fleet.health`
-  - `fleet.inventory`
-  - `fleet.message`
-  - `fleet.hermes.run`
-- VPS `GET http://127.0.0.1:8642/health` returns healthy.
-- `keryx-task-bridge.service` and `keryx-node-refresh.service` are inactive and disabled on Katana.
-- The VPS binding database is writable only by its service account.
-- Record exact Fleet and Keryx SHAs plus service start timestamps.
-
-## Slice A procedure
-
-From Katana:
+## Test topology
 
 ```text
-hermes fleet message vps "FLEET_MESSAGE_OK" --topic smoke-test --correlation-id fleet-message-smoke
+controller-1
+  -> Fleet CLI or model tools
+  -> local Keryx daemon
+  -> private network or authenticated relay
+  -> worker-1 Keryx daemon
+  -> fleet-node
+  -> optional local Hermes Runs API
+```
+
+## Preconditions
+
+Before testing:
+
+- record exact Fleet, Keryx, and Hermes revisions;
+- confirm both system clocks are synchronized;
+- confirm each Keryx daemon is ready;
+- confirm both edge nodes are connected through the intended route;
+- confirm the worker advertises only the expected Fleet operations;
+- confirm the worker accepts the controller's authenticated Keryx peer ID;
+- confirm the worker's Fleet policy is default-deny outside the test operations;
+- confirm legacy database-reading bridges and result-fabrication services are disabled;
+- confirm the execution-binding database is owner-protected and writable;
+- confirm the local Hermes Runs API is healthy when testing executable operations.
+
+Record baseline counters for:
+
+- Hermes run creation;
+- Fleet execution-binding rows;
+- legacy bridge activity;
+- relevant service restarts.
+
+## 1. Live node listing
+
+From the controller:
+
+```bash
+hermes fleet list
+```
+
+Verify that the configured worker reports one of the supported truthful live states:
+
+- direct;
+- registry-visible;
+- not visible;
+- unknown.
+
+A configured node must not be described as online solely because it appears in `nodes.yaml`.
+
+## 2. Direct health
+
+```bash
+hermes fleet health worker-1
 ```
 
 Required evidence:
 
-- `success` is true;
+- the request uses `fleet.health`;
+- Keryx returns a nonempty task ID and route receipt;
+- the selected and routed peer IDs match the expected worker;
+- the response is marked `untrusted: true`;
+- no Hermes run is created;
+- no execution-binding row is created for the task;
+- the worker applies one bounded deadline across its local probes;
+- failures do not expose raw credentials or private configuration.
+
+## 3. Direct inventory
+
+```bash
+hermes fleet inventory worker-1
+```
+
+Required evidence:
+
+- the request uses `fleet.inventory`;
+- the response contains only the bounded public inventory contract;
+- the response is marked untrusted;
+- no broad filesystem or environment inventory is returned;
+- no Hermes run or execution-binding row is created.
+
+## 4. Direct message
+
+```bash
+hermes fleet message worker-1 "MESSAGE_OK" \
+  --topic smoke-test \
+  --correlation-id direct-message-1
+```
+
+Required evidence:
+
 - operation is `fleet.message`;
-- status is `received`;
-- `untrusted` is true because the acknowledgment originated on a peer;
-- `received_by` is the real VPS Keryx peer ID;
-- `sender_peer_id` is the real Katana Keryx peer ID;
-- returned `task_id`, `routed_to`, and `delivery_route` are nonempty Keryx values;
-- `routed_to` equals the configured VPS peer ID;
-- the VPS fleet-node log contains the same task ID and direct operation;
-- the VPS Hermes Runs API log contains no `POST /v1/runs` in the correlation window;
-- the VPS run-binding database contains no row for the task.
+- the acknowledgment reports the expected receiver and authenticated sender;
+- the returned task ID and route fields are nonempty Keryx values;
+- the response is marked untrusted;
+- the worker log contains the same task ID and direct operation;
+- Hermes run count is unchanged from the baseline;
+- no execution-binding row exists for the task;
+- no legacy bridge handled the request.
 
-Reopen status from Katana:
+Reopen durable status:
 
-```text
-hermes fleet status <slice-a-task-id>
+```bash
+hermes fleet status <message-task-id>
 ```
 
-It must report durable Keryx terminal status and the acknowledgment without inventing a submission receipt.
+The status command may report terminal Keryx state and bounded result data. It must not invent a new submission receipt.
 
-## Slice B procedure
+## 5. Deliberate Hermes execution
 
-From Katana:
+Enable `fleet.hermes.run` only for this controlled test and only after the direct-operation tests pass.
 
-```text
-hermes fleet run vps "Return exactly FLEET_OK"
+```bash
+hermes fleet run worker-1 "Return exactly RUN_OK"
 ```
 
 Required evidence:
 
-- `success` is true;
 - operation is `fleet.hermes.run`;
-- response text is exactly `FLEET_OK`;
-- `untrusted` is true;
-- returned `task_id`, `routed_to`, and `delivery_route` are real Keryx values;
-- the VPS fleet-node log correlates the Keryx task ID, authenticated Katana sender peer ID, VPS peer ID, Hermes run ID, and terminal status;
-- the VPS Hermes Runs API shows exactly one `POST /v1/runs` for the task;
-- the binding database has one completed task-to-run mapping;
-- a reclaimed handler for the same task replays the stored terminal text and does not create another Hermes run.
+- returned text is exactly `RUN_OK`;
+- output is marked untrusted;
+- the Keryx task ID, routed peer, and delivery route are nonempty;
+- the worker correlates the authenticated sender, destination, Keryx task, Hermes run, and terminal state;
+- exactly one Hermes run is created for the task;
+- exactly one execution-binding record exists for the task;
+- the binding reaches `completed` with bounded terminal text;
+- reclaim or replay of the same Keryx task does not create a second Hermes run.
 
-Reopen status from Katana:
+Reopen status:
 
-```text
-hermes fleet status <slice-b-task-id>
+```bash
+hermes fleet status <run-task-id>
 ```
 
-It must return durable completed status and `result_text: FLEET_OK` with the result marked untrusted.
+It must report the durable terminal Keryx state and bounded result text without changing the original execution.
 
-## Health deadline proof
+## 6. Deadline behavior
 
-Use `fleet.health` with a short allowed deadline and verify:
+### Direct deadline
 
-- the worker uses the Keryx absolute deadline as the source of truth;
-- both Hermes HTTP probes share the same remaining deadline rather than each receiving a fresh full timeout;
-- the remaining budget is recomputed between probes;
-- an already-expired request performs no health probes;
-- `asyncio.wait_for` prevents the Fleet handler from completing after the Fleet deadline;
-- the health operation creates no Hermes run;
-- failures return bounded output without raw HTTP details or credentials.
+Run `fleet.health` with a short allowed deadline and verify:
 
-The accepted deployment passed a live health request with a one-second deadline.
+- the absolute Keryx deadline is authoritative;
+- already-expired work is rejected before local probes;
+- all local probes share the remaining budget;
+- the remaining budget is recomputed between calls;
+- the handler does not report success after the deadline;
+- no Hermes run is created.
 
-## Executable deadline proof
+### Executable deadline
 
-Submit a deliberately slow executable request with a short allowed deadline. Required evidence:
+Use a deliberately slow prompt with a short deadline in a disposable environment.
 
-- the worker uses the absolute Keryx deadline metadata;
-- Hermes polling stops at the bounded deadline;
-- the bound run receives a stop request when the Runs API remains reachable;
+Verify:
+
+- Hermes polling stops when the deadline expires;
+- Fleet attempts a bounded local stop when supported;
 - the Keryx task does not report successful completion;
-- no second Hermes run is created if the task is reclaimed.
+- task reclaim does not create another Hermes run.
 
-Do not claim cross-node user cancellation. `hermes fleet cancel` and `fleet_cancel_task` fail closed until Keryx can prove the destination worker observed cancellation and stopped the bound Hermes run.
+This test is not proof of cross-node user cancellation. The public cancellation command must continue to fail closed until the destination's observation and local run stop can be proven.
 
-## Trust-boundary proof
+## 7. Trust-boundary checks
 
-For `fleet.health`, `fleet.inventory`, `fleet.message`, and `fleet.hermes.run`:
+For every operation:
 
-- all peer-produced response content must be returned with `untrusted: true`;
-- authenticated peer identity must come from Keryx, not from the JSON envelope;
-- remote fields must not override controller-selected target, task ID, routed peer, or route;
-- malformed direct JSON must fail closed.
+- authenticated sender identity must come from Keryx transport context;
+- JSON payload sender fields must not establish identity;
+- peer responses must not override the selected target, task ID, routed peer, or route;
+- malformed or duplicate JSON members must fail closed;
+- remote output must be treated as data, never local instructions;
+- credentials must not appear in returned errors or logs.
 
-## Correlated evidence bundle
+## 8. Negative authorization checks
 
-Capture:
+At minimum, test:
 
-- exact Fleet and Keryx Git SHAs;
-- exact Fleet and Keryx CI run URLs;
-- Katana daemon and edge-node status/log window;
-- VPS relay, daemon, edge-node, Hermes API, and fleet-node status/log window;
-- Slice A and Slice B JSON outputs;
-- Keryx status reattachment outputs;
-- bounded binding rows containing task ID, state, run ID, and no prompt or token;
-- service unit hashes or copied unit bytes;
-- confirmation that no bridge/fallback service ran.
+- an unknown controller peer is rejected;
+- a disabled operation is rejected;
+- an invalid target peer is rejected;
+- an oversized payload is rejected;
+- an expired request is rejected;
+- a malformed envelope is rejected;
+- a direct-operation rejection creates no Hermes run or execution binding.
 
-Redact tokens, API keys, key material, TLS private keys, and model credentials. Peer IDs, task IDs, run IDs, route names, statuses, and timestamps are required correlation evidence and are not credentials.
+## Evidence bundle
 
-## Release gate
+Capture outside Git:
 
-The v0.1 gate is satisfied when both slices, the health/execution deadline proofs, duplicate prevention, current-byte review, and exact-SHA CI pass on the real machines.
+- exact source and deployed revisions;
+- CI results for those revisions;
+- redacted service status and bounded logs;
+- JSON output for each operation;
+- Keryx task and route identifiers;
+- run-creation counter deltas;
+- execution-binding rows for executable tasks only;
+- service unit hashes;
+- confirmation that no fallback bridge ran;
+- rollback checkpoint information.
 
-That gate passed for Fleet SHA `29876e9b2afa0de8b9f2bce4e1edb5671f412438` and Keryx SHA `f4ee645e415600a959ea8062d1143140bd6c2616`.
+Do not capture plaintext tokens, private keys, API keys, TLS private keys, or model credentials.
+
+## Acceptance criteria
+
+A two-node deployment passes when:
+
+1. Health, inventory, and message work through the intended authenticated route.
+2. Every direct operation creates zero Hermes runs and zero execution-binding rows.
+3. One deliberate executable operation creates exactly one Hermes run.
+4. Durable status can be reopened by Keryx task ID.
+5. Duplicate execution is prevented after reclaim.
+6. Deadlines fail closed.
+7. Unauthorized and malformed requests fail before side effects.
+8. Peer-produced output remains marked untrusted.
+9. No legacy bridge or duplicate transport path handled the work.
