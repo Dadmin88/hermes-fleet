@@ -1,6 +1,6 @@
 # Hermes Fleet
 
-Hermes Fleet is a coordination layer for Hermes-capable nodes. It gives operators friendly node identity, bounded communication envelopes, exact-node selection, local policy, dispatch, CLI/model tools, and safe presentation while Hermes Keryx remains the authenticated transport and durable task/result ledger.
+Hermes Fleet is a coordination layer for Hermes-capable nodes. It gives operators friendly node identity, bounded communication envelopes, exact-node selection, local policy, dispatch, CLI/model tools, and safe presentation while using Hermes Keryx as the authenticated transport and durable task/result ledger.
 
 Remote Hermes execution is one Fleet capability, not Fleet's entire communication model. Receiving a Fleet communication does not automatically start Hermes.
 
