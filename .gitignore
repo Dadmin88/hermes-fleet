@@ -2,6 +2,21 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
 build/
 dist/
 *.egg-info/
+
+# Local Hermes planning and agent workspace
+.hermes/
+
+# Local operational evidence and machine-specific configuration
+evidence/
+ops/local/
+*.local
+.env
+.env.*
+!.env.example
