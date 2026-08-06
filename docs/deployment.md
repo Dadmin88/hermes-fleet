@@ -38,7 +38,7 @@ Both hosts:
 
 ```text
 ~/.local/share/hermes-fleet/bin/        Keryx release binaries
-~/.local/share/hermes-fleet/venv/       Fleet worker/controller Python runtime
+~/.local/share/hermes-fleet/venv/       VPS Fleet worker Python runtime
 ~/.local/state/hermes-fleet/             Keryx/Fleet durable state
 ~/.config/hermes-fleet/                  non-Git config and secret environment files
 ~/.config/systemd/user/                  installed user units
@@ -58,7 +58,34 @@ Katana only:
 
 ```text
 ~/.hermes/profiles/katana/fleet/nodes.yaml
+~/.hermes/profiles/katana/plugins/hermes-fleet/
 ```
+
+## Runtime compatibility contracts
+
+- `keryxd` requires `HERMES_KERYX_DAEMON_ADDR=127.0.0.1:50051`,
+  `HERMES_KERYX_DATA_DIR=<directory>`, and
+  `HERMES_KERYX_DAEMON_PEER_ID=<peer-id>`. `DAEMON_ENDPOINT` and a database
+  filename do not enable its long-running RPC mode.
+- Rust `keryx-node` uses
+  `HERMES_KERYX_DAEMON_ENDPOINT=http://127.0.0.1:50051`; Python Keryx uses
+  `HERMES_KERYX_DAEMON_ENDPOINT=127.0.0.1:50051` without a URI scheme. Keep
+  them in separate environment files.
+- Rust edge identity/bootstrap variables are
+  `HERMES_KERYX_NODE_KEYPAIR_PATH`,
+  `HERMES_KERYX_NODE_BOOTSTRAP_PEERS`, and
+  `HERMES_KERYX_REGISTRY_CA_CERT`.
+- Exact-peer Fleet submissions must include canonical Keryx metadata
+  `skill=<Fleet operation>` so the destination worker's accepted-skill filter
+  can claim them.
+- Use a Tailscale-managed certificate for `hermes.tail6c8d50.ts.net` on both
+  relay-control and registry gRPC. Python gRPC must receive the full public
+  Tailscale certificate chain explicitly through
+  `HERMES_KERYX_REGISTRY_CA_CERT`; the relay private key stays on the VPS.
+- Fleet inventory files use `schema_version: 1`,
+  `max_deadline_seconds`, `max_payload_bytes`, `max_prompt_chars`, and
+  `max_export_paths`. `max_export_paths` must be at least `1`, even though the
+  first text-only release requests no exports.
 
 ## Services
 
@@ -88,7 +115,8 @@ The historical refresh-loop units are also replaced by the supervised `keryx-nod
 3. Install the same binaries and that exact Python SDK revision on both hosts.
 4. Install Fleet into an isolated runtime venv and install/enable the Fleet Hermes plugin on Katana.
 5. Generate persistent node/relay identities and node tokens without printing secrets.
-6. Create a private CA and VPS certificate for the Tailscale IP/DNS name; distribute only the CA certificate to Katana.
+6. Generate a Tailscale certificate for `hermes.tail6c8d50.ts.net`; distribute
+   only its public full-chain certificate to Katana.
 7. Write security-enabled relay TOML, allowlist, and external node-token file with mode `0600`.
 8. Write per-host Keryx environment files with mode `0600`.
 9. Write exact `nodes.yaml` files for Katana `katana` and VPS `admin` profile homes.
