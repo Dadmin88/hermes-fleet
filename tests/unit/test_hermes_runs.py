@@ -16,6 +16,8 @@ class _RunsAPI:
         self.statuses = list(statuses)
         self.requests: list[tuple[str, str, str, dict[str, Any] | None]] = []
         self.post_delay_seconds = 0.0
+        self.stop_delay_seconds = 0.0
+        self.stop_response_sent = False
 
     @contextmanager
     def serve(self) -> Iterator[str]:
@@ -35,7 +37,10 @@ class _RunsAPI:
                     self._json(202, {"run_id": "run-test", "status": "started"})
                     return
                 if self.path == "/v1/runs/run-test/stop":
+                    if api.stop_delay_seconds:
+                        time.sleep(api.stop_delay_seconds)
                     self._json(200, {"run_id": "run-test", "status": "stopping"})
+                    api.stop_response_sent = True
                     return
                 self._json(404, {"error": {"message": "not found"}})
 
@@ -238,6 +243,60 @@ def test_hermes_runs_client_requests_stop_at_the_fleet_deadline() -> None:
         method == "POST" and path.endswith("/stop")
         for method, path, _, _ in api.requests
     )
+
+
+def test_hermes_runs_client_confirms_exact_stop_before_reporting_deadline() -> None:
+    from hermes_fleet.hermes_runs import HermesRunDeadlineExceeded, HermesRunsClient
+
+    api = _RunsAPI([{"status": "running"}])
+    api.stop_delay_seconds = 0.4
+    with api.serve() as endpoint:
+        with pytest.raises(HermesRunDeadlineExceeded):
+            HermesRunsClient(
+                endpoint=endpoint,
+                api_key="secret-token-for-test",
+                poll_interval_seconds=0.001,
+                request_timeout_seconds=1,
+            ).run(prompt="Keep working.", timeout_seconds=0.01)
+
+        assert api.stop_response_sent is True
+        stop_requests = [
+            request for request in api.requests if request[1].endswith("/stop")
+        ]
+        assert [request[1] for request in stop_requests] == [
+            "/v1/runs/run-test/stop"
+        ]
+
+
+def test_hermes_runs_client_treats_unconfirmed_deadline_stop_as_indeterminate(
+    monkeypatch,
+) -> None:
+    from hermes_fleet.hermes_runs import (
+        HermesRunError,
+        HermesRunIndeterminate,
+        HermesRunsClient,
+    )
+
+    client = HermesRunsClient(
+        endpoint="http://127.0.0.1:8642",
+        api_key="secret-token-for-test",
+        poll_interval_seconds=0.001,
+    )
+    requests: list[tuple[str, str]] = []
+
+    def request_json(method, path, document=None, *, timeout_seconds=None):
+        del document, timeout_seconds
+        requests.append((method, path))
+        if method == "GET":
+            return 200, {"status": "running"}
+        raise HermesRunError("stop was not confirmed")
+
+    monkeypatch.setattr(client, "_request_json", request_json)
+
+    with pytest.raises(HermesRunIndeterminate, match="cancellation is indeterminate"):
+        client.wait(run_id="run-test", timeout_seconds=0.001)
+
+    assert requests[-1] == ("POST", "/v1/runs/run-test/stop")
 
 
 @pytest.mark.parametrize(

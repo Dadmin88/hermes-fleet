@@ -8,7 +8,21 @@ from pathlib import Path
 
 _MAX_ID_CHARS = 256
 _MAX_RESULT_CHARS = 65_536
-_STATES = frozenset({"creating", "running", "completed", "indeterminate"})
+_STATES = frozenset(
+    {"creating", "running", "completed", "cancelled", "indeterminate"}
+)
+_SCHEMA_SQL = """
+CREATE TABLE run_bindings (
+    task_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    run_id TEXT,
+    result_text TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (
+        state IN ('creating', 'running', 'completed', 'cancelled', 'indeterminate')
+    )
+)
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,20 +44,27 @@ class RunBindingStore:
             raise ValueError("binding store path must name a file")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS run_bindings (
-                    task_id TEXT PRIMARY KEY,
-                    state TEXT NOT NULL,
-                    run_id TEXT,
-                    result_text TEXT,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    CHECK (
-                        state IN ('creating', 'running', 'completed', 'indeterminate')
-                    )
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'run_bindings'"
+            ).fetchone()
+            if row is None:
+                connection.execute(_SCHEMA_SQL)
+            elif "'cancelled'" not in str(row[0]):
+                connection.execute(
+                    "ALTER TABLE run_bindings RENAME TO run_bindings_legacy"
                 )
-                """
-            )
+                connection.execute(_SCHEMA_SQL)
+                connection.execute(
+                    """
+                    INSERT INTO run_bindings(
+                        task_id, state, run_id, result_text, updated_at
+                    )
+                    SELECT task_id, state, run_id, result_text, updated_at
+                    FROM run_bindings_legacy
+                    """
+                )
+                connection.execute("DROP TABLE run_bindings_legacy")
 
     def reserve(self, task_id: str) -> RunBinding:
         """Reserve a task before run creation, returning any prior binding."""
@@ -109,6 +130,7 @@ class RunBindingStore:
         if type(result_text) is not str or len(result_text) > _MAX_RESULT_CHARS:
             raise ValueError("result text must be bounded text")
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = self._get(connection, task_id, required=False)
             if existing is None or existing.run_id != run_id:
                 raise ValueError("Hermes run ID does not match the task binding")
@@ -116,7 +138,7 @@ class RunBindingStore:
                 return existing
             if existing.state != "running":
                 raise ValueError("task binding is not in the running state")
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE run_bindings
                 SET state = 'completed', result_text = ?, updated_at = CURRENT_TIMESTAMP
@@ -124,6 +146,35 @@ class RunBindingStore:
                 """,
                 (result_text, task_id, run_id),
             )
+            if cursor.rowcount != 1:
+                raise ValueError("task binding changed terminal state")
+            binding = self._get(connection, task_id)
+            assert binding is not None
+            return binding
+
+    def mark_cancelled(self, task_id: str, run_id: str) -> RunBinding:
+        """Persist confirmed deadline cancellation for one exact bound run."""
+        task_id = _identifier(task_id, "task ID")
+        run_id = _identifier(run_id, "run ID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = self._get(connection, task_id, required=False)
+            if existing is None or existing.run_id != run_id:
+                raise ValueError("Hermes run ID does not match the task binding")
+            if existing.state == "cancelled":
+                return existing
+            if existing.state != "running":
+                raise ValueError("task binding is not in the running state")
+            cursor = connection.execute(
+                """
+                UPDATE run_bindings
+                SET state = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ? AND state = 'running' AND run_id = ?
+                """,
+                (task_id, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("task binding changed terminal state")
             binding = self._get(connection, task_id)
             assert binding is not None
             return binding
@@ -132,6 +183,7 @@ class RunBindingStore:
         """Fail closed when run creation or resumed observation is uncertain."""
         task_id = _identifier(task_id, "task ID")
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = self._get(connection, task_id, required=False)
             if existing is None:
                 raise ValueError("task must be reserved before becoming indeterminate")
@@ -141,7 +193,7 @@ class RunBindingStore:
                 raise ValueError(
                     "task binding cannot become indeterminate from this state"
                 )
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE run_bindings
                 SET state = 'indeterminate', updated_at = CURRENT_TIMESTAMP
@@ -149,6 +201,8 @@ class RunBindingStore:
                 """,
                 (task_id,),
             )
+            if cursor.rowcount != 1:
+                raise ValueError("task binding changed terminal state")
             binding = self._get(connection, task_id)
             assert binding is not None
             return binding

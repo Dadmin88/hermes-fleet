@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, cast
 
 from .envelope import OPERATIONS, FleetEnvelope, parse_envelope
-from .hermes_runs import HermesRunError, HermesRunResult
+from .hermes_runs import HermesRunDeadlineExceeded, HermesRunError, HermesRunResult
 from .models import FleetDefaults, NodeConfig, _require_exact_type
 from .policy import enforce_request_policy
 from .run_binding import RunBindingStore
@@ -95,6 +95,33 @@ class FleetNodeWorker:
         if not callable(on_task):
             raise ValueError("node must provide on_task()")
         on_task(self.handle_task)
+
+    async def _reply_from_terminal_binding(
+        self,
+        incoming: object,
+        *,
+        task_id: str,
+        run_id: str,
+    ) -> bool:
+        """Replay the durable winner when two deliveries race to terminal state."""
+        binding = self._bindings.get(task_id)
+        if binding is None or binding.run_id != run_id:
+            return False
+        if binding.state == "completed" and binding.result_text is not None:
+            await _complete_text(
+                incoming,
+                name="hermes-result.txt",
+                text=binding.result_text,
+                metadata={"hermes_run_id": run_id},
+            )
+            return True
+        if binding.state == "cancelled":
+            await _fail(incoming, "Fleet Hermes execution was cancelled")
+            return True
+        if binding.state == "indeterminate":
+            await _fail(incoming, "Fleet Hermes execution is indeterminate")
+            return True
+        return False
 
     async def handle_task(self, incoming: object) -> None:
         """Validate and route one communication to a direct or executable handler."""
@@ -258,6 +285,9 @@ class FleetNodeWorker:
         if binding.state == "indeterminate":
             await _fail(incoming, "Fleet execution binding is indeterminate")
             return
+        if binding.state == "cancelled":
+            await _fail(incoming, "Fleet Hermes execution was cancelled")
+            return
 
         run_id = binding.run_id
         if created:
@@ -291,12 +321,24 @@ class FleetNodeWorker:
                 now_ms=self._now_ms(),
             )
         except ValueError:
-            await asyncio.to_thread(
-                self._hermes.stop,
-                run_id,
-                timeout_seconds=0.25,
-            )
-            self._bindings.mark_indeterminate(task_id)
+            try:
+                await asyncio.to_thread(self._hermes.stop, run_id)
+            except HermesRunError:
+                try:
+                    self._bindings.mark_indeterminate(task_id)
+                except ValueError:
+                    if await self._reply_from_terminal_binding(
+                        incoming, task_id=task_id, run_id=run_id
+                    ):
+                        return
+            else:
+                try:
+                    self._bindings.mark_cancelled(task_id, run_id)
+                except ValueError:
+                    if await self._reply_from_terminal_binding(
+                        incoming, task_id=task_id, run_id=run_id
+                    ):
+                        return
             await _fail(incoming, "Fleet task deadline has expired")
             return
 
@@ -309,8 +351,31 @@ class FleetNodeWorker:
             if result.run_id != run_id:
                 raise ValueError("Hermes returned a mismatched run ID")
             completed = self._bindings.complete(task_id, run_id, result.text)
+        except HermesRunDeadlineExceeded:
+            try:
+                self._bindings.mark_cancelled(task_id, run_id)
+            except ValueError:
+                if await self._reply_from_terminal_binding(
+                    incoming, task_id=task_id, run_id=run_id
+                ):
+                    return
+            await _fail(incoming, "Fleet Hermes execution exceeded deadline")
+            logger.info(
+                "fleet execution cancelled task_id=%s peer_id=%s "
+                "hermes_run_id=%s status=deadline-exceeded",
+                task_id,
+                peer_id,
+                _bounded_label(run_id, "unknown"),
+            )
+            return
         except (HermesRunError, ValueError):
-            self._bindings.mark_indeterminate(task_id)
+            try:
+                self._bindings.mark_indeterminate(task_id)
+            except ValueError:
+                if await self._reply_from_terminal_binding(
+                    incoming, task_id=task_id, run_id=run_id
+                ):
+                    return
             await _fail(incoming, "Fleet Hermes execution is indeterminate")
             logger.info(
                 "fleet execution failed task_id=%s peer_id=%s status=indeterminate",

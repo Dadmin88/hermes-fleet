@@ -174,6 +174,117 @@ def test_fleet_node_binds_one_keryx_task_to_one_hermes_run(tmp_path) -> None:
     assert incoming.completed[0]["name"] == "hermes-result.txt"
 
 
+def test_fleet_node_deadline_cancellation_is_terminal_for_exact_binding(
+    tmp_path,
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunDeadlineExceeded
+    from hermes_fleet.run_binding import RunBindingStore
+
+    class DeadlineHermes(_Hermes):
+        def wait(self, *, run_id: str, timeout_seconds: float):
+            self.wait_calls.append((run_id, timeout_seconds))
+            raise HermesRunDeadlineExceeded("Hermes run exceeded Fleet deadline")
+
+    operation = "fleet.hermes.run"
+    state_path = tmp_path / "bindings.db"
+    incoming = _IncomingTask(_payload(operation), operation)
+    hermes = DeadlineHermes()
+
+    asyncio.run(_worker(hermes, state_path).handle_task(incoming))
+
+    binding = RunBindingStore(state_path).get("task-1")
+    assert binding is not None
+    assert binding.state == "cancelled"
+    assert binding.run_id == "run-vps-1"
+    assert incoming.completed is None
+    assert incoming.failed == "Fleet Hermes execution exceeded deadline"
+
+    duplicate = _IncomingTask(_payload(operation), operation)
+    asyncio.run(_worker(hermes, state_path).handle_task(duplicate))
+    assert len(hermes.start_calls) == 1
+    assert duplicate.failed == "Fleet Hermes execution was cancelled"
+
+
+def test_fleet_node_replays_completion_when_deadline_transition_loses(
+    tmp_path,
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunDeadlineExceeded
+    from hermes_fleet.run_binding import RunBindingStore
+
+    state_path = tmp_path / "bindings.db"
+
+    class CompletingDeadlineHermes(_Hermes):
+        def wait(self, *, run_id: str, timeout_seconds: float):
+            self.wait_calls.append((run_id, timeout_seconds))
+            RunBindingStore(state_path).complete("task-1", run_id, "winner")
+            raise HermesRunDeadlineExceeded("Hermes run exceeded Fleet deadline")
+
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(_payload(operation), operation)
+
+    asyncio.run(
+        _worker(CompletingDeadlineHermes(), state_path).handle_task(incoming)
+    )
+
+    assert incoming.failed is None
+    assert _completed_text(incoming) == "winner"
+    binding = RunBindingStore(state_path).get("task-1")
+    assert binding is not None
+    assert binding.state == "completed"
+
+
+def test_fleet_node_fails_cancelled_when_late_completion_transition_loses(
+    tmp_path,
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunResult
+    from hermes_fleet.run_binding import RunBindingStore
+
+    state_path = tmp_path / "bindings.db"
+
+    class CancellingResultHermes(_Hermes):
+        def wait(self, *, run_id: str, timeout_seconds: float):
+            self.wait_calls.append((run_id, timeout_seconds))
+            RunBindingStore(state_path).mark_cancelled("task-1", run_id)
+            return HermesRunResult(run_id=run_id, text="late result")
+
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(_payload(operation), operation)
+
+    asyncio.run(_worker(CancellingResultHermes(), state_path).handle_task(incoming))
+
+    assert incoming.completed is None
+    assert incoming.failed == "Fleet Hermes execution was cancelled"
+    binding = RunBindingStore(state_path).get("task-1")
+    assert binding is not None
+    assert binding.state == "cancelled"
+
+
+def test_fleet_node_replays_completion_when_indeterminate_transition_loses(
+    tmp_path,
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunError
+    from hermes_fleet.run_binding import RunBindingStore
+
+    state_path = tmp_path / "bindings.db"
+
+    class CompletingErrorHermes(_Hermes):
+        def wait(self, *, run_id: str, timeout_seconds: float):
+            self.wait_calls.append((run_id, timeout_seconds))
+            RunBindingStore(state_path).complete("task-1", run_id, "winner")
+            raise HermesRunError("observation failed after completion")
+
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(_payload(operation), operation)
+
+    asyncio.run(_worker(CompletingErrorHermes(), state_path).handle_task(incoming))
+
+    assert incoming.failed is None
+    assert _completed_text(incoming) == "winner"
+    binding = RunBindingStore(state_path).get("task-1")
+    assert binding is not None
+    assert binding.state == "completed"
+
+
 def test_fleet_node_replays_completed_binding_without_second_run(tmp_path) -> None:
     operation = "fleet.hermes.run"
     state_path = tmp_path / "bindings.db"

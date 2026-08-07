@@ -27,6 +27,10 @@ class HermesRunIndeterminate(HermesRunError):
     """A known run can no longer be observed safely."""
 
 
+class HermesRunDeadlineExceeded(HermesRunError):
+    """The exact bound run accepted cancellation at its Fleet deadline."""
+
+
 @dataclass(frozen=True, slots=True)
 class HermesRunResult:
     """Terminal text returned by one authenticated Hermes run."""
@@ -76,8 +80,7 @@ class HermesRunsClient:
         run_id = self.start(prompt=prompt, timeout_seconds=timeout_seconds)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            self.stop(run_id, timeout_seconds=0.25)
-            raise HermesRunError("Hermes run exceeded Fleet deadline")
+            self._cancel_at_deadline(run_id)
         return self.wait(run_id=run_id, timeout_seconds=remaining)
 
     def health(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
@@ -181,8 +184,7 @@ class HermesRunsClient:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self.stop(run_id, timeout_seconds=0.25)
-                raise HermesRunError("Hermes run exceeded Fleet deadline")
+                self._cancel_at_deadline(run_id)
 
             status_code, document = self._request_json(
                 "GET",
@@ -211,15 +213,30 @@ class HermesRunsClient:
             time.sleep(min(self._poll_interval_seconds, remaining))
 
     def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None:
-        """Best-effort cooperative stop for one known run."""
+        """Request and confirm cooperative stop for one exact known run."""
+        if type(run_id) is not str or not run_id:
+            raise ValueError("Hermes run ID must be a nonempty string")
+        status_code, document = self._request_json(
+            "POST",
+            f"/v1/runs/{run_id}/stop",
+            timeout_seconds=timeout_seconds,
+        )
+        if (
+            status_code != 200
+            or document.get("run_id") != run_id
+            or document.get("status") not in {"stopping", "cancelled"}
+        ):
+            raise HermesRunError("Hermes run cancellation was not confirmed")
+
+    def _cancel_at_deadline(self, run_id: str) -> None:
+        """Confirm exact-run cancellation outside the expired execution budget."""
         try:
-            self._request_json(
-                "POST",
-                f"/v1/runs/{run_id}/stop",
-                timeout_seconds=timeout_seconds,
-            )
+            self.stop(run_id)
         except HermesRunError:
-            pass
+            raise HermesRunIndeterminate(
+                "Hermes deadline cancellation is indeterminate"
+            ) from None
+        raise HermesRunDeadlineExceeded("Hermes run exceeded Fleet deadline")
 
     def _request_json(
         self,
