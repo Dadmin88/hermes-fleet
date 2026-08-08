@@ -122,3 +122,9 @@ Cross-node cancellation intentionally fails closed because Keryx cannot yet prov
 - Cross-node artifact bytes, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, workflow graphs, Kanban integration, Android/Termux, public-internet exposure, and multi-tenant architecture remain deferred.
 - The deployed Tailscale TLS certificate expires on 2026-09-17 and must be renewed before that date, followed by a relay restart.
 - The Katana Hermes gateway must be restarted after a Fleet plugin update before the model tools are available in that gateway process; CLI operations do not require a long-running Fleet controller daemon.
+
+## License
+
+Current versions of Hermes Fleet are licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
+
+Code published in earlier commits under the MIT License remains available under the license terms that applied when it was published.
