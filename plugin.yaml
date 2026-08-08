@@ -2,7 +2,7 @@ name: hermes-fleet
 version: 0.1.0
 description: "Keryx-backed Hermes node communication, coordination, and deliberate remote execution."
 author: Kyle French
-license: MIT
+license: AGPL-3.0-only
 platforms:
   - linux
 provides_tools:
