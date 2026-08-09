@@ -138,6 +138,7 @@ struct ProjectionStep {
     document: ProjectionDocument,
     expected_outcome: ApplyOutcome,
     expected_generation: String,
+    expected_record_from_step: usize,
 }
 
 #[test]
@@ -148,6 +149,11 @@ fn managed_projection_outcomes_match_the_python_oracle() {
     .expect("valid managed projection fixture");
     assert_eq!(fixture.schema, "hermes-fleet.managed-projection-compat.v1");
 
+    let expected_documents: Vec<_> = fixture
+        .steps
+        .iter()
+        .map(|step| step.document.clone())
+        .collect();
     let mut current = fixture.initial;
     for step in fixture.steps {
         let applied = apply_projection(current.as_ref(), step.document)
@@ -161,6 +167,10 @@ fn managed_projection_outcomes_match_the_python_oracle() {
                 .get()
                 .to_string(),
             step.expected_generation
+        );
+        assert_eq!(
+            applied.record.document,
+            expected_documents[step.expected_record_from_step]
         );
         current = Some(applied.record);
     }

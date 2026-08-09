@@ -51,6 +51,53 @@ def test_domain_fixture_matches_python_operation_and_selection_truth() -> None:
         assert [node.name for node in selected] == case["expected"]
 
 
+def test_domain_fixture_matches_python_authority_and_recovery_truth(tmp_path) -> None:
+    from hermes_fleet.managed_projection import ManagedProjectionStore
+    from hermes_fleet.run_binding import RunBinding, recovery_action
+
+    fixture = _load("domain-v1.json")
+    store = ManagedProjectionStore(tmp_path / "managed-authority.sqlite3")
+    for index, case in enumerate(fixture["managed_authority"], start=1):
+        device_id = f"authority-{index}"
+        key = {
+            "source": "nodescale",
+            "network_id": "network-1",
+            "device_id": device_id,
+        }
+        assert (
+            store.apply(
+                source=key["source"],
+                network_id=key["network_id"],
+                device_id=key["device_id"],
+                projection_generation="1",
+                membership_generation="1",
+                binding_generation="1",
+                content_hash=f"{index:064x}",
+                operation="upsert",
+                generated_operations=tuple(case["generated"]),
+                provenance={**key, "snapshot": "1"},
+            ).outcome
+            == "applied"
+        )
+        for operation in case["denied"]:
+            store.set_operator_deny(**key, operation=operation, denied=True)
+        inspected = store.inspect(**key)
+        assert list(inspected["generated"]["allowed_operations"]) == sorted(
+            case["generated"]
+        )
+        assert list(inspected["effective"]["allowed_operations"]) == case["expected"]
+
+    for index, case in enumerate(fixture["run_recovery"], start=1):
+        state = case["state"]
+        binding = RunBinding(
+            task_id=f"task-{index}",
+            state=state["kind"],
+            run_id=state.get("run_id"),
+            result_text=state.get("result"),
+        )
+        assert recovery_action(binding, created=False) == case["expected"]
+
+
 def test_managed_projection_fixture_matches_python_outcomes(tmp_path) -> None:
     from hermes_fleet.managed_projection import ManagedProjectionStore
 
@@ -71,3 +118,22 @@ def test_managed_projection_fixture_matches_python_outcomes(tmp_path) -> None:
             device_id=document["device_id"],
         )["generated"]
         assert generated["projection_generation"] == step["expected_generation"]
+        expected = fixture["steps"][step["expected_record_from_step"]]["document"]
+        expected_state = {
+            "upsert": "active",
+            "disable": "disabled",
+            "remove": "removed",
+        }[expected["operation"]]
+        assert generated == {
+            "state": expected_state,
+            "projection_generation": expected["projection_generation"],
+            "membership_generation": expected["membership_generation"],
+            "binding_generation": expected["binding_generation"],
+            "content_hash": expected["content_hash"],
+            "allowed_operations": tuple(
+                sorted(expected["generated_operations"])
+                if expected_state == "active"
+                else ()
+            ),
+            "provenance": expected["provenance"],
+        }
