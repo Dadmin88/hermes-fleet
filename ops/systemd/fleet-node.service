@@ -1,6 +1,6 @@
 [Unit]
 Description=Hermes Fleet node dispatcher
-After=network-online.target keryxd.service keryx-node.service hermes-fleet-api.service
+After=network-online.target keryxd.service keryx-node.service hermes-fleet-api.service fleet-managed-projection.service
 Wants=network-online.target keryxd.service keryx-node.service hermes-fleet-api.service
 
 [Service]

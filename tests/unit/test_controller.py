@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 
 @dataclass(frozen=True)
 class _Receipt:
@@ -235,6 +237,36 @@ def test_high_level_controller_accepts_worker_inventory_response() -> None:
             "fleet.inventory",
             "fleet.message",
         ],
+        "readiness": {
+            "managed_state": "active",
+            "admission_generation": 1,
+            "alive": True,
+            "fresh": True,
+            "scheduler_ready": True,
+            "observation_age_ms": 10,
+            "reasons": [],
+            "last_observation": {
+                "admission_generation": 1,
+                "observed_at_ms": 1000,
+                "received_at_ms": 1001,
+                "network": "reachable",
+                "keryx": "available",
+                "hermes": "available",
+                "worker": "available",
+            },
+            "capacity": {
+                "active_workers": 0,
+                "max_workers": 1,
+                "available_worker_slots": 1,
+            },
+            "resources": {
+                "cpu": None,
+                "ram": None,
+                "swap": None,
+                "disk": None,
+                "gpu": None,
+            },
+        },
     }
     keryx.handle = _Handle(text=json.dumps(expected))
 
@@ -248,3 +280,13 @@ def test_high_level_controller_accepts_worker_inventory_response() -> None:
     assert result.response == expected
     assert result.routed_to == "peer-vps"
     assert result.untrusted is True
+
+    expected["readiness"]["extra"] = "not-owned"
+    keryx.handle = _Handle(text=json.dumps(expected))
+    with pytest.raises(RuntimeError, match="invalid direct response"):
+        asyncio.run(
+            FleetController(keryx=keryx, config=_config()).get_inventory(
+                "vps",
+                deadline_seconds=30,
+            )
+        )

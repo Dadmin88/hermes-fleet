@@ -11,6 +11,7 @@ from typing import Any, Protocol, cast
 from .config import FleetConfig
 from .envelope import ENVELOPE_VERSION, OPERATIONS, FleetEnvelope, parse_envelope
 from .models import NodeConfig, RemoteOutput
+from .observation import normalize_readiness
 from .policy import enforce_request_policy
 from .selection import select_nodes
 
@@ -278,9 +279,11 @@ def _artifact_text(artifacts: object) -> str | None:
 
 _DIRECT_RESPONSE_KEYS = {
     "fleet.health": frozenset(
-        {"operation", "status", "adapter", "keryx_delivery", "hermes"}
+        {"operation", "status", "adapter", "keryx_delivery", "hermes", "readiness"}
     ),
-    "fleet.inventory": frozenset({"operation", "status", "node", "capabilities"}),
+    "fleet.inventory": frozenset(
+        {"operation", "status", "node", "capabilities", "readiness"}
+    ),
     "fleet.message": frozenset(
         {
             "operation",
@@ -323,4 +326,11 @@ def _direct_response(text: str, operation: str) -> dict[str, Any]:
         or type(response.get("status")) is not str
     ):
         raise RuntimeError("Fleet node returned an invalid direct response")
+    if "readiness" in response:
+        try:
+            response["readiness"] = normalize_readiness(response["readiness"])
+        except ValueError:
+            raise RuntimeError(
+                "Fleet node returned an invalid direct response"
+            ) from None
     return response

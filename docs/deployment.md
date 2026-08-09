@@ -107,7 +107,7 @@ Validate that:
 
 ## Keryx requirements
 
-Fleet depends on public Keryx behavior rather than Keryx database internals.
+Fleet depends on public Keryx behavior rather than Keryx database internals. The Python package pins the worker SDK to immutable Keryx commit `f4ee645e415600a959ea8062d1143140bd6c2616`; installing the Fleet wheel installs that SDK revision and its declared dependencies. Keryx daemon/relay binaries remain separate service prerequisites and should be deployed from a contract-compatible reviewed revision.
 
 Before enabling Fleet traffic, verify:
 
@@ -118,6 +118,19 @@ Before enabling Fleet traffic, verify:
 - result delivery and durable task reattachment work on the deployed Keryx revision.
 
 Do not use a service that reads or mutates Keryx SQLite directly as a Fleet fallback. Keryx's public daemon/SDK contracts are the supported boundary.
+
+## Fleet node environment contract
+
+The bundled worker reads its service environment from the site-owned `fleet-node.env`. A production environment must define:
+
+- `FLEET_NODE_NAME`: one exact enabled name from the selected Fleet inventory;
+- `FLEET_CONTROLLER_PEER_IDS`: a comma-separated, non-empty set of exact controller peer IDs used for sender authorization and controller-route observations;
+- `KERYX_NODE_TOKEN`: the worker's secret Keryx node token;
+- `API_SERVER_KEY`: the secret credential for the loopback Hermes Runs API.
+
+Observation publishing is optional, but its three settings are atomic: define `FLEET_OBSERVATION_SOCKET`, `NODESCALE_NETWORK_ID`, and `NODESCALE_DEVICE_ID` together or omit all three. The socket must match the Rust managed-control unit and the two IDs must match an active managed projection. Keep the environment file outside Git with mode `0600`; do not place tokens in the unit or inventory.
+
+The example unit's inventory path and profile are baseline deployment examples. Sites using another profile or layout must install a systemd drop-in that replaces `ExecStart` with exact absolute `--config` and `--binding-db` paths rather than copying machine-specific paths into the repository.
 
 ## Hermes Runs API
 
@@ -147,7 +160,27 @@ The `fleet-managed-projection` service should use:
 
 See [Managed projection V1](managed-projection-v1.md) for the wire and authorization contract.
 
+### Node observations
+
+When managed projection and scheduler-readiness observation are enabled on a worker, the same Rust service also owns the bounded local observation interface and current observation state. Configure `fleet-node` with:
+
+- `FLEET_OBSERVATION_SOCKET` matching the managed-control socket;
+- `NODESCALE_NETWORK_ID` and `NODESCALE_DEVICE_ID` matching the active managed projection;
+- an optional `--observation-interval` (30 seconds by default).
+
+Configure `fleet-managed-control` with an optional `--freshness-seconds` (90 seconds by default). Keep the observation interval below the freshness window so a healthy publisher refreshes before expiry.
+
+The Fleet node publishes after Keryx registration, on its periodic interval, and when Hermes execution capacity changes. Publication failure does not convert stale data into ready data: the last-known observation remains inspectable and becomes not-ready after the freshness window.
+
+See [Node observations and scheduler readiness](node-readiness.md) for the field and reason model.
+
 ## Deployment sequence
+
+Install the built Python wheel into the worker runtime. Install the Rust control binary at the path used by the example user unit with:
+
+```bash
+cargo install --locked --path crates/fleet-control --bin fleet-managed-control --root "$HOME/.local"
+```
 
 A conservative rollout sequence is:
 
@@ -162,8 +195,8 @@ A conservative rollout sequence is:
 9. Start the relay and verify health.
 10. Start local Keryx daemons and edge nodes and verify authenticated connectivity.
 11. Start the worker's local Hermes Runs API if executable Fleet operations are enabled.
-12. Start `fleet-node` and verify advertised Fleet skills.
-13. Start managed projection only if Nodescale integration is required.
+12. Start managed projection first when Nodescale-managed state or node observations are enabled.
+13. Start `fleet-node` and verify advertised Fleet skills and its first readiness observation.
 14. Run the [integration verification](smoke-test.md).
 15. Restart any already-running Hermes gateway that must load a newly installed Fleet plugin version.
 
@@ -181,6 +214,8 @@ Verify:
 - executable Fleet operations create at most one bound run per Keryx task;
 - peer-originated output is presented as untrusted;
 - managed projection cannot grant `fleet.hermes.run`;
+- configured nodes report last observation time, freshness, worker capacity, and readiness reasons through health/inventory;
+- stopping observation refresh makes the node stale and not-ready without deleting last-known state;
 - state and secret files have restrictive ownership and modes;
 - logs do not contain tokens, prompts where prohibited, TLS private material, or API credentials.
 
@@ -191,15 +226,18 @@ When updating Fleet or Keryx:
 1. review changelogs and contract changes;
 2. run the repository test gates on the candidate revisions;
 3. update one boundary at a time where possible;
-4. preserve durable state and identities;
-5. rerun direct communication, deliberate execution, status reattachment, and deadline checks;
-6. restart a running Hermes gateway after a Fleet plugin update so it loads the new plugin code.
+4. before the new Rust managed-control service first opens any schema-v1 or schema-v2 Fleet database, stop that service and take a consistent SQLite backup that can be restored independently of the live WAL/SHM files;
+5. preserve durable state and identities;
+6. rerun direct communication, deliberate execution, status reattachment, and deadline checks;
+7. restart a running Hermes gateway after a Fleet plugin update so it loads the new plugin code.
 
 Avoid treating a successful process restart as proof that cross-node request/result semantics still work.
 
 ## Rollback
 
 Rollback should restore the previously known-good binaries and service configuration while preserving evidence and durable state for diagnosis.
+
+The readiness release upgrades the Fleet state database through schema 2 to schema 3. Schema 2 adds the current-observation table; schema 3 transactionally discards any pre-fence observation JSON so a fresh projection-generation-bound sample is required. A schema-1 or schema-2 binary must not be started against a migrated schema-3 database. Rolling the Rust service itself back therefore requires restoring the consistent pre-upgrade Fleet database backup together with the old binary. If the new Rust service remains installed, observation publishing can instead be disabled on `fleet-node` without removing the schema-3 table or last-known records.
 
 Do not delete:
 

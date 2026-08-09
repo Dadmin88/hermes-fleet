@@ -92,6 +92,16 @@ Managed state is separate from:
 
 The projection contract provides generation-based application, replay detection, conflict detection, and authoritative read-back. See [Managed projection V1](managed-projection-v1.md).
 
+## Operational observations and readiness
+
+Managed membership answers whether Fleet knows and admits a node. It does not prove that the node is alive or able to receive useful work.
+
+The existing Fleet worker publishes one bounded current observation through the local Rust control service. Fleet persists the observation in `fleet-state` and derives liveness and scheduler readiness from managed state, receipt freshness, network/Keryx/Hermes/worker availability, and remaining Fleet-owned execution capacity. This capacity describes Fleet's configured local execution slot, not global Hermes admission or non-Fleet work. Readiness is explainable through machine-readable reasons and is recomputed rather than stored as a second authority.
+
+Observation traffic is local and replaces the current sample; it is not recorded as high-frequency Keryx task rows or an unbounded metrics history. Existing `fleet.health` and `fleet.inventory` responses add the derived readiness view when observation publishing is configured.
+
+See [Node observations and scheduler readiness](node-readiness.md) for fields, freshness, reason codes, and operator configuration.
+
 ## Deliberate Hermes execution
 
 `fleet.hermes.run` is the only initial operation that starts Hermes execution.
@@ -119,6 +129,10 @@ Human-managed node inventory and local policy. This remains separate from genera
 ### Managed projection state
 
 Fleet-owned durable records generated from Nodescale projections, including generations, content identity, provenance, and generated operation sets.
+
+### Observation state
+
+One current typed operational observation per managed node. It preserves last-known facts across restart, rejects out-of-order replacement, and provides the inputs for time-dependent liveness and readiness derivation. It is not a telemetry history or a replacement for Keryx state.
 
 ### Execution binding state
 

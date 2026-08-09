@@ -1,8 +1,10 @@
-//! Authenticated Linux Unix-domain local control for durable managed projections.
+//! Authenticated Linux Unix-domain control for durable managed projections and
+//! bounded current node observations.
 //!
-//! The wire protocol is the accepted Nodescale/Fleet V1 contract. Peer Unix
-//! credentials are the only authentication input; request JSON contains no
-//! principal or credential.
+//! The service preserves the accepted Nodescale/Fleet projection V1 contract and
+//! adds the narrow Fleet node-observation V1 contract on the same local socket.
+//! Peer Unix credentials are the only authentication input; request JSON contains
+//! no principal or credential.
 
 #![cfg(target_os = "linux")]
 
@@ -25,22 +27,28 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use fleet_domain::{
-    ApplyOutcome, FleetOperation, Generation, ManagedOperation, ProjectionDocument,
+    ApplyOutcome, FleetOperation, Generation, ManagedOperation, NodeObservation,
+    ProjectionDocument, ReadinessPolicy,
 };
-use fleet_state::{FleetStateStore, ProjectionView, StateError};
+use fleet_state::{
+    FleetStateStore, NodeOperationalView, ObservationOutcome, ProjectionView, StateError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const SCHEMA: &str = "fleet.managed-projection.v1";
+pub const OBSERVATION_SCHEMA: &str = "fleet.node-observation.v1";
 pub const MAX_FRAME_BYTES: usize = 32_768;
 pub const MAX_CONNECTIONS: usize = 32;
 pub const IO_TIMEOUT: Duration = Duration::from_secs(2);
+pub const DEFAULT_FRESHNESS_WINDOW: Duration = Duration::from_secs(90);
+const MAX_FRESHNESS_WINDOW: Duration = Duration::from_secs(86_400);
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Error)]
@@ -79,6 +87,7 @@ pub struct ControlConfig {
     pub database_path: PathBuf,
     pub allowed_uid: u32,
     pub socket_gid: Option<u32>,
+    pub freshness_window: Duration,
 }
 
 impl ControlConfig {
@@ -95,7 +104,16 @@ impl ControlConfig {
             database_path,
             allowed_uid,
             socket_gid,
+            freshness_window: DEFAULT_FRESHNESS_WINDOW,
         })
+    }
+
+    pub fn with_freshness_window(mut self, freshness_window: Duration) -> Result<Self> {
+        if freshness_window.as_millis() == 0 || freshness_window > MAX_FRESHNESS_WINDOW {
+            return Err(ControlError::MalformedRequest);
+        }
+        self.freshness_window = freshness_window;
+        Ok(self)
     }
 }
 
@@ -125,8 +143,9 @@ pub fn run(config: ControlConfig, shutdown: Arc<AtomicBool>) -> Result<()> {
                 }
                 let worker_state = state.clone();
                 let allowed_uid = config.allowed_uid;
+                let freshness_window = config.freshness_window;
                 workers.push(thread::spawn(move || {
-                    serve_connection(stream, allowed_uid, worker_state);
+                    serve_connection(stream, allowed_uid, freshness_window, worker_state);
                 }));
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -161,20 +180,31 @@ fn reap_workers(workers: &mut Vec<JoinHandle<()>>) -> Result<()> {
     Ok(())
 }
 
-fn serve_connection(mut stream: UnixStream, allowed_uid: u32, state: FleetStateStore) {
+fn serve_connection(
+    mut stream: UnixStream,
+    allowed_uid: u32,
+    freshness_window: Duration,
+    state: FleetStateStore,
+) {
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     if peer_uid(&stream).ok() != Some(allowed_uid) {
         return;
     }
-    let response =
-        match receive_request(&mut stream).and_then(|request| dispatch_response(request, &state)) {
+    let (request, schema) = receive_request(&mut stream);
+    let response = match request {
+        Ok(request) => match dispatch_response(request, &state, freshness_window) {
             Ok(response) => response,
             Err(error) => {
-                eprintln!("managed control request failed: {error}");
-                error_response()
+                eprintln!("fleet control request failed: {error}");
+                error_response(schema)
             }
-        };
+        },
+        Err(error) => {
+            eprintln!("fleet control request failed: {error}");
+            error_response(schema)
+        }
+    };
     let _ = send_response(&mut stream, &response);
 }
 
@@ -202,7 +232,16 @@ fn peer_uid(stream: &UnixStream) -> Result<u32> {
     Ok(credentials.uid)
 }
 
-fn receive_request(stream: &mut UnixStream) -> Result<Request> {
+fn receive_request(stream: &mut UnixStream) -> (Result<Request>, &'static str) {
+    let payload = match receive_payload(stream) {
+        Ok(payload) => payload,
+        Err(error) => return (Err(error), SCHEMA),
+    };
+    let schema = declared_schema(&payload);
+    (parse_request(&payload), schema)
+}
+
+fn receive_payload(stream: &mut UnixStream) -> Result<Vec<u8>> {
     let mut header = [0_u8; 4];
     stream
         .read_exact(&mut header)
@@ -220,13 +259,29 @@ fn receive_request(stream: &mut UnixStream) -> Result<Request> {
         Ok(0) => {}
         Ok(_) | Err(_) => return Err(ControlError::MalformedRequest),
     }
-    parse_request(&payload)
+    Ok(payload)
+}
+
+fn declared_schema(payload: &[u8]) -> &'static str {
+    let schema = serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("schema")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    if schema.as_deref() == Some(OBSERVATION_SCHEMA) {
+        OBSERVATION_SCHEMA
+    } else {
+        SCHEMA
+    }
 }
 
 fn parse_request(payload: &[u8]) -> Result<Request> {
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| ControlError::MalformedRequest)?;
-    if request.schema() != SCHEMA {
+    if request.schema() != request.expected_schema() {
         return Err(ControlError::UnsupportedSchema);
     }
     Ok(request)
@@ -238,6 +293,8 @@ enum Request {
     Capabilities(CapabilitiesRequest),
     Apply(ApplyRequest),
     Inspect(InspectRequest),
+    Observe(ObserveRequest),
+    InspectObservation(InspectObservationRequest),
 }
 
 impl Request {
@@ -246,6 +303,15 @@ impl Request {
             Self::Capabilities(request) => &request.schema,
             Self::Apply(request) => &request.schema,
             Self::Inspect(request) => &request.schema,
+            Self::Observe(request) => &request.schema,
+            Self::InspectObservation(request) => &request.schema,
+        }
+    }
+
+    const fn expected_schema(&self) -> &'static str {
+        match self {
+            Self::Capabilities(_) | Self::Apply(_) | Self::Inspect(_) => SCHEMA,
+            Self::Observe(_) | Self::InspectObservation(_) => OBSERVATION_SCHEMA,
         }
     }
 }
@@ -273,6 +339,23 @@ struct InspectRequest {
     selector: InspectSelector,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObserveRequest {
+    schema: String,
+    kind: ObserveKind,
+    selector: InspectSelector,
+    observation: NodeObservation,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InspectObservationRequest {
+    schema: String,
+    kind: InspectObservationKind,
+    selector: InspectSelector,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum CapabilitiesKind {
     #[serde(rename = "capabilities")]
@@ -289,6 +372,18 @@ enum ApplyKind {
 enum InspectKind {
     #[serde(rename = "inspect")]
     Inspect,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ObserveKind {
+    #[serde(rename = "observe")]
+    Observe,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum InspectObservationKind {
+    #[serde(rename = "inspect_observation")]
+    InspectObservation,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -451,7 +546,11 @@ fn validate_identifier(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_result(request: Request, state: &FleetStateStore) -> Result<Value> {
+fn dispatch_result(
+    request: Request,
+    state: &FleetStateStore,
+    freshness_window: Duration,
+) -> Result<Value> {
     match request {
         Request::Capabilities(request) => {
             let _ = request.kind;
@@ -516,6 +615,46 @@ fn dispatch_result(request: Request, state: &FleetStateStore) -> Result<Value> {
             }
             Ok(inspect_value(view))
         }
+        Request::Observe(request) => {
+            let _ = request.kind;
+            validate_identifier(&request.selector.source)?;
+            validate_identifier(&request.selector.network_id)?;
+            validate_identifier(&request.selector.device_id)?;
+            let applied = state
+                .record_observation(
+                    &request.selector.source,
+                    &request.selector.network_id,
+                    &request.selector.device_id,
+                    request.observation,
+                    current_time_ms()?,
+                )
+                .map_err(map_state_error)?;
+            let outcome = match applied.outcome {
+                ObservationOutcome::Recorded => "recorded",
+                ObservationOutcome::AlreadyRecorded => "already_recorded",
+                ObservationOutcome::Stale => "stale",
+                ObservationOutcome::Conflict => "conflict",
+            };
+            Ok(json!({"outcome":outcome}))
+        }
+        Request::InspectObservation(request) => {
+            let _ = request.kind;
+            validate_identifier(&request.selector.source)?;
+            validate_identifier(&request.selector.network_id)?;
+            validate_identifier(&request.selector.device_id)?;
+            let policy = ReadinessPolicy::new(freshness_window.as_millis() as u64)
+                .map_err(|_| ControlError::MalformedRequest)?;
+            let view = state
+                .inspect_node(
+                    &request.selector.source,
+                    &request.selector.network_id,
+                    &request.selector.device_id,
+                    current_time_ms()?,
+                    policy,
+                )
+                .map_err(map_state_error)?;
+            Ok(observation_value(view))
+        }
     }
 }
 
@@ -575,6 +714,52 @@ fn inspect_value(view: ProjectionView) -> Value {
     json!({"generated":generated,"effective":effective})
 }
 
+fn observation_value(view: NodeOperationalView) -> Value {
+    let (last_observation, capacity, resources) = match view.observation {
+        None => (Value::Null, Value::Null, Value::Null),
+        Some(record) => {
+            let observation = record.observation;
+            (
+                json!({
+                    "admission_generation": observation.admission_generation,
+                    "observed_at_ms": observation.observed_at_ms,
+                    "received_at_ms": record.received_at_ms,
+                    "network": observation.network,
+                    "keryx": observation.keryx,
+                    "hermes": observation.hermes,
+                    "worker": observation.worker,
+                }),
+                json!({
+                    "active_workers": observation.capacity.active_workers,
+                    "max_workers": observation.capacity.max_workers,
+                    "available_worker_slots": observation.capacity.available_worker_slots(),
+                }),
+                json!(observation.resources),
+            )
+        }
+    };
+    json!({
+        "managed_state": view.managed_state,
+        "admission_generation": view.admission_generation,
+        "alive": view.readiness.alive,
+        "fresh": view.readiness.fresh,
+        "scheduler_ready": view.readiness.scheduler_ready,
+        "observation_age_ms": view.readiness.observation_age_ms,
+        "reasons": view.readiness.reasons,
+        "last_observation": last_observation,
+        "capacity": capacity,
+        "resources": resources,
+    })
+}
+
+fn current_time_ms() -> Result<u64> {
+    let milliseconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ControlError::MalformedRequest)?
+        .as_millis();
+    u64::try_from(milliseconds).map_err(|_| ControlError::MalformedRequest)
+}
+
 const fn managed_state(operation: ManagedOperation) -> &'static str {
     match operation {
         ManagedOperation::Upsert => "active",
@@ -583,21 +768,29 @@ const fn managed_state(operation: ManagedOperation) -> &'static str {
     }
 }
 
-fn success_response(kind: &'static str, result: Value) -> Value {
-    json!({"schema":SCHEMA,"kind":kind,"ok":true,"result":result})
+fn success_response(schema: &'static str, kind: &'static str, result: Value) -> Value {
+    json!({"schema":schema,"kind":kind,"ok":true,"result":result})
 }
 
-fn error_response() -> Value {
-    json!({"schema":SCHEMA,"kind":"error","ok":false,"error":"invalid_request"})
+fn error_response(schema: &'static str) -> Value {
+    json!({"schema":schema,"kind":"error","ok":false,"error":"invalid_request"})
 }
 
-fn dispatch_response(request: Request, state: &FleetStateStore) -> Result<Value> {
+fn dispatch_response(
+    request: Request,
+    state: &FleetStateStore,
+    freshness_window: Duration,
+) -> Result<Value> {
+    let schema = request.expected_schema();
     let kind = match &request {
         Request::Capabilities(_) => "capabilities",
         Request::Apply(_) => "apply",
         Request::Inspect(_) => "inspect",
+        Request::Observe(_) => "observe",
+        Request::InspectObservation(_) => "inspect_observation",
     };
-    dispatch_result(request, state).map(|result| success_response(kind, result))
+    dispatch_result(request, state, freshness_window)
+        .map(|result| success_response(schema, kind, result))
 }
 
 fn send_response(stream: &mut UnixStream, response: &Value) -> Result<()> {
@@ -744,11 +937,10 @@ impl OwnedListener {
 }
 
 fn cleanup_owned_socket(path: &Path, device: u64, inode: u64) {
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && metadata.file_type().is_socket()
-        && metadata.dev() == device
-        && metadata.ino() == inode
-    {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_socket() && metadata.dev() == device && metadata.ino() == inode {
         let _ = fs::remove_file(path);
     }
 }

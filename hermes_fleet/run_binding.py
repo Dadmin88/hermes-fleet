@@ -111,6 +111,41 @@ class RunBindingStore:
             assert binding is not None
             return binding, cursor.rowcount == 1
 
+    def reserve_execution_if_available(
+        self, task_id: str, *, max_unresolved: int
+    ) -> tuple[RunBinding | None, bool]:
+        """Reserve a new task only when a Fleet-owned execution slot is free."""
+        task_id = _identifier(task_id, "task ID")
+        if isinstance(max_unresolved, bool) or not isinstance(max_unresolved, int):
+            raise ValueError("max unresolved bindings must be an integer")
+        if max_unresolved < 1 or max_unresolved > 1_024:
+            raise ValueError("max unresolved bindings is outside the supported range")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = self._get(connection, task_id, required=False)
+            if existing is not None:
+                return existing, False
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM run_bindings
+                WHERE state IN ('creating', 'running', 'indeterminate')
+                """
+            ).fetchone()
+            assert row is not None
+            if int(row[0]) >= max_unresolved:
+                return None, False
+            connection.execute(
+                """
+                INSERT INTO run_bindings(task_id, state)
+                VALUES (?, 'creating')
+                """,
+                (task_id,),
+            )
+            binding = self._get(connection, task_id)
+            assert binding is not None
+            return binding, True
+
     def get(self, task_id: str) -> RunBinding | None:
         task_id = _identifier(task_id, "task ID")
         with self._connect() as connection:
@@ -123,6 +158,19 @@ class RunBindingStore:
                 (task_id,),
             ).fetchone()
         return None if row is None else _binding(row)
+
+    def unresolved_count(self) -> int:
+        """Count bindings whose Hermes execution may still consume Fleet capacity."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM run_bindings
+                WHERE state IN ('creating', 'running', 'indeterminate')
+                """
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
 
     def bind_run(self, task_id: str, run_id: str) -> RunBinding:
         """Record the one known Hermes run created for a reserved task."""

@@ -12,8 +12,9 @@ from typing import Any, Protocol, cast
 from .envelope import OPERATIONS, FleetEnvelope, parse_envelope
 from .hermes_runs import HermesRunDeadlineExceeded, HermesRunError, HermesRunResult
 from .models import FleetDefaults, NodeConfig, _require_exact_type
+from .observation import normalize_readiness
 from .policy import enforce_request_policy
-from .run_binding import RunBindingStore, recovery_action
+from .run_binding import RunBinding, RunBindingStore, recovery_action
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class FleetNodeWorker:
         controller_peer_ids: tuple[str, ...],
         advertised_operations: tuple[str, ...] | None = None,
         now_ms: Callable[[], int] | None = None,
+        readiness_inspector: Callable[[], dict[str, Any]] | None = None,
+        capacity_observer: Callable[[int], Awaitable[None]] | None = None,
     ) -> None:
         self._target = _require_exact_type(
             target, NodeConfig, "target must be a NodeConfig"
@@ -79,7 +82,11 @@ class FleetNodeWorker:
             raise ValueError("controller_peer_ids contains an invalid peer ID")
         self._hermes = hermes
         self._controller_peer_ids = frozenset(controller_peer_ids)
-        operations = advertised_operations or tuple(sorted(OPERATIONS))
+        operations = (
+            tuple(sorted(OPERATIONS))
+            if advertised_operations is None
+            else advertised_operations
+        )
         if (
             type(operations) is not tuple
             or not operations
@@ -88,6 +95,24 @@ class FleetNodeWorker:
             raise ValueError("advertised_operations must be known Fleet operations")
         self._advertised_operations = operations
         self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
+        if readiness_inspector is not None and not callable(readiness_inspector):
+            raise ValueError("readiness_inspector must be callable")
+        self._readiness_inspector = readiness_inspector
+        if capacity_observer is not None and not callable(capacity_observer):
+            raise ValueError("capacity_observer must be callable")
+        self._capacity_observer = capacity_observer
+        self._active_worker_count = 0
+
+    @property
+    def active_worker_count(self) -> int:
+        """Return Keryx tasks currently occupying this worker's single slot."""
+        return self._active_worker_count
+
+    @property
+    def observed_active_worker_count(self) -> int:
+        """Fail closed when durable bindings may still consume the worker slot."""
+        unresolved = self._bindings.unresolved_count()
+        return max(self._active_worker_count, min(unresolved, 1))
 
     def bind(self, node: object) -> None:
         """Register this dispatcher once with public Keryx ``on_task``."""
@@ -95,6 +120,14 @@ class FleetNodeWorker:
         if not callable(on_task):
             raise ValueError("node must provide on_task()")
         on_task(self.handle_task)
+
+    async def _notify_capacity(self) -> None:
+        if self._capacity_observer is None:
+            return
+        try:
+            await self._capacity_observer(self._active_worker_count)
+        except (OSError, RuntimeError, ValueError) as error:
+            logger.warning("fleet worker capacity observation failed: %s", error)
 
     async def _reply_from_terminal_binding(
         self,
@@ -167,6 +200,16 @@ class FleetNodeWorker:
             )
             return
 
+        if envelope.operation not in self._advertised_operations:
+            await _fail(incoming, "Fleet operation is not currently available")
+            logger.info(
+                "fleet communication rejected task_id=%s peer_id=%s "
+                "status=operation-unavailable",
+                task_id,
+                peer_id,
+            )
+            return
+
         export_paths = envelope.input.get("export_paths", ())
         if export_paths:
             await _fail(incoming, "Fleet artifact exports are not available")
@@ -228,12 +271,31 @@ class FleetNodeWorker:
                 except (TimeoutError, HermesRunError, ValueError):
                     await _fail(incoming, "Fleet task deadline has expired")
                     return
+            readiness = None
+            if (
+                envelope.operation in {"fleet.health", "fleet.inventory"}
+                and self._readiness_inspector is not None
+            ):
+                try:
+                    readiness_timeout = _remaining_timeout(
+                        envelope,
+                        metadata,
+                        now_ms=self._now_ms(),
+                    )
+                    readiness = await asyncio.wait_for(
+                        asyncio.to_thread(self._readiness_inspector),
+                        timeout=readiness_timeout,
+                    )
+                    readiness = normalize_readiness(readiness)
+                except (TimeoutError, OSError, RuntimeError, ValueError):
+                    readiness = None
             response = direct_handler(
                 self._target,
                 envelope,
                 peer_id,
                 hermes_health,
                 self._advertised_operations,
+                readiness,
             )
             await _complete_text(
                 incoming,
@@ -254,9 +316,14 @@ class FleetNodeWorker:
             return
 
         try:
-            binding, created = self._bindings.reserve_execution(task_id)
+            binding, created = self._bindings.reserve_execution_if_available(
+                task_id, max_unresolved=1
+            )
         except ValueError:
             await _fail(incoming, "Fleet execution binding is invalid")
+            return
+        if binding is None:
+            await _fail(incoming, "Fleet worker has no available execution slot")
             return
 
         action = recovery_action(binding, created=created)
@@ -287,6 +354,33 @@ class FleetNodeWorker:
             await _fail(incoming, "Fleet Hermes execution was cancelled")
             return
 
+        self._active_worker_count += 1
+        await self._notify_capacity()
+        try:
+            await self._execute_hermes_binding(
+                incoming,
+                envelope=envelope,
+                metadata=metadata,
+                task_id=task_id,
+                peer_id=peer_id,
+                binding=binding,
+                action=action,
+            )
+        finally:
+            self._active_worker_count -= 1
+            await self._notify_capacity()
+
+    async def _execute_hermes_binding(
+        self,
+        incoming: object,
+        *,
+        envelope: FleetEnvelope,
+        metadata: object,
+        task_id: str,
+        peer_id: str,
+        binding: RunBinding,
+        action: str,
+    ) -> None:
         run_id = binding.run_id
         if action == "start_new":
             try:
@@ -399,6 +493,7 @@ def _health_response(
     sender_peer_id: str,
     hermes_health: dict[str, object] | None,
     advertised_operations: tuple[str, ...],
+    readiness: dict[str, Any] | None,
 ) -> dict[str, Any]:
     del target, envelope, sender_peer_id, advertised_operations
     health = hermes_health or {
@@ -411,13 +506,16 @@ def _health_response(
         health.get(field) is True
         for field in ("run_submission", "run_status", "run_stop")
     )
-    return {
+    response = {
         "operation": "fleet.health",
         "status": "ok" if healthy else "degraded",
         "adapter": "ok",
         "keryx_delivery": "received",
         "hermes": health,
     }
+    if readiness is not None:
+        response["readiness"] = readiness
+    return response
 
 
 def _inventory_response(
@@ -426,9 +524,10 @@ def _inventory_response(
     sender_peer_id: str,
     hermes_health: dict[str, object] | None,
     advertised_operations: tuple[str, ...],
+    readiness: dict[str, Any] | None,
 ) -> dict[str, Any]:
     del envelope, sender_peer_id, hermes_health
-    return {
+    response = {
         "operation": "fleet.inventory",
         "status": "ok",
         "node": {
@@ -438,6 +537,9 @@ def _inventory_response(
         },
         "capabilities": list(advertised_operations),
     }
+    if readiness is not None:
+        response["readiness"] = readiness
+    return response
 
 
 def _message_response(
@@ -446,8 +548,9 @@ def _message_response(
     sender_peer_id: str,
     hermes_health: dict[str, object] | None,
     advertised_operations: tuple[str, ...],
+    readiness: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    del hermes_health, advertised_operations
+    del hermes_health, advertised_operations, readiness
     response = {
         "operation": "fleet.message",
         "status": "received",
@@ -468,6 +571,7 @@ _DirectHandler = Callable[
         str,
         dict[str, object] | None,
         tuple[str, ...],
+        dict[str, Any] | None,
     ],
     dict[str, Any],
 ]
