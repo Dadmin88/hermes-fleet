@@ -3,7 +3,7 @@ name: hermes-fleet
 description: Use when communicating with exact Hermes Fleet nodes, checking live node state, sending non-executing messages, or deliberately running Hermes remotely through Keryx.
 version: 0.1.0
 author: Kyle French
-license: MIT
+license: AGPL-3.0-only
 platforms: [linux]
 metadata:
   hermes:

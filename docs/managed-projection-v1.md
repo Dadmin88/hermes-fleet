@@ -2,11 +2,11 @@
 
 ## Status and scope
 
-This document describes the selected minimal N7 V1 exercised by Fleet local
-control and the Nodescale client. It is **not** a deployment, activation, or
-acceptance record. Exact-tree two-repository proof remains pending. It is
-separate from the accepted Fleet v0.1 Katana-to-VPS paths in
-[Architecture](architecture.md) and does not expand that baseline.
+This document describes the accepted minimal N7 V1 exercised by Fleet local
+control and the Nodescale client. Its two-repository exact-tree proof, separate
+SIGTERM proof, cleanup verification, bounded release review, and fresh CI are
+complete. It remains separate from the Fleet v0.1 Katana-to-VPS communication
+baseline in [Architecture](architecture.md).
 
 N7 is a local authenticated projection boundary for Nodescale-managed Fleet
 state. It is not a Keryx transport, public API, remote control endpoint, Fleet
@@ -166,11 +166,12 @@ Nodescale, operator-policy writer, or remote Hermes execution. It does not
 change Fleet v0.1 execution authority: `fleet.hermes.run` is never a generated
 N7 grant.
 
-Acceptance is pending the exact-tree proof documented in Nodescale's
-`proofs/n7/README.md`. It must use archived Nodescale and Fleet candidate trees
-and demonstrate real peer-UID enforcement, framing and closed-parser failures,
-all exact request/response forms and outcomes, generated-grant allowlisting,
-durable restart/read-back, and the separate SIGTERM cleanup proof.
+Acceptance used the archived Nodescale and Fleet candidate trees documented in
+Nodescale's `proofs/n7/README.md`. The proof demonstrated real peer-UID
+enforcement, framing and closed-parser failures, exact request/response forms and
+outcomes, generated-grant allowlisting, durable restart/read-back, and a
+separate SIGTERM cleanup run. Both repository release heads then passed bounded
+review and fresh CI before merge.
 
 ## License
 

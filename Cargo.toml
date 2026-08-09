@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/fleet-domain"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Dadmin88/hermes-fleet"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

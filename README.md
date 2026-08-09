@@ -8,7 +8,9 @@ Remote Hermes execution is one Fleet capability, not Fleet's entire communicatio
 
 Hermes Fleet v0.1 is implemented, deployed, and accepted on the real Katana-to-VPS topology.
 
-The separately documented N7 managed-projection V1 contract is **not** included in that v0.1 acceptance claim. It specifies a future authenticated local Nodescale-to-Fleet projection boundary; implementation and acceptance remain pending.
+The N7 managed-projection V1 contract is accepted across Nodescale and Fleet. It projects only managed baseline health, inventory, and message authority; local deny remains authoritative and Hermes execution is never generated automatically.
+
+The permanent Rust implementation has begun in the same product repository. Python remains the proven reference implementation, compatibility oracle, and current production prototype. The first Rust F0 slice is the real `fleet-domain` crate plus language-neutral fixtures for operation vocabulary, exact-node selection, managed baseline/local-deny behavior, and known-versus-uncertain execution recovery. Scheduler, profile CAS, Sentinel, and UI are not part of F0.
 
 Runtime acceptance was completed against:
 
@@ -112,7 +114,7 @@ Cross-node cancellation intentionally fails closed because Keryx cannot yet prov
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Managed projection V1 contract (N7; not yet accepted)](docs/managed-projection-v1.md)
+- [Managed projection V1 contract (N7 accepted)](docs/managed-projection-v1.md)
 - [Deployment](docs/deployment.md)
 - [Repeatable smoke test and acceptance record](docs/smoke-test.md)
 - [Operator skill](SKILL.md)

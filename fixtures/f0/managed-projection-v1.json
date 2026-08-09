@@ -1,0 +1,46 @@
+{
+  "schema": "hermes-fleet.managed-projection-compat.v1",
+  "initial": null,
+  "steps": [
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "10", "membership_generation": "20", "binding_generation": "30", "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "operation": "upsert", "generated_operations": ["fleet.health", "fleet.inventory", "fleet.message"], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "10"}},
+      "expected_outcome": "applied",
+      "expected_generation": "10", "expected_record_from_step": 0
+    },
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "10", "membership_generation": "20", "binding_generation": "30", "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "operation": "upsert", "generated_operations": ["fleet.health", "fleet.inventory", "fleet.message"], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "10"}},
+      "expected_outcome": "already_applied",
+      "expected_generation": "10", "expected_record_from_step": 0
+    },
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "10", "membership_generation": "20", "binding_generation": "30", "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "operation": "upsert", "generated_operations": ["fleet.health"], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "10"}},
+      "expected_outcome": "conflict",
+      "expected_generation": "10", "expected_record_from_step": 0
+    },
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "9", "membership_generation": "20", "binding_generation": "30", "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "operation": "upsert", "generated_operations": ["fleet.health"], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "9"}},
+      "expected_outcome": "stale",
+      "expected_generation": "10", "expected_record_from_step": 0
+    },
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "11", "membership_generation": "19", "binding_generation": "30", "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "operation": "upsert", "generated_operations": ["fleet.health"], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "11"}},
+      "expected_outcome": "regression",
+      "expected_generation": "10", "expected_record_from_step": 0
+    },
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "11", "membership_generation": "20", "binding_generation": "29", "content_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "operation": "upsert", "generated_operations": ["fleet.health"], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "11"}},
+      "expected_outcome": "regression",
+      "expected_generation": "10", "expected_record_from_step": 0
+    },
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "12", "membership_generation": "21", "binding_generation": "31", "content_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "operation": "remove", "generated_operations": [], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "12"}},
+      "expected_outcome": "gap",
+      "expected_generation": "10", "expected_record_from_step": 0
+    },
+    {
+      "document": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "projection_generation": "11", "membership_generation": "21", "binding_generation": "31", "content_hash": "1111111111111111111111111111111111111111111111111111111111111111", "operation": "remove", "generated_operations": [], "provenance": {"source": "nodescale", "network_id": "network-1", "device_id": "device-1", "snapshot": "11"}},
+      "expected_outcome": "applied",
+      "expected_generation": "11", "expected_record_from_step": 7
+    }
+  ]
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 _MAX_ID_CHARS = 256
 _MAX_RESULT_CHARS = 65_536
@@ -31,6 +32,32 @@ class RunBinding:
     state: str
     run_id: str | None
     result_text: str | None
+
+
+RecoveryAction = Literal[
+    "start_new",
+    "resume_known_run",
+    "replay_completed",
+    "fail_cancelled",
+    "fail_closed_indeterminate",
+]
+
+
+def recovery_action(binding: RunBinding, *, created: bool) -> RecoveryAction:
+    """Classify duplicate-safe worker recovery from durable binding truth."""
+    if binding.state == "completed":
+        if binding.run_id is not None and binding.result_text is not None:
+            return "replay_completed"
+        return "fail_closed_indeterminate"
+    if binding.state == "creating":
+        return "start_new" if created else "fail_closed_indeterminate"
+    if binding.state == "running":
+        if binding.run_id is not None:
+            return "resume_known_run"
+        return "fail_closed_indeterminate"
+    if binding.state == "cancelled":
+        return "fail_cancelled"
+    return "fail_closed_indeterminate"
 
 
 class RunBindingStore:

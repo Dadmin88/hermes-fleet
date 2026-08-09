@@ -13,7 +13,7 @@ from .envelope import OPERATIONS, FleetEnvelope, parse_envelope
 from .hermes_runs import HermesRunDeadlineExceeded, HermesRunError, HermesRunResult
 from .models import FleetDefaults, NodeConfig, _require_exact_type
 from .policy import enforce_request_policy
-from .run_binding import RunBindingStore
+from .run_binding import RunBindingStore, recovery_action
 
 logger = logging.getLogger(__name__)
 
@@ -259,10 +259,10 @@ class FleetNodeWorker:
             await _fail(incoming, "Fleet execution binding is invalid")
             return
 
-        if binding.state == "completed":
-            if binding.run_id is None or binding.result_text is None:
-                await _fail(incoming, "Fleet execution binding is indeterminate")
-                return
+        action = recovery_action(binding, created=created)
+        if action == "replay_completed":
+            assert binding.run_id is not None
+            assert binding.result_text is not None
             await _complete_text(
                 incoming,
                 name="hermes-result.txt",
@@ -278,19 +278,17 @@ class FleetNodeWorker:
             )
             return
 
-        if binding.state == "creating" and not created:
-            self._bindings.mark_indeterminate(task_id)
+        if action == "fail_closed_indeterminate":
+            if binding.state in {"creating", "running"}:
+                self._bindings.mark_indeterminate(task_id)
             await _fail(incoming, "Fleet execution binding is indeterminate")
             return
-        if binding.state == "indeterminate":
-            await _fail(incoming, "Fleet execution binding is indeterminate")
-            return
-        if binding.state == "cancelled":
+        if action == "fail_cancelled":
             await _fail(incoming, "Fleet Hermes execution was cancelled")
             return
 
         run_id = binding.run_id
-        if created:
+        if action == "start_new":
             try:
                 run_id = await asyncio.to_thread(
                     self._hermes.start,
@@ -308,10 +306,6 @@ class FleetNodeWorker:
                 await _fail(incoming, "Fleet Hermes submission is indeterminate")
                 return
 
-        if binding.state == "running" and run_id is None:
-            self._bindings.mark_indeterminate(task_id)
-            await _fail(incoming, "Fleet execution binding is indeterminate")
-            return
         assert run_id is not None
 
         try:

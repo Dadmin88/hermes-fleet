@@ -18,6 +18,29 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
+  rust-f0:
+    name: Rust F0 domain compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run Rust compatibility tests
+        run: cargo test --locked --workspace --all-targets --all-features
+
   quality:
     name: Quality (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
