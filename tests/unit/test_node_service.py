@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -24,7 +26,7 @@ def _runtime(tmp_path):
             ),
         ),
         defaults=FleetDefaults(),
-        controller_peer_ids=("peer-katana",),
+        controller_peer_ids=("peer-controller",),
         hermes_endpoint="http://127.0.0.1:8642",
         hermes_api_key="test-api-key",
         binding_path=tmp_path / "run-bindings.sqlite3",
@@ -43,10 +45,30 @@ class _Node:
         self.registration = None
         self.served = False
         self.stopped = False
+        self.connected = True
+        self.include_controller = True
         self._stop = asyncio.Event()
 
     async def start(self) -> None:
         self.started = True
+
+    async def list_peers(self) -> list[dict[str, object]]:
+        peers: list[dict[str, object]] = [
+            {
+                "peer_id": self.peer_id,
+                "connected": True,
+                "local": True,
+            }
+        ]
+        if self.include_controller:
+            peers.append(
+                {
+                    "peer_id": "peer-controller",
+                    "connected": self.connected,
+                    "local": False,
+                }
+            )
+        return peers
 
     def on_task(self, handler) -> None:
         self.handler = handler
@@ -103,6 +125,68 @@ def _card_factory(cards):
         return card
 
     return factory
+
+
+def test_keryx_signals_use_concrete_availability_and_reachability() -> None:
+    from hermes_fleet.node_service import _keryx_signals
+
+    node = _Node(card=object(), node_token="token", worker_concurrency=1)
+    assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (True, True)
+
+    node.connected = False
+    assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (True, True)
+
+    node.include_controller = False
+    assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (False, True)
+
+    async def malformed() -> list[dict[str, object]]:
+        return [{}]
+
+    node.list_peers = malformed  # type: ignore[method-assign]
+    assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (False, False)
+
+    async def unavailable() -> list[dict[str, object]]:
+        raise RuntimeError("daemon unavailable")
+
+    node.list_peers = unavailable  # type: ignore[method-assign]
+    assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (False, False)
+
+
+def test_observation_collection_and_publish_run_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_fleet import node_service
+
+    event_loop_thread = threading.get_ident()
+    observed_threads: list[int] = []
+
+    def build(**_kwargs) -> dict[str, object]:
+        observed_threads.append(threading.get_ident())
+        return {"sample": True}
+
+    class Observer:
+        def publish(self, observation: dict[str, Any]) -> str:
+            assert observation == {"sample": True}
+            observed_threads.append(threading.get_ident())
+            return "recorded"
+
+        def inspect(self) -> dict[str, Any]:
+            return {}
+
+    monkeypatch.setattr(node_service, "build_observation", build)
+    asyncio.run(
+        node_service._publish_observation(
+            Observer(),
+            {},
+            0,
+            network_reachable=True,
+            keryx_available=True,
+            worker_available=True,
+        )
+    )
+
+    assert len(observed_threads) == 2
+    assert all(thread_id != event_loop_thread for thread_id in observed_threads)
 
 
 def test_fleet_node_service_registers_four_operations_and_stops_cleanly(
@@ -218,3 +302,199 @@ def test_node_runtime_config_redacts_secrets_from_repr(tmp_path) -> None:
 
     assert "test-api-key" not in rendered
     assert "test-node-token" not in rendered
+
+
+def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import run_node_service
+
+    runtime = replace(
+        _runtime(tmp_path),
+        observation_socket=tmp_path / "fleet.sock",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    created_nodes = []
+    created_observers = []
+
+    class Observer:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.samples = []
+            created_observers.append(self)
+
+        def publish(self, sample) -> str:
+            self.samples.append(sample)
+            return "recorded"
+
+        def inspect(self) -> dict[str, object]:
+            return {
+                "managed_state": "active",
+                "alive": True,
+                "fresh": True,
+                "scheduler_ready": True,
+                "reasons": [],
+            }
+
+    def node_factory(**kwargs):
+        node = _Node(**kwargs)
+        created_nodes.append(node)
+        return node
+
+    async def exercise() -> None:
+        shutdown = asyncio.Event()
+        shutdown.set()
+        await run_node_service(
+            runtime,
+            card_factory=_card_factory([]),
+            node_factory=node_factory,
+            shutdown=shutdown,
+            hermes_factory=_Hermes,
+            observation_factory=Observer,
+        )
+
+    asyncio.run(exercise())
+
+    observer = created_observers[0]
+    assert observer.kwargs == {
+        "socket_path": tmp_path / "fleet.sock",
+        "network_id": "network-1",
+        "device_id": "device-1",
+    }
+    assert len(observer.samples) == 2
+    assert observer.samples[0]["network"] == "reachable"
+    assert observer.samples[0]["keryx"] == "available"
+    assert observer.samples[0]["hermes"] == "available"
+    assert observer.samples[0]["worker"] == "available"
+    assert observer.samples[0]["capacity"] == {
+        "active_workers": 0,
+        "max_workers": 1,
+    }
+    assert observer.samples[1]["network"] == "unreachable"
+    assert observer.samples[1]["keryx"] == "unavailable"
+    assert observer.samples[1]["worker"] == "unavailable"
+    assert created_nodes[0].stopped is True
+
+
+def test_node_service_initial_capacity_includes_unresolved_restart_binding(
+    tmp_path,
+) -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import run_node_service
+    from hermes_fleet.run_binding import RunBindingStore
+
+    runtime = replace(
+        _runtime(tmp_path),
+        observation_socket=tmp_path / "fleet.sock",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    bindings = RunBindingStore(runtime.binding_path)
+    bindings.reserve("task-before-restart")
+    bindings.bind_run("task-before-restart", "run-before-restart")
+    samples: list[dict[str, Any]] = []
+
+    class Observer:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def publish(self, observation: dict[str, Any]) -> str:
+            samples.append(observation)
+            return "recorded"
+
+        def inspect(self) -> dict[str, Any]:
+            return {}
+
+    async def exercise() -> None:
+        shutdown = asyncio.Event()
+        shutdown.set()
+        await run_node_service(
+            runtime,
+            card_factory=_card_factory([]),
+            node_factory=_Node,
+            shutdown=shutdown,
+            hermes_factory=_Hermes,
+            observation_factory=Observer,
+        )
+
+    asyncio.run(exercise())
+
+    assert samples[0]["capacity"] == {
+        "active_workers": 1,
+        "max_workers": 1,
+    }
+
+
+def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_fleet import node_service
+
+    samples: list[dict[str, Any]] = []
+
+    class Observer:
+        def publish(self, observation: dict[str, Any]) -> str:
+            samples.append(observation)
+            return "recorded"
+
+        def inspect(self) -> dict[str, Any]:
+            return {}
+
+    class Worker:
+        observed_active_worker_count = 0
+
+    def build_observation(**fields):
+        return {
+            "network": fields["network_reachable"],
+            "keryx": fields["keryx_available"],
+            "capacity": fields["active_workers"],
+        }
+
+    monkeypatch.setattr(node_service, "build_observation", build_observation)
+
+    async def exercise() -> None:
+        node = _Node(card=object(), node_token="token", worker_concurrency=1)
+        worker = Worker()
+        capacity_updates: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            node_service._observation_loop(
+                Observer(),
+                node,
+                ("peer-controller",),
+                _Hermes(),
+                worker,
+                capacity_updates,
+                shutdown,
+                0.01,
+            )
+        )
+
+        async def wait_for_samples(count: int) -> None:
+            while len(samples) < count:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_samples(1), timeout=1)
+        worker.observed_active_worker_count = 1
+        capacity_updates.put_nowait(None)
+        await asyncio.wait_for(wait_for_samples(2), timeout=1)
+        shutdown.set()
+        if not capacity_updates.full():
+            capacity_updates.put_nowait(None)
+        await task
+
+    asyncio.run(exercise())
+
+    assert samples == [
+        {"network": True, "keryx": True, "capacity": 0},
+        {"network": True, "keryx": True, "capacity": 1},
+    ]
+
+
+def test_node_runtime_config_requires_complete_observation_identity(tmp_path) -> None:
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="observation configuration"):
+        replace(_runtime(tmp_path), observation_socket=tmp_path / "fleet.sock")

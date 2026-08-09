@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,6 +126,8 @@ def _worker(
     *,
     now_ms=None,
     advertised_operations=None,
+    readiness_inspector=None,
+    capacity_observer=None,
 ):
     from hermes_fleet.fleet_node import FleetNodeWorker
     from hermes_fleet.models import FleetDefaults, NodeConfig, NodePolicy
@@ -150,6 +153,8 @@ def _worker(
         controller_peer_ids=("peer-katana",),
         advertised_operations=advertised_operations,
         now_ms=now_ms or (lambda: 10_000),
+        readiness_inspector=readiness_inspector,
+        capacity_observer=capacity_observer,
     )
 
 
@@ -589,4 +594,147 @@ def test_fleet_node_binds_one_dispatcher_to_a_keryx_compatible_node(tmp_path) ->
 
     worker.bind(node)
 
-    assert handlers == [worker.handle_task]
+    assert len(handlers) == 1
+    assert callable(handlers[0])
+
+
+def test_fleet_node_health_and_inventory_add_readiness_when_observation_is_configured(
+    tmp_path,
+) -> None:
+    readiness = {
+        "managed_state": "active",
+        "alive": True,
+        "fresh": True,
+        "scheduler_ready": True,
+        "observation_age_ms": 10,
+        "reasons": [],
+        "last_observation": {
+            "observed_at_ms": 1000,
+            "received_at_ms": 1001,
+            "network": "reachable",
+            "keryx": "available",
+            "hermes": "available",
+            "worker": "available",
+        },
+        "capacity": {
+            "active_workers": 0,
+            "max_workers": 1,
+            "available_worker_slots": 1,
+        },
+        "resources": {
+            "cpu": None,
+            "ram": None,
+            "swap": None,
+            "disk": None,
+            "gpu": None,
+        },
+    }
+    worker = _worker(
+        _Hermes(),
+        tmp_path / "bindings.db",
+        readiness_inspector=lambda: readiness,
+    )
+    health = _IncomingTask(_payload("fleet.health"), "fleet.health")
+    inventory = _IncomingTask(_payload("fleet.inventory"), "fleet.inventory")
+
+    asyncio.run(worker.handle_task(health))
+    asyncio.run(worker.handle_task(inventory))
+
+    assert json.loads(_completed_text(health))["readiness"] == readiness
+    assert json.loads(_completed_text(inventory))["readiness"] == readiness
+
+    readiness["extra"] = "not-owned"
+    malformed_worker = _worker(
+        _Hermes(),
+        tmp_path / "malformed-bindings.db",
+        readiness_inspector=lambda: readiness,
+    )
+    malformed = _IncomingTask(_payload("fleet.inventory"), "fleet.inventory")
+    asyncio.run(malformed_worker.handle_task(malformed))
+    assert "readiness" not in json.loads(_completed_text(malformed))
+
+
+def test_restart_capacity_fails_closed_for_unresolved_durable_binding(tmp_path) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    binding_path = tmp_path / "bindings.db"
+    store = RunBindingStore(binding_path)
+    store.reserve("task-restart")
+    store.bind_run("task-restart", "run-restart")
+    worker = _worker(_Hermes(), binding_path)
+
+    assert worker.active_worker_count == 0
+    assert worker.observed_active_worker_count == 1
+
+    store.complete("task-restart", "run-restart", "done")
+    assert worker.observed_active_worker_count == 0
+
+
+def test_restart_unresolved_binding_blocks_a_distinct_new_execution(tmp_path) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    binding_path = tmp_path / "bindings.db"
+    store = RunBindingStore(binding_path)
+    store.reserve("task-restart")
+    store.bind_run("task-restart", "run-restart")
+    hermes = _Hermes()
+    incoming = _IncomingTask(
+        _payload("fleet.hermes.run"),
+        "fleet.hermes.run",
+        task_id="task-new",
+    )
+
+    asyncio.run(_worker(hermes, binding_path).handle_task(incoming))
+
+    assert incoming.failed == "Fleet worker has no available execution slot"
+    assert hermes.start_calls == []
+    assert store.get("task-new") is None
+
+
+def test_bound_hermes_runs_are_counted_for_worker_capacity(tmp_path) -> None:
+    class Node:
+        handler = None
+
+        def on_task(self, handler) -> None:
+            self.handler = handler
+
+    class BlockingHermes(_Hermes):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def wait(self, *, run_id: str, timeout_seconds: float):
+            self.wait_calls.append((run_id, timeout_seconds))
+            self.entered.set()
+            assert self.release.wait(1)
+            from hermes_fleet.hermes_runs import HermesRunResult
+
+            return HermesRunResult(run_id=run_id, text="terminal answer")
+
+    hermes = BlockingHermes()
+    capacity = []
+
+    async def observe(active_workers: int) -> None:
+        capacity.append(active_workers)
+
+    worker = _worker(
+        hermes,
+        tmp_path / "bindings.db",
+        capacity_observer=observe,
+    )
+    node = Node()
+    worker.bind(node)
+    incoming = _IncomingTask(_payload("fleet.hermes.run"), "fleet.hermes.run")
+
+    async def exercise() -> None:
+        assert node.handler is not None
+        task = asyncio.create_task(node.handler(incoming))
+        assert await asyncio.to_thread(hermes.entered.wait, 1)
+        assert worker.active_worker_count == 1
+        hermes.release.set()
+        await task
+        assert worker.active_worker_count == 0
+
+    asyncio.run(exercise())
+    assert capacity == [1, 0]

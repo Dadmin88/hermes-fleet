@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
-dependencies = ["PyYAML>=6,<7"]
+dependencies = [
+  "PyYAML>=6,<7",
+  "keryx @ git+https://github.com/Dadmin88/hermes-keryx.git@f4ee645e415600a959ea8062d1143140bd6c2616#subdirectory=sdk/python",
+]
 
 [project.scripts]
 fleet-node = "hermes_fleet.node_service:main"

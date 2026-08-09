@@ -17,6 +17,26 @@ def test_run_binding_reservation_is_durable_and_duplicate_safe(tmp_path) -> None
     assert reopened == reserved
 
 
+def test_unresolved_count_fails_closed_for_recoverable_and_unknown_runs(
+    tmp_path,
+) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    creating = RunBindingStore(tmp_path / "creating.sqlite3")
+    assert creating.unresolved_count() == 0
+    creating.reserve("task-1")
+    assert RunBindingStore(creating.path).unresolved_count() == 1
+    creating.mark_indeterminate("task-1")
+    assert creating.unresolved_count() == 1
+
+    running = RunBindingStore(tmp_path / "running.sqlite3")
+    running.reserve("task-2")
+    running.bind_run("task-2", "run-2")
+    assert RunBindingStore(running.path).unresolved_count() == 1
+    running.complete("task-2", "run-2", "done")
+    assert running.unresolved_count() == 0
+
+
 def test_run_binding_records_a_known_hermes_run_for_resume(tmp_path) -> None:
     from hermes_fleet.run_binding import RunBindingStore
 

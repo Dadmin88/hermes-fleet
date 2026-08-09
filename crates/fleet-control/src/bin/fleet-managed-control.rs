@@ -5,9 +5,10 @@ use std::{
     path::PathBuf,
     process::ExitCode,
     sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
 
-use fleet_control::{ControlConfig, run};
+use fleet_control::{ControlConfig, DEFAULT_FRESHNESS_WINDOW, run};
 
 fn main() -> ExitCode {
     match execute() {
@@ -26,7 +27,8 @@ fn execute() -> fleet_control::Result<()> {
         arguments.database,
         arguments.allowed_uid,
         arguments.socket_gid,
-    )?;
+    )?
+    .with_freshness_window(Duration::from_secs(arguments.freshness_seconds))?;
     let shutdown = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(libc::SIGTERM, Arc::clone(&shutdown))?;
     signal_hook::flag::register(libc::SIGINT, Arc::clone(&shutdown))?;
@@ -38,6 +40,7 @@ struct Arguments {
     database: PathBuf,
     allowed_uid: u32,
     socket_gid: Option<u32>,
+    freshness_seconds: u64,
 }
 
 fn parse_arguments() -> std::result::Result<Arguments, ()> {
@@ -45,6 +48,7 @@ fn parse_arguments() -> std::result::Result<Arguments, ()> {
     let mut database = None;
     let mut allowed_uid = None;
     let mut socket_gid = None;
+    let mut freshness_seconds = None;
     let mut values = env::args_os().skip(1);
     while let Some(flag) = values.next() {
         let value = values.next().ok_or(())?;
@@ -57,6 +61,9 @@ fn parse_arguments() -> std::result::Result<Arguments, ()> {
             "--socket-gid" if socket_gid.is_none() => {
                 socket_gid = Some(value.to_str().ok_or(())?.parse().map_err(|_| ())?)
             }
+            "--freshness-seconds" if freshness_seconds.is_none() => {
+                freshness_seconds = Some(value.to_str().ok_or(())?.parse().map_err(|_| ())?)
+            }
             _ => return Err(()),
         }
     }
@@ -65,5 +72,6 @@ fn parse_arguments() -> std::result::Result<Arguments, ()> {
         database: database.ok_or(())?,
         allowed_uid: allowed_uid.ok_or(())?,
         socket_gid,
+        freshness_seconds: freshness_seconds.unwrap_or_else(|| DEFAULT_FRESHNESS_WINDOW.as_secs()),
     })
 }

@@ -10,25 +10,30 @@ from pathlib import Path
 
 import pytest
 
+PROOF_PATHS = (
+    ("managed_control_proof", "managed-control", "run_nodescale_rust_e2e.py"),
+    ("node_readiness_proof", "node-readiness", "run_readiness_e2e.py"),
+)
 
-def _proof_module():
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "proofs"
-        / "managed-control"
-        / "run_nodescale_rust_e2e.py"
-    )
-    spec = importlib.util.spec_from_file_location("managed_control_proof", path)
+
+def _proof_module(module_name: str, proof_directory: str, filename: str):
+    path = Path(__file__).resolve().parents[2] / "proofs" / proof_directory / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+@pytest.mark.parametrize(("module_name", "proof_directory", "filename"), PROOF_PATHS)
 def test_cleanup_attempts_root_removal_when_process_teardown_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    proof_directory: str,
+    filename: str,
 ) -> None:
-    proof = _proof_module()
+    proof = _proof_module(module_name, proof_directory, filename)
     root = tmp_path / "runtime"
     root.mkdir()
     (root / "residue").write_text("proof residue", encoding="utf-8")
@@ -43,8 +48,11 @@ def test_cleanup_attempts_root_removal_when_process_teardown_fails(
     assert not root.exists()
 
 
-def test_cleanup_terminates_owned_group_after_leader_already_exited() -> None:
-    proof = _proof_module()
+@pytest.mark.parametrize(("module_name", "proof_directory", "filename"), PROOF_PATHS)
+def test_cleanup_terminates_owned_group_after_leader_already_exited(
+    module_name: str, proof_directory: str, filename: str
+) -> None:
+    proof = _proof_module(module_name, proof_directory, filename)
     leader = subprocess.Popen(
         [
             sys.executable,

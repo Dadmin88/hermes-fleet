@@ -1,8 +1,9 @@
-//! Transport- and storage-independent compatibility domain for Hermes Fleet F0.
+//! Transport- and storage-independent domain semantics for Hermes Fleet.
 //!
-//! The Python implementation remains the behavioral oracle. This crate freezes
-//! only already-proven product semantics; it does not own Keryx transport,
-//! Nodescale state, persistence, scheduling, profiles, Sentinel, or UI.
+//! Compatibility types preserve proven Python behavior while the Rust domain
+//! also owns typed node observations and scheduler-readiness derivation. This
+//! crate does not own Keryx transport, Nodescale state, persistence, scheduling,
+//! profiles, Sentinel, or UI.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -432,5 +433,267 @@ impl RunBindingState {
             Self::Cancelled { .. } => RecoveryAction::FailCancelled,
             Self::Creating | Self::Indeterminate => RecoveryAction::FailClosedIndeterminate,
         }
+    }
+}
+
+/// Nodescale admission state used as one input to operational readiness.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedNodeState {
+    Unknown,
+    Active,
+    Disabled,
+    Removed,
+}
+
+/// Reachability observed by the Fleet node runtime.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reachability {
+    Reachable,
+    Unreachable,
+}
+
+/// Availability of one required operational layer.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    Available,
+    Unavailable,
+}
+
+/// Current Fleet worker usage. Available slots are derived, never trusted input.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerCapacity {
+    pub active_workers: u32,
+    pub max_workers: u32,
+}
+
+impl WorkerCapacity {
+    pub const fn available_worker_slots(self) -> u32 {
+        self.max_workers.saturating_sub(self.active_workers)
+    }
+
+    const fn is_valid(self) -> bool {
+        self.max_workers > 0 && self.active_workers <= self.max_workers
+    }
+}
+
+/// Total and currently available bytes for one resource class.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ByteCapacity {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
+impl ByteCapacity {
+    const fn is_valid(self) -> bool {
+        self.total_bytes > 0 && self.available_bytes <= self.total_bytes
+    }
+}
+
+/// Bounded CPU data useful to later scheduler policy.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuObservation {
+    pub logical_cores: u16,
+    /// Load in hundredths of one percent: 10_000 is 100.00%.
+    pub load_basis_points: Option<u16>,
+}
+
+impl CpuObservation {
+    const fn is_valid(self) -> bool {
+        self.logical_cores > 0
+            && match self.load_basis_points {
+                Some(load) => load <= 10_000,
+                None => true,
+            }
+    }
+}
+
+/// Optional GPU data. No GPU and unknown GPU telemetry are both valid.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuObservation {
+    pub present: bool,
+    pub vram: Option<ByteCapacity>,
+}
+
+impl GpuObservation {
+    const fn is_valid(self) -> bool {
+        match (self.present, self.vram) {
+            (false, None) => true,
+            (true, None) => true,
+            (true, Some(vram)) => vram.is_valid(),
+            (false, Some(_)) => false,
+        }
+    }
+}
+
+/// Scheduling-relevant resources without a generic telemetry namespace.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResourceObservation {
+    pub cpu: Option<CpuObservation>,
+    pub ram: Option<ByteCapacity>,
+    pub swap: Option<ByteCapacity>,
+    pub disk: Option<ByteCapacity>,
+    pub gpu: Option<GpuObservation>,
+}
+
+/// One node-authored operational sample. Identity is deliberately absent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeObservation {
+    pub observed_at_ms: u64,
+    pub network: Reachability,
+    pub keryx: Availability,
+    pub hermes: Availability,
+    pub worker: Availability,
+    pub capacity: WorkerCapacity,
+    #[serde(default)]
+    pub resources: ResourceObservation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidObservation;
+
+impl NodeObservation {
+    pub fn validate(&self) -> Result<(), InvalidObservation> {
+        if self.observed_at_ms == 0
+            || !self.capacity.is_valid()
+            || self.resources.cpu.is_some_and(|value| !value.is_valid())
+            || self.resources.ram.is_some_and(|value| !value.is_valid())
+            || self
+                .resources
+                .swap
+                .is_some_and(|value| value.available_bytes > value.total_bytes)
+            || self.resources.disk.is_some_and(|value| !value.is_valid())
+            || self.resources.gpu.is_some_and(|value| !value.is_valid())
+        {
+            return Err(InvalidObservation);
+        }
+        Ok(())
+    }
+}
+
+/// Fleet-owned receipt time paired with the last accepted node sample.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationRecord {
+    pub observation: NodeObservation,
+    pub received_at_ms: u64,
+}
+
+/// Explicit freshness policy. The exact boundary remains fresh.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadinessPolicy {
+    freshness_window_ms: u64,
+}
+
+impl ReadinessPolicy {
+    pub const fn new(freshness_window_ms: u64) -> Result<Self, InvalidObservation> {
+        if freshness_window_ms == 0 {
+            return Err(InvalidObservation);
+        }
+        Ok(Self {
+            freshness_window_ms,
+        })
+    }
+
+    pub const fn freshness_window_ms(self) -> u64 {
+        self.freshness_window_ms
+    }
+}
+
+/// Stable machine-readable explanation for a not-ready result.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessReason {
+    NodeUnknown,
+    NodeNotActive,
+    ObservationMissing,
+    ObservationStale,
+    ObservationTimeInvalid,
+    NetworkUnreachable,
+    KeryxUnavailable,
+    HermesUnavailable,
+    WorkerUnavailable,
+    NoWorkerCapacity,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NodeReadiness {
+    pub alive: bool,
+    pub fresh: bool,
+    pub scheduler_ready: bool,
+    pub observation_age_ms: Option<u64>,
+    pub reasons: Vec<ReadinessReason>,
+}
+
+/// Derive platform readiness from admitted identity, current facts, and time.
+pub fn evaluate_readiness(
+    managed_state: ManagedNodeState,
+    record: Option<&ObservationRecord>,
+    now_ms: u64,
+    policy: ReadinessPolicy,
+) -> NodeReadiness {
+    let mut reasons = Vec::new();
+    match managed_state {
+        ManagedNodeState::Unknown => reasons.push(ReadinessReason::NodeUnknown),
+        ManagedNodeState::Active => {}
+        ManagedNodeState::Disabled | ManagedNodeState::Removed => {
+            reasons.push(ReadinessReason::NodeNotActive);
+        }
+    }
+
+    let (fresh, observation_age_ms) = match record {
+        None => {
+            reasons.push(ReadinessReason::ObservationMissing);
+            (false, None)
+        }
+        Some(record) => {
+            let age = now_ms.checked_sub(record.received_at_ms);
+            match age {
+                None => {
+                    reasons.push(ReadinessReason::ObservationTimeInvalid);
+                    (false, None)
+                }
+                Some(age) if age > policy.freshness_window_ms => {
+                    reasons.push(ReadinessReason::ObservationStale);
+                    (false, Some(age))
+                }
+                Some(age) => (true, Some(age)),
+            }
+        }
+    };
+
+    if let Some(record) = record {
+        let observation = &record.observation;
+        if observation.network != Reachability::Reachable {
+            reasons.push(ReadinessReason::NetworkUnreachable);
+        }
+        if observation.keryx != Availability::Available {
+            reasons.push(ReadinessReason::KeryxUnavailable);
+        }
+        if observation.hermes != Availability::Available {
+            reasons.push(ReadinessReason::HermesUnavailable);
+        }
+        if observation.worker != Availability::Available {
+            reasons.push(ReadinessReason::WorkerUnavailable);
+        }
+        if observation.capacity.available_worker_slots() == 0 {
+            reasons.push(ReadinessReason::NoWorkerCapacity);
+        }
+    }
+
+    NodeReadiness {
+        alive: fresh,
+        fresh,
+        scheduler_ready: reasons.is_empty(),
+        observation_age_ms,
+        reasons,
     }
 }

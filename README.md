@@ -19,6 +19,7 @@ Fleet currently provides:
 - durable task-to-run binding so reclaimed work does not silently create duplicate Hermes runs;
 - durable task status reattachment through Keryx;
 - local managed-state projection from Nodescale with operator deny precedence;
+- persisted layered node observations with freshness, Hermes worker capacity, and explainable scheduler readiness;
 - CLI commands, Hermes model tools, an operator skill, and systemd deployment units.
 
 ## Responsibility boundaries
@@ -53,8 +54,9 @@ Repository layout:
 
 ```text
 hermes_fleet/           Python Fleet plugin/runtime
-crates/fleet-domain/    Rust domain types and authorization semantics
+crates/fleet-domain/    Rust domain types and authorization/readiness semantics
 crates/fleet-state/     Rust durable Fleet state
+crates/fleet-control/   Rust local managed-state and observation service
 fixtures/               Language-neutral compatibility fixtures
 ops/                    Service and deployment assets
 docs/                   Architecture, deployment, projection, and verification docs
@@ -132,6 +134,7 @@ Start with the [documentation index](docs/README.md).
 - [Architecture](docs/architecture.md)
 - [Deployment](docs/deployment.md)
 - [Managed projection V1](docs/managed-projection-v1.md)
+- [Node observations and scheduler readiness](docs/node-readiness.md)
 - [Integration verification](docs/smoke-test.md)
 - [Operator skill](SKILL.md)
 - [Changelog](CHANGELOG.md)

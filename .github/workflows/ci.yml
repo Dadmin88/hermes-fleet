@@ -20,16 +20,17 @@ env:
 jobs:
   rust-f0:
     name: Rust workspace compatibility
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
+          toolchain: 1.85.1
           components: rustfmt, clippy
 
       - name: Check formatting
@@ -44,21 +45,48 @@ jobs:
       - name: Build locked Rust workspace
         run: cargo build --locked --workspace --all-targets --all-features
 
-      - name: Prove real Nodescale Rust client to Rust Fleet service
+  real-proofs:
+    name: Real Nodescale and readiness proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.85.1
+
+      - name: Build Fleet managed-control binary
+        run: cargo build --locked --workspace
+
+      - name: Check out pinned Nodescale revision
         run: |
           git init --quiet "$RUNNER_TEMP/nodescale-n7"
           git -C "$RUNNER_TEMP/nodescale-n7" remote add origin https://github.com/Dadmin88/hermes-nodescale.git
           git -C "$RUNNER_TEMP/nodescale-n7" fetch --depth 1 origin c0a9a7c873d7086375ac53245e6fd689a3686c7d
           git -C "$RUNNER_TEMP/nodescale-n7" checkout --quiet --detach FETCH_HEAD
           test "$(git -C "$RUNNER_TEMP/nodescale-n7" rev-parse HEAD)" = "c0a9a7c873d7086375ac53245e6fd689a3686c7d"
+
+      - name: Prove real Nodescale Rust client to Rust Fleet service
+        run: |
           python3 proofs/managed-control/run_nodescale_rust_e2e.py \
+            --nodescale-root "$RUNNER_TEMP/nodescale-n7" \
+            --fleet-binary target/debug/fleet-managed-control \
+            --cargo cargo
+
+      - name: Prove layered node readiness and restart recovery
+        run: |
+          python3 proofs/node-readiness/run_readiness_e2e.py \
             --nodescale-root "$RUNNER_TEMP/nodescale-n7" \
             --fleet-binary target/debug/fleet-managed-control \
             --cargo cargo
 
   quality:
     name: Quality (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -67,10 +95,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -96,8 +124,16 @@ jobs:
       - name: Build Python package
         run: python -m build
 
+      - name: Clean-install wheel and smoke operational entry points
+        run: |
+          python -m venv "$RUNNER_TEMP/fleet-wheel"
+          "$RUNNER_TEMP/fleet-wheel/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/fleet-wheel/bin/fleet-node" --help >/dev/null
+          "$RUNNER_TEMP/fleet-wheel/bin/fleet-managed-projection" --help >/dev/null
+          "$RUNNER_TEMP/fleet-wheel/bin/python" -c 'from hermes_fleet.node_service import _build_card; assert _build_card(False).name == "hermes-fleet-node"'
+
       - name: Upload built package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hermes-fleet-dist-python-${{ matrix.python-version }}
           path: dist/*
@@ -106,18 +142,18 @@ jobs:
 
   plugin-smoke:
     name: Hermes plugin clean-install smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: quality
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
           cache: pip
