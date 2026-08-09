@@ -165,11 +165,26 @@ def test_local_control_dispatches_typed_apply_and_inspect_requests(tmp_path) -> 
         "result": {"generated": None, "effective": None},
     }
     assert projection.calls == [
-        ("apply", document),
+        (
+            "apply",
+            {
+                **document,
+                "wire_document": document,
+            },
+        ),
         (
             "inspect",
             {"source": "nodescale", "network_id": "net-a", "device_id": "device-a"},
         ),
+    ]
+    applied_document = projection.calls[0][1]
+    assert type(applied_document) is dict
+    wire_document = applied_document["wire_document"]
+    assert type(wire_document) is dict
+    assert wire_document is not applied_document
+    assert wire_document["provenance"] is not applied_document["provenance"]
+    assert wire_document["generated_operations"] is not applied_document[
+        "generated_operations"
     ]
 
 
@@ -254,8 +269,6 @@ def test_local_control_rejects_trailing_bytes_before_dispatch(tmp_path) -> None:
         "schema": SCHEMA,
         "kind": "error",
         "ok": False,
-        "outcome": "rejected",
-        "reason": "invalid_request",
         "error": "invalid_request",
     }
     assert projection.calls == []
@@ -278,8 +291,12 @@ def test_local_control_requires_client_write_half_close_before_dispatch(
     finally:
         server.close()
 
-    assert response["outcome"] == "rejected"
-    assert response["reason"] == "invalid_request"
+    assert response == {
+        "schema": SCHEMA,
+        "kind": "error",
+        "ok": False,
+        "error": "invalid_request",
+    }
     assert projection.calls == []
 
 
@@ -287,6 +304,7 @@ def test_local_control_socket_group_seam_preserves_exact_uid_authentication(
     tmp_path,
 ) -> None:
     projection = _Projection()
+    tmp_path.chmod(0o750)
     server, path = _running_server(
         tmp_path,
         projection,
@@ -310,6 +328,103 @@ def test_local_control_socket_group_seam_preserves_exact_uid_authentication(
 
     assert response["ok"] is True
     assert projection.calls == []
+
+
+def test_local_control_rejects_world_accessible_socket_parent(tmp_path) -> None:
+    from hermes_fleet.local_control import LocalControlServer
+
+    socket_parent = tmp_path / "world-accessible"
+    socket_parent.mkdir(mode=0o777)
+    socket_parent.chmod(0o777)
+
+    with pytest.raises(ValueError, match="socket parent"):
+        LocalControlServer(
+            socket_path=socket_parent / "fleet-control.sock",
+            allowed_uid=os.getuid(),
+            managed_projection=_Projection(),
+        ).start()
+
+    assert not (socket_parent / "fleet-control.sock").exists()
+
+
+def test_local_control_rejects_symlinked_socket_parent(tmp_path) -> None:
+    from hermes_fleet.local_control import LocalControlServer
+
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    symlink_parent = tmp_path / "symlink-parent"
+    symlink_parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="socket parent"):
+        LocalControlServer(
+            socket_path=symlink_parent / "fleet-control.sock",
+            allowed_uid=os.getuid(),
+            managed_projection=_Projection(),
+        ).start()
+
+    assert not (real_parent / "fleet-control.sock").exists()
+
+
+def test_local_control_rejects_lexical_dotdot_before_parent_normalization(
+    tmp_path,
+) -> None:
+    from hermes_fleet.local_control import _require_nonsymlink_directory_components
+
+    validated_parent = tmp_path / "validated-parent"
+    validated_parent.mkdir()
+    escaped_parent = tmp_path / "escaped-parent"
+    escaped_child = escaped_parent / "child"
+    escaped_child.mkdir(parents=True)
+    (validated_parent / "redirect").symlink_to(
+        escaped_child, target_is_directory=True
+    )
+    lexical_parent = validated_parent / "redirect" / ".."
+    assert ".." in lexical_parent.parts
+
+    with pytest.raises(ValueError, match="socket parent"):
+        _require_nonsymlink_directory_components(lexical_parent, "socket parent")
+
+
+def test_local_control_rejects_group_writable_socket_parent(tmp_path) -> None:
+    from hermes_fleet.local_control import LocalControlServer
+
+    socket_parent = tmp_path / "group-writable"
+    socket_parent.mkdir(mode=0o770)
+    socket_parent.chmod(0o770)
+
+    with pytest.raises(ValueError, match="socket parent"):
+        LocalControlServer(
+            socket_path=socket_parent / "fleet-control.sock",
+            allowed_uid=os.getuid(),
+            socket_gid=os.getgid(),
+            managed_projection=_Projection(),
+        ).start()
+
+    assert not (socket_parent / "fleet-control.sock").exists()
+
+
+def test_local_control_allows_configured_group_private_socket_parent(tmp_path) -> None:
+    projection = _Projection()
+    socket_parent = tmp_path / "group-private"
+    socket_parent.mkdir(mode=0o750)
+    socket_parent.chmod(0o750)
+    path = socket_parent / "fleet-control.sock"
+    from hermes_fleet.local_control import LocalControlServer
+
+    server = LocalControlServer(
+        socket_path=path,
+        allowed_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        managed_projection=projection,
+    )
+    server.start()
+    try:
+        identity = path.lstat()
+        assert stat.S_ISSOCK(identity.st_mode)
+        assert stat.S_IMODE(identity.st_mode) == 0o660
+        assert identity.st_gid == os.getgid()
+    finally:
+        server.close()
 
 
 def test_local_control_fails_closed_for_unsafe_existing_socket_path(tmp_path) -> None:

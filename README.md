@@ -8,6 +8,8 @@ Remote Hermes execution is one Fleet capability, not Fleet's entire communicatio
 
 Hermes Fleet v0.1 is implemented, deployed, and accepted on the real Katana-to-VPS topology.
 
+The separately documented N7 managed-projection V1 contract is **not** included in that v0.1 acceptance claim. It specifies a future authenticated local Nodescale-to-Fleet projection boundary; implementation and acceptance remain pending.
+
 Runtime acceptance was completed against:
 
 - Fleet code SHA: `29876e9b2afa0de8b9f2bce4e1edb5671f412438`
@@ -110,6 +112,7 @@ Cross-node cancellation intentionally fails closed because Keryx cannot yet prov
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Managed projection V1 contract (N7; not yet accepted)](docs/managed-projection-v1.md)
 - [Deployment](docs/deployment.md)
 - [Repeatable smoke test and acceptance record](docs/smoke-test.md)
 - [Operator skill](SKILL.md)

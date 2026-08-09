@@ -6,6 +6,7 @@ closed, credential-free protocol and cannot select an identity or privilege.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import socket
@@ -14,6 +15,7 @@ import struct
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, cast
 
 from .managed_projection import ManagedProjectionStore
 
@@ -217,6 +219,7 @@ class LocalControlServer:
         """Atomically bind a private socket after rejecting every pre-existing path."""
         if self._listener is not None:
             raise RuntimeError("local control server is already started")
+        _require_safe_socket_parent(self.socket_path, self.socket_gid)
         try:
             existing = self.socket_path.lstat()
         except FileNotFoundError:
@@ -227,8 +230,6 @@ class LocalControlServer:
             if stat.S_ISLNK(existing.st_mode) or not stat.S_ISSOCK(existing.st_mode):
                 raise ValueError("unsafe local-control socket path")
             raise ValueError("unsafe existing local-control socket path")
-        if not self.socket_path.parent.is_dir():
-            raise ValueError("local-control socket parent must exist")
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             listener.bind(os.fspath(self.socket_path))
@@ -364,8 +365,6 @@ class LocalControlServer:
                         "schema": SCHEMA,
                         "kind": "error",
                         "ok": False,
-                        "outcome": "rejected",
-                        "reason": "invalid_request",
                         "error": "invalid_request",
                     }
                 self._send_response(connection, response)
@@ -392,7 +391,11 @@ class LocalControlServer:
         if argument is None:
             raise LocalControlProtocolError("request argument is required")
         if kind == "apply":
-            result = self._managed_projection.apply(**argument)
+            document = cast(dict[str, Any], argument)
+            result = self._managed_projection.apply(
+                **document,
+                wire_document=copy.deepcopy(document),
+            )
             outcome = getattr(result, "outcome", None)
             if type(outcome) is not str:
                 raise LocalControlProtocolError("managed apply result is invalid")
@@ -434,3 +437,44 @@ def _require_write_half_close(connection: socket.socket) -> None:
     """Require EOF after one frame so no unexamined bytes reach dispatch."""
     if connection.recv(1):
         raise LocalControlProtocolError("trailing request data")
+
+
+def _require_safe_socket_parent(socket_path: Path, socket_gid: int | None) -> None:
+    """Reject parent traversal and permissions unsafe for a Fleet-owned socket."""
+    parent_identity = _require_nonsymlink_directory_components(
+        socket_path.parent, "local-control socket parent"
+    )
+    mode = stat.S_IMODE(parent_identity.st_mode)
+    if parent_identity.st_uid != os.geteuid() or mode & 0o007 or mode & 0o700 != 0o700:
+        raise ValueError("unsafe local-control socket parent")
+    group_mode = mode & 0o070
+    if socket_gid is None:
+        if group_mode:
+            raise ValueError("unsafe local-control socket parent")
+        return
+    # Cross-UID clients need directory search permission to connect, but never
+    # group write: write would let a client unlink and replace Fleet's socket.
+    if parent_identity.st_gid != socket_gid or group_mode not in (0o010, 0o050):
+        raise ValueError("unsafe local-control socket parent")
+
+
+def _require_nonsymlink_directory_components(path: Path, label: str) -> os.stat_result:
+    """Lstat every lexical component without resolving an attacker-controlled link."""
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be absolute")
+    if ".." in path.parts:
+        raise ValueError(f"unsafe {label}")
+    normalized = Path(os.path.abspath(os.fspath(path)))
+    current = Path(normalized.anchor)
+    try:
+        identity = current.lstat()
+        for component in normalized.parts[1:]:
+            current /= component
+            identity = current.lstat()
+            if stat.S_ISLNK(identity.st_mode) or not stat.S_ISDIR(identity.st_mode):
+                raise ValueError(f"unsafe {label}")
+    except FileNotFoundError as error:
+        raise ValueError(f"{label} must exist") from error
+    except OSError as error:
+        raise ValueError(f"unsafe {label}") from error
+    return identity
