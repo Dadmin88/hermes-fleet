@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/fleet-domain"]
+members = ["crates/fleet-domain", "crates/fleet-state"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,5 +10,7 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/Dadmin88/hermes-fleet"
 
 [workspace.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
