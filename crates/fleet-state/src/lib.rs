@@ -1060,12 +1060,12 @@ fn validate_projection(document: &ProjectionDocument) -> Result<()> {
             "projection provenance has unknown fields",
         ));
     }
-    if let Some(controller) = document.provenance.get("controller")
-        && controller != "nodescale"
-    {
-        return Err(StateError::InvalidInput(
-            "projection controller provenance is invalid",
-        ));
+    if let Some(controller) = document.provenance.get("controller") {
+        if controller != "nodescale" {
+            return Err(StateError::InvalidInput(
+                "projection controller provenance is invalid",
+            ));
+        }
     }
     if let Some(snapshot) = document.provenance.get("snapshot") {
         let parsed = snapshot.parse::<u64>().map_err(|_| {

@@ -935,11 +935,10 @@ impl OwnedListener {
 }
 
 fn cleanup_owned_socket(path: &Path, device: u64, inode: u64) {
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && metadata.file_type().is_socket()
-        && metadata.dev() == device
-        && metadata.ino() == inode
-    {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_socket() && metadata.dev() == device && metadata.ino() == inode {
         let _ = fs::remove_file(path);
     }
 }
