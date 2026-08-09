@@ -170,14 +170,24 @@ This separation keeps lifecycle, transport, execution, and generated policy from
 
 ## Systemd deployment
 
-The supplied service can be used in a same-UID configuration with a private socket parent and exact allowed UID.
+The supplied `ops/systemd/fleet-managed-projection.service` is a same-UID default. Its environment file provides the socket path, database path, and allowed UID; the stock unit does not add a socket GID. Use a private `0700` socket parent for this mode.
 
-A cross-UID deployment should be configured explicitly with:
+A distinct Nodescale UID is an explicit cross-UID deployment choice. Pre-provision a Fleet-service-owned `0750` socket parent with the intended group as its exact GID, set `FLEET_MANAGED_PROJECTION_ALLOWED_UID` to the Nodescale service UID, and create the user-unit drop-in:
 
-- the distinct allowed Nodescale UID;
-- a pre-provisioned socket parent with the intended group;
-- the optional socket GID argument;
-- restrictive file and directory modes.
+```text
+~/.config/systemd/user/fleet-managed-projection.service.d/cross-uid.conf
+```
+
+Example:
+
+```ini
+[Service]
+Environment=FLEET_MANAGED_PROJECTION_SOCKET_GID=12345
+ExecStart=
+ExecStart=%h/.local/share/hermes-fleet/venv/bin/fleet-managed-projection --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --socket-gid ${FLEET_MANAGED_PROJECTION_SOCKET_GID} --shutdown-timeout 20 --log-level INFO
+```
+
+Replace `12345` with the pre-provisioned group ID, then reload the user systemd manager and restart the unit. This mode creates a `0660` socket for group transport only. It does not weaken the exact `SO_PEERCRED` allowed-UID authorization check.
 
 Do not loosen filesystem permissions as a substitute for configuring the correct peer UID.
 
