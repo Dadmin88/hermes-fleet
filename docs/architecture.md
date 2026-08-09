@@ -178,11 +178,29 @@ Important states:
 - `creating`: Fleet reserved the task but does not yet know a durable Hermes run ID;
 - `running`: the exact Hermes run ID is known;
 - `completed`: a terminal result is stored for safe replay;
+- `cancelled`: the durable run-binding says the work is terminally cancelled;
 - `indeterminate`: Fleet cannot prove what happened and fails closed.
 
 If the run ID is known, Fleet can resume watching the same run. If the final result is already stored, Fleet can replay it to Keryx. If Fleet cannot prove whether a run started, it does not guess.
 
-The Rust implementation is being built against the same recovery behavior using shared Python/Rust fixtures.
+## Durable Rust state
+
+The permanent Rust implementation now includes both `fleet-domain` and `fleet-state` on `main`.
+
+`fleet-domain` defines the decisions. `fleet-state` makes those decisions durable in Fleet-owned SQLite state.
+
+The Rust state layer currently persists:
+
+- complete managed projection documents;
+- projection generations and replay/conflict decisions;
+- local projection deny state;
+- active, disabled, and removed/tombstone managed states;
+- duplicate-safe run bindings;
+- creating, running, completed, cancelled, and indeterminate recovery states.
+
+It also verifies the expected schema when opening the database, fails closed on malformed or future schemas, and uses transactional fencing for concurrent updates.
+
+Shared compatibility fixtures keep Rust and the production Python behavior aligned across restart and concurrency cases.
 
 ## Managed state and local policy
 
@@ -207,17 +225,17 @@ The repository currently contains:
 
 Shared compatibility fixtures are used so Rust behavior is checked against real Python production decisions rather than a rewritten interpretation of them.
 
-The implementation is being moved in layers:
+Current and upcoming layers are:
 
 ```text
-fleet-domain
-→ durable fleet-state
-→ Rust managed-control/service layer
-→ Keryx integration
-→ Hermes execution parity
-→ inventory/readiness
-→ profiles
-→ scheduling
+fleet-domain        implemented
+fleet-state         implemented
+managed-control     next service layer
+Keryx integration   later
+Hermes execution    later
+inventory/readiness later
+profiles            later
+scheduling          later
 ```
 
 ## Future scheduling model
