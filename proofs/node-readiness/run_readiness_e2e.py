@@ -178,7 +178,7 @@ def sample(
     client: ObservationClient, *, active_workers: int, keryx: str = "available"
 ) -> dict[str, object]:
     observation = build_observation(
-        binding_generation=client.binding_generation(),
+        admission_generation=client.admission_generation(),
         hermes_health={
             "api": "healthy",
             "run_submission": True,

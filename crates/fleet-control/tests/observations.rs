@@ -131,7 +131,7 @@ fn now_ms() -> u64 {
 
 fn observation(observed_at_ms: u64, active_workers: u32, keryx: &str) -> Value {
     json!({
-        "binding_generation": 1,
+        "admission_generation": 1,
         "observed_at_ms": observed_at_ms,
         "network": "reachable",
         "keryx": keryx,

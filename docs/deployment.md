@@ -226,7 +226,7 @@ When updating Fleet or Keryx:
 1. review changelogs and contract changes;
 2. run the repository test gates on the candidate revisions;
 3. update one boundary at a time where possible;
-4. before the new Rust managed-control service first opens a schema-v1 Fleet database, stop that service and take a consistent SQLite backup that can be restored independently of the live WAL/SHM files;
+4. before the new Rust managed-control service first opens any schema-v1 or schema-v2 Fleet database, stop that service and take a consistent SQLite backup that can be restored independently of the live WAL/SHM files;
 5. preserve durable state and identities;
 6. rerun direct communication, deliberate execution, status reattachment, and deadline checks;
 7. restart a running Hermes gateway after a Fleet plugin update so it loads the new plugin code.
@@ -237,7 +237,7 @@ Avoid treating a successful process restart as proof that cross-node request/res
 
 Rollback should restore the previously known-good binaries and service configuration while preserving evidence and durable state for diagnosis.
 
-The readiness release upgrades the Fleet state database from schema 1 to schema 2 by adding the current-observation table. A schema-1 binary must not be started against a migrated schema-2 database. Rolling the Rust service itself back therefore requires restoring the consistent pre-upgrade Fleet database backup together with the old binary. If the new Rust service remains installed, observation publishing can instead be disabled on `fleet-node` without removing the schema-2 table or last-known records.
+The readiness release upgrades the Fleet state database through schema 2 to schema 3. Schema 2 adds the current-observation table; schema 3 transactionally discards any pre-fence observation JSON so a fresh projection-generation-bound sample is required. A schema-1 or schema-2 binary must not be started against a migrated schema-3 database. Rolling the Rust service itself back therefore requires restoring the consistent pre-upgrade Fleet database backup together with the old binary. If the new Rust service remains installed, observation publishing can instead be disabled on `fleet-node` without removing the schema-3 table or last-known records.
 
 Do not delete:
 

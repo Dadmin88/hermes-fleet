@@ -544,11 +544,11 @@ pub struct ResourceObservation {
 }
 
 /// One node-authored operational sample. Identity is deliberately absent; the
-/// admission generation binds the sample to the active managed projection.
+/// strictly advancing projection generation fences the sample to one admission epoch.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeObservation {
-    pub binding_generation: u64,
+    pub admission_generation: u64,
     pub observed_at_ms: u64,
     pub network: Reachability,
     pub keryx: Availability,
@@ -564,7 +564,7 @@ pub struct InvalidObservation;
 
 impl NodeObservation {
     pub fn validate(&self) -> Result<(), InvalidObservation> {
-        if self.binding_generation == 0
+        if self.admission_generation == 0
             || self.observed_at_ms == 0
             || !self.capacity.is_valid()
             || self.resources.cpu.is_some_and(|value| !value.is_valid())

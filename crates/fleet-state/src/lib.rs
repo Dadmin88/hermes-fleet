@@ -20,16 +20,21 @@ use fleet_domain::{
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const MIGRATION_1: &str = include_str!("../migrations/0001_fleet_state.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_node_observations.sql");
+const MIGRATION_3: &str = include_str!("../migrations/0003_admission_generation.sql");
 const FLEET_STATE_SCHEMA_V1_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 1)
 ) STRICT";
-const FLEET_STATE_SCHEMA_SQL: &str = "
+const FLEET_STATE_SCHEMA_V2_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 2)
+) STRICT";
+const FLEET_STATE_SCHEMA_SQL: &str = "
+CREATE TABLE fleet_state_schema (
+    version INTEGER PRIMARY KEY CHECK (version = 3)
 ) STRICT";
 const MANAGED_PROJECTIONS_SQL: &str = "
 CREATE TABLE managed_projections (
@@ -160,7 +165,7 @@ pub struct ObservationApply {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeOperationalView {
     pub managed_state: ManagedNodeState,
-    pub binding_generation: Option<u64>,
+    pub admission_generation: Option<u64>,
     pub observation: Option<ObservationRecord>,
     pub available_worker_slots: Option<u32>,
     pub readiness: NodeReadiness,
@@ -217,10 +222,6 @@ impl FleetStateStore {
             &desired.network_id,
             &desired.device_id,
         )?;
-        let invalidates_observation = desired.operation != ManagedOperation::Upsert
-            || current.as_ref().is_some_and(|record| {
-                record.document.binding_generation != desired.binding_generation
-            });
         let applied = apply_projection(current.as_ref(), desired.clone())
             .map_err(|_| StateError::InvalidInput("generated authority is invalid"))?;
         if applied.outcome == ApplyOutcome::Applied {
@@ -245,13 +246,11 @@ impl FleetStateStore {
                     document_json,
                 ],
             )?;
-            if invalidates_observation {
-                transaction.execute(
-                    "DELETE FROM node_observations
-                     WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
-                    params![desired.source, desired.network_id, desired.device_id],
-                )?;
-            }
+            transaction.execute(
+                "DELETE FROM node_observations
+                 WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
+                params![desired.source, desired.network_id, desired.device_id],
+            )?;
         }
         transaction.commit()?;
         Ok(applied)
@@ -350,13 +349,13 @@ impl FleetStateStore {
                 "observation identity is not an active managed node",
             ));
         }
-        let active_binding_generation = projection
+        let active_admission_generation = projection
             .as_ref()
-            .map(|record| record.document.binding_generation.get())
+            .map(|record| record.document.projection_generation.get())
             .ok_or(StateError::CorruptState(
                 "active observation identity has no managed projection",
             ))?;
-        if observation.binding_generation != active_binding_generation {
+        if observation.admission_generation != active_admission_generation {
             return Err(StateError::InvalidTransition(
                 "observation admission generation does not match active projection",
             ));
@@ -438,15 +437,14 @@ impl FleetStateStore {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
         let projection = load_projection(&transaction, source, network_id, device_id)?;
-        let binding_generation = projection
+        let admission_generation = projection
             .as_ref()
-            .map(|record| record.document.binding_generation.get());
+            .map(|record| record.document.projection_generation.get());
         let managed_state = managed_state(projection.as_ref());
         let observation = load_observation(&transaction, source, network_id, device_id)?;
-        if observation
-            .as_ref()
-            .is_some_and(|record| Some(record.observation.binding_generation) != binding_generation)
-        {
+        if observation.as_ref().is_some_and(|record| {
+            Some(record.observation.admission_generation) != admission_generation
+        }) {
             return Err(StateError::CorruptState(
                 "stored observation admission generation does not match projection",
             ));
@@ -458,7 +456,7 @@ impl FleetStateStore {
         transaction.commit()?;
         Ok(NodeOperationalView {
             managed_state,
-            binding_generation,
+            admission_generation,
             observation,
             available_worker_slots,
             readiness,
@@ -604,11 +602,22 @@ impl FleetStateStore {
                 require_v1_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_2)?;
                 transaction.pragma_update(None, "user_version", 2)?;
+                require_v2_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_3)?;
+                transaction.pragma_update(None, "user_version", 3)?;
             }
             1 => {
                 require_v1_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_2)?;
                 transaction.pragma_update(None, "user_version", 2)?;
+                require_v2_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_3)?;
+                transaction.pragma_update(None, "user_version", 3)?;
+            }
+            2 => {
+                require_v2_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_3)?;
+                transaction.pragma_update(None, "user_version", 3)?;
             }
             SCHEMA_VERSION => {}
             _ => return Err(StateError::UnsupportedSchema(version)),
@@ -868,7 +877,19 @@ fn require_v1_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn require_v2_schema(connection: &Connection) -> Result<()> {
+    require_complete_schema(connection, 2, FLEET_STATE_SCHEMA_V2_SQL)
+}
+
 fn require_ready_schema(connection: &Connection) -> Result<()> {
+    require_complete_schema(connection, SCHEMA_VERSION, FLEET_STATE_SCHEMA_SQL)
+}
+
+fn require_complete_schema(
+    connection: &Connection,
+    expected_version: i64,
+    expected_marker_sql: &str,
+) -> Result<()> {
     let mut statement = connection.prepare(
         "SELECT name FROM sqlite_master
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -893,15 +914,16 @@ fn require_ready_schema(connection: &Connection) -> Result<()> {
         .prepare("SELECT version FROM fleet_state_schema ORDER BY version")?
         .query_map([], |row| row.get::<_, i64>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    if versions != [SCHEMA_VERSION] {
+    if versions != [expected_version] {
         return Err(StateError::CorruptState(
             "fleet state schema marker is invalid",
         ));
     }
-    require_table_shape(
+    require_table_shape_with_definition(
         connection,
         "fleet_state_schema",
         &[("version", "INTEGER", 1)],
+        expected_marker_sql,
     )?;
     require_table_shape(
         connection,

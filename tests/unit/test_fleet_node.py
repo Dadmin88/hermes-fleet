@@ -622,14 +622,14 @@ def test_fleet_node_health_and_inventory_add_readiness_when_observation_is_confi
 ) -> None:
     readiness = {
         "managed_state": "active",
-        "binding_generation": 1,
+        "admission_generation": 1,
         "alive": True,
         "fresh": True,
         "scheduler_ready": True,
         "observation_age_ms": 10,
         "reasons": [],
         "last_observation": {
-            "binding_generation": 1,
+            "admission_generation": 1,
             "observed_at_ms": 1000,
             "received_at_ms": 1001,
             "network": "reachable",

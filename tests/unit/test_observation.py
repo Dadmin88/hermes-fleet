@@ -49,7 +49,7 @@ def test_observation_client_keeps_identity_outside_typed_sample(tmp_path) -> Non
         device_id="device-1",
     )
     sample = {
-        "binding_generation": 1,
+        "admission_generation": 1,
         "observed_at_ms": 1_000,
         "network": "reachable",
         "keryx": "available",
@@ -78,14 +78,14 @@ def test_observation_client_returns_bounded_readiness_inspection(tmp_path) -> No
     captured: list[dict] = []
     readiness = {
         "managed_state": "active",
-        "binding_generation": 7,
+        "admission_generation": 7,
         "alive": True,
         "fresh": True,
         "scheduler_ready": True,
         "observation_age_ms": 10,
         "reasons": [],
         "last_observation": {
-            "binding_generation": 7,
+            "admission_generation": 7,
             "observed_at_ms": 1_000,
             "received_at_ms": 1_001,
             "network": "reachable",
@@ -161,7 +161,7 @@ def test_build_observation_reports_worker_capacity_and_optional_linux_resources(
         },
     )
     sample = observation.build_observation(
-        binding_generation=7,
+        admission_generation=7,
         hermes_health={
             "api": "healthy",
             "run_submission": True,
@@ -177,7 +177,7 @@ def test_build_observation_reports_worker_capacity_and_optional_linux_resources(
     )
 
     assert sample == {
-        "binding_generation": 7,
+        "admission_generation": 7,
         "observed_at_ms": 5_000,
         "network": "reachable",
         "keryx": "available",

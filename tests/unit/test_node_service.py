@@ -173,7 +173,7 @@ def test_observation_collection_and_publish_run_off_the_event_loop(
         def inspect(self) -> dict[str, Any]:
             return {}
 
-        def binding_generation(self) -> int:
+        def admission_generation(self) -> int:
             return 7
 
     monkeypatch.setattr(node_service, "build_observation", build)
@@ -182,7 +182,7 @@ def test_observation_collection_and_publish_run_off_the_event_loop(
             Observer(),
             {},
             0,
-            binding_generation=1,
+            admission_generation=1,
             network_reachable=True,
             keryx_available=True,
             worker_available=True,
@@ -325,7 +325,7 @@ def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
         def inspect(self) -> dict[str, Any]:
             return {}
 
-        def binding_generation(self) -> int:
+        def admission_generation(self) -> int:
             return 1
 
     async def exercise() -> None:
@@ -344,7 +344,7 @@ def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
 
     assert samples[0]["hermes"] == "unavailable"
     assert samples[0]["worker"] == "unavailable"
-    assert samples[0]["binding_generation"] == 1
+    assert samples[0]["admission_generation"] == 1
 
 
 def test_node_runtime_config_redacts_secrets_from_repr(tmp_path) -> None:
@@ -387,7 +387,7 @@ def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) ->
                 "reasons": [],
             }
 
-        def binding_generation(self) -> int:
+        def admission_generation(self) -> int:
             return 7
 
     def node_factory(**kwargs):
@@ -416,8 +416,8 @@ def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) ->
         "device_id": "device-1",
     }
     assert len(observer.samples) == 2
-    assert observer.samples[0]["binding_generation"] == 7
-    assert observer.samples[1]["binding_generation"] == 7
+    assert observer.samples[0]["admission_generation"] == 7
+    assert observer.samples[1]["admission_generation"] == 7
     assert observer.samples[0]["network"] == "reachable"
     assert observer.samples[0]["keryx"] == "available"
     assert observer.samples[0]["hermes"] == "available"
@@ -462,7 +462,7 @@ def test_node_service_initial_capacity_includes_unresolved_restart_binding(
         def inspect(self) -> dict[str, Any]:
             return {}
 
-        def binding_generation(self) -> int:
+        def admission_generation(self) -> int:
             return 7
 
     async def exercise() -> None:
@@ -500,7 +500,7 @@ def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
         def inspect(self) -> dict[str, Any]:
             return {}
 
-        def binding_generation(self) -> int:
+        def admission_generation(self) -> int:
             return 7
 
     class Worker:

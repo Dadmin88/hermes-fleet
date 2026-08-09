@@ -12,13 +12,22 @@ use serde_json::json;
 use tempfile::tempdir;
 
 fn projection(operation: &str, generation: u64) -> fleet_domain::ProjectionDocument {
+    projection_with_generations(operation, generation, generation, generation)
+}
+
+fn projection_with_generations(
+    operation: &str,
+    projection_generation: u64,
+    membership_generation: u64,
+    binding_generation: u64,
+) -> fleet_domain::ProjectionDocument {
     let mut document: fleet_domain::ProjectionDocument = serde_json::from_value(json!({
         "source": "nodescale",
         "network_id": "network-1",
         "device_id": "device-1",
-        "projection_generation": generation.to_string(),
-        "membership_generation": generation.to_string(),
-        "binding_generation": generation.to_string(),
+        "projection_generation": projection_generation.to_string(),
+        "membership_generation": membership_generation.to_string(),
+        "binding_generation": binding_generation.to_string(),
         "content_hash": "",
         "operation": operation,
         "generated_operations": if operation == "upsert" { json!(["fleet.health", "fleet.inventory", "fleet.message"]) } else { json!([]) },
@@ -26,7 +35,7 @@ fn projection(operation: &str, generation: u64) -> fleet_domain::ProjectionDocum
             "source": "nodescale",
             "network_id": "network-1",
             "device_id": "device-1",
-            "snapshot": generation.to_string(),
+            "snapshot": projection_generation.to_string(),
             "controller": "nodescale"
         }
     }))
@@ -40,12 +49,12 @@ fn observation(observed_at_ms: u64, active_workers: u32) -> NodeObservation {
 }
 
 fn observation_for_generation(
-    binding_generation: u64,
+    admission_generation: u64,
     observed_at_ms: u64,
     active_workers: u32,
 ) -> NodeObservation {
     NodeObservation {
-        binding_generation,
+        admission_generation,
         observed_at_ms,
         network: Reachability::Reachable,
         keryx: Availability::Available,
@@ -234,7 +243,7 @@ fn disable_and_remove_invalidate_observation_before_readmission() {
             )
             .unwrap();
         assert_eq!(readmitted.managed_state, ManagedNodeState::Active);
-        assert_eq!(readmitted.binding_generation, Some(3));
+        assert_eq!(readmitted.admission_generation, Some(3));
         assert!(readmitted.observation.is_none());
         assert_eq!(
             readmitted.readiness.reasons,
@@ -266,7 +275,57 @@ fn disable_and_remove_invalidate_observation_before_readmission() {
 }
 
 #[test]
-fn active_binding_generation_change_invalidates_prior_observation() {
+fn readmission_rejects_delayed_sample_when_binding_generation_is_reused() {
+    let temporary = tempdir().unwrap();
+    let store = FleetStateStore::open(temporary.path().join("same-binding.sqlite3")).unwrap();
+    store
+        .apply_projection(projection_with_generations("upsert", 1, 1, 1))
+        .unwrap();
+    store
+        .record_observation(
+            "nodescale",
+            "network-1",
+            "device-1",
+            observation_for_generation(1, 1_000, 0),
+            1_100,
+        )
+        .unwrap();
+    store
+        .apply_projection(projection_with_generations("disable", 2, 2, 1))
+        .unwrap();
+    store
+        .apply_projection(projection_with_generations("upsert", 3, 3, 1))
+        .unwrap();
+
+    assert!(matches!(
+        store.record_observation(
+            "nodescale",
+            "network-1",
+            "device-1",
+            observation_for_generation(1, 1_050, 0),
+            1_200,
+        ),
+        Err(StateError::InvalidTransition(_))
+    ));
+    let readmitted = store
+        .inspect_node(
+            "nodescale",
+            "network-1",
+            "device-1",
+            1_200,
+            ReadinessPolicy::new(1_000).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(readmitted.admission_generation, Some(3));
+    assert!(readmitted.observation.is_none());
+    assert_eq!(
+        readmitted.readiness.reasons,
+        vec![ReadinessReason::ObservationMissing]
+    );
+}
+
+#[test]
+fn active_projection_change_invalidates_prior_observation() {
     let temporary = tempdir().unwrap();
     let store = active_store(&temporary.path().join("rebind.sqlite3"));
     store
@@ -279,7 +338,9 @@ fn active_binding_generation_change_invalidates_prior_observation() {
         )
         .unwrap();
 
-    store.apply_projection(projection("upsert", 2)).unwrap();
+    store
+        .apply_projection(projection_with_generations("upsert", 2, 2, 1))
+        .unwrap();
     let rebound = store
         .inspect_node(
             "nodescale",
@@ -289,7 +350,7 @@ fn active_binding_generation_change_invalidates_prior_observation() {
             ReadinessPolicy::new(1_000).unwrap(),
         )
         .unwrap();
-    assert_eq!(rebound.binding_generation, Some(2));
+    assert_eq!(rebound.admission_generation, Some(2));
     assert!(rebound.observation.is_none());
     assert_eq!(
         rebound.readiness.reasons,
@@ -526,7 +587,7 @@ fn concurrent_v1_migration_opens_once_and_preserves_projection() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
 }
 
@@ -559,6 +620,58 @@ fn existing_foreign_key_corruption_is_rejected_on_open() {
         FleetStateStore::open(path),
         Err(StateError::CorruptState(_))
     ));
+}
+
+#[test]
+fn malformed_v2_schema_is_rejected_before_migration_mutates_it() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("malformed-v2.sqlite3");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_fleet_state.sql"))
+        .unwrap();
+    connection.pragma_update(None, "user_version", 1).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0002_node_observations.sql"))
+        .unwrap();
+    connection.pragma_update(None, "user_version", 2).unwrap();
+    connection
+        .execute("DROP TABLE node_observations", [])
+        .unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE node_observations (
+                source TEXT NOT NULL,
+                network_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                observed_at_ms INTEGER NOT NULL CHECK (observed_at_ms > 0),
+                received_at_ms INTEGER NOT NULL CHECK (received_at_ms > 0),
+                observation_json TEXT NOT NULL CHECK (json_valid(observation_json)),
+                PRIMARY KEY (source, network_id, device_id)
+            ) STRICT;",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        FleetStateStore::open(&path),
+        Err(StateError::CorruptState(_))
+    ));
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT version FROM fleet_state_schema", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
 }
 
 #[test]
@@ -631,7 +744,7 @@ fn accepted_v1_database_migrates_in_place_and_preserves_managed_projection() {
     drop(connection);
 
     let migrated = FleetStateStore::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 2);
+    assert_eq!(migrated.schema_version().unwrap(), 3);
     assert_eq!(
         migrated
             .inspect_projection("nodescale", "network-1", "device-1")
@@ -671,5 +784,75 @@ fn accepted_v1_database_migrates_in_place_and_preserves_managed_projection() {
             "operator_projection_denies",
             "run_bindings",
         ]
+    );
+}
+
+#[test]
+fn accepted_v2_database_discards_unbound_observation_during_upgrade() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("legacy-observation.sqlite3");
+    let desired = projection("upsert", 1);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_fleet_state.sql"))
+        .unwrap();
+    connection.pragma_update(None, "user_version", 1).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0002_node_observations.sql"))
+        .unwrap();
+    connection.pragma_update(None, "user_version", 2).unwrap();
+    connection
+        .execute(
+            "INSERT INTO managed_projections (
+                source, network_id, device_id, projection_generation,
+                membership_generation, binding_generation, document_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                desired.source,
+                desired.network_id,
+                desired.device_id,
+                desired.projection_generation.get().to_string(),
+                desired.membership_generation.get().to_string(),
+                desired.binding_generation.get().to_string(),
+                serde_json::to_string(&desired).unwrap(),
+            ],
+        )
+        .unwrap();
+    let legacy_observation = json!({
+        "observed_at_ms": 1_000,
+        "network": "reachable",
+        "keryx": "available",
+        "hermes": "available",
+        "worker": "available",
+        "capacity": {"active_workers": 0, "max_workers": 2},
+        "resources": {},
+    });
+    connection
+        .execute(
+            "INSERT INTO node_observations(
+                source, network_id, device_id, observed_at_ms, received_at_ms,
+                observation_json
+             ) VALUES ('nodescale', 'network-1', 'device-1', 1000, 1100, ?1)",
+            [serde_json::to_string(&legacy_observation).unwrap()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let migrated = FleetStateStore::open(&path).unwrap();
+    assert_eq!(migrated.schema_version().unwrap(), 3);
+    let view = migrated
+        .inspect_node(
+            "nodescale",
+            "network-1",
+            "device-1",
+            1_200,
+            ReadinessPolicy::new(1_000).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(view.admission_generation, Some(1));
+    assert!(view.observation.is_none());
+    assert_eq!(
+        view.readiness.reasons,
+        vec![ReadinessReason::ObservationMissing]
     );
 }

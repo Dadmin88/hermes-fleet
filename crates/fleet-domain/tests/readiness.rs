@@ -6,7 +6,7 @@ use fleet_domain::{
 
 fn ready_observation() -> NodeObservation {
     NodeObservation {
-        binding_generation: 1,
+        admission_generation: 1,
         observed_at_ms: 1_000,
         network: Reachability::Reachable,
         keryx: Availability::Available,
@@ -119,7 +119,7 @@ fn readiness_explains_unknown_inactive_missing_and_unavailable_layers() {
 #[test]
 fn zero_worker_slots_blocks_readiness_but_missing_gpu_does_not() {
     let deserialized: NodeObservation = serde_json::from_value(serde_json::json!({
-        "binding_generation": 1,
+        "admission_generation": 1,
         "observed_at_ms": 1_000,
         "network": "reachable",
         "keryx": "available",
@@ -162,7 +162,7 @@ fn zero_worker_slots_blocks_readiness_but_missing_gpu_does_not() {
 #[test]
 fn observation_validation_rejects_inconsistent_or_unbounded_telemetry() {
     let mut observation = ready_observation();
-    observation.binding_generation = 0;
+    observation.admission_generation = 0;
     assert!(observation.validate().is_err());
 
     let mut observation = ready_observation();

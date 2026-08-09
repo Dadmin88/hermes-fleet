@@ -46,7 +46,7 @@ class _Observation(Protocol):
 
     def inspect(self) -> dict[str, Any]: ...
 
-    def binding_generation(self) -> int: ...
+    def admission_generation(self) -> int: ...
 
 
 class _ObservedWorker(Protocol):
@@ -243,8 +243,8 @@ async def run_node_service(
         )
 
         if observer is not None:
-            binding_generation = await _binding_generation(observer)
-            if binding_generation is not None:
+            admission_generation = await _admission_generation(observer)
+            if admission_generation is not None:
                 health = await asyncio.to_thread(hermes.health)
                 network_reachable, keryx_available = await _keryx_signals(
                     node, runtime.controller_peer_ids
@@ -253,7 +253,7 @@ async def run_node_service(
                     observer,
                     health,
                     worker.observed_active_worker_count,
-                    binding_generation=binding_generation,
+                    admission_generation=admission_generation,
                     network_reachable=network_reachable,
                     keryx_available=keryx_available,
                     worker_available=include_hermes_run,
@@ -286,13 +286,13 @@ async def run_node_service(
                     capacity_updates.put_nowait(None)
                 await asyncio.gather(observation_task, return_exceptions=True)
             if observer is not None:
-                binding_generation = await _binding_generation(observer)
-                if binding_generation is not None:
+                admission_generation = await _admission_generation(observer)
+                if admission_generation is not None:
                     await _publish_observation(
                         observer,
                         health,
                         worker.observed_active_worker_count,
-                        binding_generation=binding_generation,
+                        admission_generation=admission_generation,
                         network_reachable=False,
                         keryx_available=False,
                         worker_available=False,
@@ -308,13 +308,13 @@ async def run_node_service(
                     capacity_updates.put_nowait(None)
                 await asyncio.gather(observation_task, return_exceptions=True)
             if observer is not None:
-                binding_generation = await _binding_generation(observer)
-                if binding_generation is not None:
+                admission_generation = await _admission_generation(observer)
+                if admission_generation is not None:
                     await _publish_observation(
                         observer,
                         health,
                         worker.observed_active_worker_count,
-                        binding_generation=binding_generation,
+                        admission_generation=admission_generation,
                         network_reachable=False,
                         keryx_available=False,
                         worker_available=False,
@@ -334,9 +334,9 @@ async def run_node_service(
             await node.stop()
 
 
-async def _binding_generation(observer: _Observation) -> int | None:
+async def _admission_generation(observer: _Observation) -> int | None:
     try:
-        return await asyncio.to_thread(observer.binding_generation)
+        return await asyncio.to_thread(observer.admission_generation)
     except (OSError, RuntimeError, ValueError) as error:
         logger.warning("fleet-node admission generation lookup failed: %s", error)
         return None
@@ -347,7 +347,7 @@ async def _publish_observation(
     health: object,
     active_workers: int,
     *,
-    binding_generation: int,
+    admission_generation: int,
     network_reachable: bool,
     keryx_available: bool,
     worker_available: bool,
@@ -356,7 +356,7 @@ async def _publish_observation(
 
     def build_and_publish() -> str:
         sample = build_observation(
-            binding_generation=binding_generation,
+            admission_generation=admission_generation,
             hermes_health=health,
             active_workers=active_workers,
             max_workers=1,
@@ -396,8 +396,8 @@ async def _observation_loop(
             pass
         if shutdown.is_set():
             return
-        binding_generation = await _binding_generation(observer)
-        if binding_generation is None:
+        admission_generation = await _admission_generation(observer)
+        if admission_generation is None:
             continue
         try:
             health = await asyncio.to_thread(hermes.health)
@@ -411,7 +411,7 @@ async def _observation_loop(
             observer,
             health,
             worker.observed_active_worker_count,
-            binding_generation=binding_generation,
+            admission_generation=admission_generation,
             network_reachable=network_reachable,
             keryx_available=keryx_available,
             worker_available=worker_available,

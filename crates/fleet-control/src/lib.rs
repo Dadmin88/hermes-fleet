@@ -721,7 +721,7 @@ fn observation_value(view: NodeOperationalView) -> Value {
             let observation = record.observation;
             (
                 json!({
-                    "binding_generation": observation.binding_generation,
+                    "admission_generation": observation.admission_generation,
                     "observed_at_ms": observation.observed_at_ms,
                     "received_at_ms": record.received_at_ms,
                     "network": observation.network,
@@ -740,7 +740,7 @@ fn observation_value(view: NodeOperationalView) -> Value {
     };
     json!({
         "managed_state": view.managed_state,
-        "binding_generation": view.binding_generation,
+        "admission_generation": view.admission_generation,
         "alive": view.readiness.alive,
         "fresh": view.readiness.fresh,
         "scheduler_ready": view.readiness.scheduler_ready,
