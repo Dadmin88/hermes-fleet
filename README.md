@@ -76,6 +76,7 @@ The important states are:
 creating
 running
 completed
+cancelled
 indeterminate
 ```
 
@@ -86,13 +87,17 @@ If Fleet knows the Hermes run ID, it can resume watching that run. If it already
 Hermes Fleet is one product with two implementation stages in this repository.
 
 - **Python implementation:** the proven reference implementation and current production prototype.
-- **Rust implementation:** the permanent implementation now being built against the same behavior and shared fixtures.
+- **Rust implementation:** the permanent implementation being built against the same behavior and shared fixtures.
 
 There is no separate "Fleet-RS" product.
 
-The first Rust foundation on `main` contains the real `fleet-domain` crate and language-neutral compatibility fixtures for operation vocabulary, exact-node selection, managed projection decisions, local-deny behavior, and execution-recovery decisions.
+The Rust implementation on `main` currently includes:
 
-Storage, transport, scheduling, profile distribution, Fleet Sentinel, and the final UI are separate later steps.
+- `fleet-domain`, which defines operation vocabulary, exact-node selection, managed-projection decisions, local-deny behavior, and execution-recovery decisions;
+- `fleet-state`, which makes managed projection and run-binding decisions durable in SQLite, including restart and concurrency behavior;
+- shared language-neutral fixtures checked independently by Rust and the production Python behavior.
+
+Keryx transport, the permanent Rust service/control layer, scheduling, profile distribution, Fleet Sentinel, and the final UI are separate later steps.
 
 ## Install as a Hermes plugin
 
