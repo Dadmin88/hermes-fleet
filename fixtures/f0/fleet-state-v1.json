@@ -1,0 +1,33 @@
+{
+  "schema": "hermes-fleet.fleet-state-compat.v1",
+  "run_binding_scenarios": [
+    {
+      "task_id": "task-completed",
+      "steps": [
+        {"action": "reserve", "expected_state": {"kind": "creating"}, "expected_recovery": "start_new"},
+        {"action": "reopen", "expected_state": {"kind": "creating"}, "expected_recovery": "fail_closed_indeterminate"},
+        {"action": "bind", "run_id": "run-completed", "expected_state": {"kind": "running", "run_id": "run-completed"}, "expected_recovery": "resume_known_run"},
+        {"action": "reopen", "expected_state": {"kind": "running", "run_id": "run-completed"}, "expected_recovery": "resume_known_run"},
+        {"action": "complete", "run_id": "run-completed", "result": "durable result", "expected_state": {"kind": "completed", "run_id": "run-completed", "result": "durable result"}, "expected_recovery": "replay_completed"},
+        {"action": "reopen", "expected_state": {"kind": "completed", "run_id": "run-completed", "result": "durable result"}, "expected_recovery": "replay_completed"}
+      ]
+    },
+    {
+      "task_id": "task-cancelled",
+      "steps": [
+        {"action": "reserve", "expected_state": {"kind": "creating"}, "expected_recovery": "start_new"},
+        {"action": "bind", "run_id": "run-cancelled", "expected_state": {"kind": "running", "run_id": "run-cancelled"}, "expected_recovery": "resume_known_run"},
+        {"action": "cancel", "run_id": "run-cancelled", "expected_state": {"kind": "cancelled", "run_id": "run-cancelled"}, "expected_recovery": "fail_cancelled"},
+        {"action": "reopen", "expected_state": {"kind": "cancelled", "run_id": "run-cancelled"}, "expected_recovery": "fail_cancelled"}
+      ]
+    },
+    {
+      "task_id": "task-indeterminate",
+      "steps": [
+        {"action": "reserve", "expected_state": {"kind": "creating"}, "expected_recovery": "start_new"},
+        {"action": "indeterminate", "expected_state": {"kind": "indeterminate"}, "expected_recovery": "fail_closed_indeterminate"},
+        {"action": "reopen", "expected_state": {"kind": "indeterminate"}, "expected_recovery": "fail_closed_indeterminate"}
+      ]
+    }
+  ]
+}
