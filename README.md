@@ -1,73 +1,69 @@
 # Hermes Fleet
 
-Hermes Fleet is a coordination layer for Hermes-capable nodes. It gives operators friendly node identity, bounded communication envelopes, exact-node selection, local policy, dispatch, CLI/model tools, and safe presentation while using Hermes Keryx as the authenticated transport and durable task/result ledger.
+Hermes Fleet is the coordination and control layer for a network of Hermes-capable nodes. It gives operators stable node identity, exact-node selection, bounded communication envelopes, local authorization policy, remote status, and deliberate Hermes execution while delegating authenticated transport and durable task/result delivery to [Hermes Keryx](https://github.com/Dadmin88/hermes-keryx).
 
-Remote Hermes execution is one Fleet capability, not Fleet's entire communication model. Receiving a Fleet communication does not automatically start Hermes.
+Fleet is intentionally not a second transport system. Keryx moves and persists authenticated work; Fleet decides what a named node may do with that work and how operators interact with it.
 
-## Release status
+> Remote Hermes execution is an explicit Fleet capability. Receiving a Fleet message never implies permission to start Hermes.
 
-Hermes Fleet v0.1 is implemented, deployed, and accepted on the real Katana-to-VPS topology.
+## Capabilities
 
-The N7 managed-projection V1 contract is accepted across Nodescale and Fleet. It projects only managed baseline health, inventory, and message authority; local deny remains authoritative and Hermes execution is never generated automatically.
+Fleet currently provides:
 
-The permanent Rust implementation has begun in the same product repository. Python remains the proven reference implementation, compatibility oracle, and current production prototype. The first Rust F0 slice is the real `fleet-domain` crate plus language-neutral fixtures for operation vocabulary, exact-node selection, managed baseline/local-deny behavior, and known-versus-uncertain execution recovery. Scheduler, profile CAS, Sentinel, and UI are not part of F0.
+- friendly operator-managed names mapped to immutable Keryx peer identities;
+- deterministic exact-node selection;
+- bounded, versioned request envelopes and deadlines;
+- default-deny per-node operation policy;
+- direct health, inventory, and message operations;
+- deliberate remote Hermes execution through the local Hermes Runs API;
+- durable task-to-run binding so reclaimed work does not silently create duplicate Hermes runs;
+- durable task status reattachment through Keryx;
+- local managed-state projection from Nodescale with operator deny precedence;
+- CLI commands, Hermes model tools, an operator skill, and systemd deployment units.
 
-Runtime acceptance was completed against:
+## Responsibility boundaries
 
-- Fleet code SHA: `29876e9b2afa0de8b9f2bce4e1edb5671f412438`
-- Fleet CI: run `31062104463`, passed on Python 3.11, Python 3.13, and the Hermes clean-install/full-suite smoke
-- Keryx SHA: `f4ee645e415600a959ea8062d1143140bd6c2616`
-- Keryx integration PR: [Dadmin88/hermes-keryx#36](https://github.com/Dadmin88/hermes-keryx/pull/36)
+| Component | Responsibility |
+| --- | --- |
+| **Hermes Fleet** | Friendly node identity, exact-node selection, request envelopes, local authorization, dispatch, execution binding, operator tools, and presentation. |
+| **Hermes Keryx** | Authenticated peer identity, discovery, routing, durable task/result state, claims, leases, result delivery, cancellation records, and relay behavior. |
+| **Nodescale** | Managed device membership and desired managed Fleet state. |
+| **Hermes** | Local agent execution, models, tools, skills, permissions, memory, and sessions. |
 
-Accepted live slices:
+Mesh membership, Keryx authentication, Fleet authorization, and Hermes execution are separate gates. No hostname, tag, peer-produced response field, or managed role automatically grants `fleet.hermes.run`.
 
-- `fleet.message`: task `7e78f4c1-240a-496f-bbf4-2a0a491018d6`, relay route, VPS acknowledgment `received`, zero Hermes runs, and zero execution-binding rows.
-- `fleet.hermes.run`: Keryx task `913af216-2866-48e8-8f18-b479df479466`, Hermes run `run_b9f345d82c3d45778b14714966922f7e`, relay route, terminal result `FLEET_OK`, completed durable binding, and successful status reattachment.
+## Operations
 
-Live `fleet.health`, `fleet.inventory`, `fleet.list`, and durable status retrieval also passed. All peer-originated direct responses and remote Hermes output are presented with `untrusted: true`.
+| Operation | Hermes run | Purpose |
+| --- | ---: | --- |
+| `fleet.health` | No | Bounded Fleet, Keryx, and local Hermes capability health. |
+| `fleet.inventory` | No | Safe node identity, version, and capability summary. |
+| `fleet.message` | No | Bounded text communication with deterministic acknowledgement. |
+| `fleet.hermes.run` | Yes | Deliberately start and observe one authenticated local Hermes run. |
 
-## Initial operations
+All peer-originated content is treated as untrusted data even when Keryx authenticated the sender. Authentication establishes who sent a response, not whether its contents are safe to trust as local configuration or authority.
 
-- `fleet.health` - direct adapter/Keryx/Hermes capability health; it may perform bounded health probes but never creates a Hermes run.
-- `fleet.inventory` - direct safe node identity, version, and capability summary; no broad filesystem inventory.
-- `fleet.message` - direct bounded text communication with optional topic and correlation ID; returns a deterministic acknowledgment and does not call Hermes.
-- `fleet.hermes.run` - the only initial executable operation; starts one authenticated loopback Hermes run and returns terminal text through Keryx.
+## Implementation
 
-All four operations use the same versioned Fleet envelope and the same Keryx submission/result primitives. `fleet-node` has one explicit dispatcher that validates authenticated sender identity, target, envelope, Keryx metadata, local policy, limits, and the absolute deadline before selecting a direct handler or the Hermes execution handler.
+Hermes Fleet currently contains both the proven Python plugin/runtime and the growing Rust implementation under the same product and repository.
 
-## Responsibility boundary
+The Python implementation remains the operational integration surface and behavioral compatibility reference. The Rust workspace currently provides durable domain and state foundations and is intended to assume more of the permanent runtime over time without changing the product identity or external contracts.
 
-- **Fleet:** friendly node identity and operator metadata, exact-node selection, communication envelopes, local policy, dispatch, CLI/model tools, execution binding, and operator presentation.
-- **Keryx:** authenticated peer identity, registration/discovery, routing, delivery, durable task/result state, claims, leases, result routing, cancellation records, and offline mailbox behavior.
-- **fleet-node:** safe local handling of incoming Fleet operations.
-- **Hermes:** local agent execution.
+Repository layout:
 
-Fleet does not create a second transport, message lifecycle database, result poller, relay, workflow engine, or artifact channel. Its narrow SQLite execution binding stores only the Keryx task correlation, binding state, Hermes run ID, and bounded terminal result needed to prevent duplicate Hermes execution after reclaim. It is not a competing task ledger.
-
-Kanban is not a transport, queue, router, execution engine, or source of truth. A future dashboard may visualize Keryx-backed state but must not become another state machine.
-
-## Current implementation
-
-The repository provides:
-
-- schema-v1 operator inventory at `HERMES_HOME/fleet/nodes.yaml`;
-- friendly names mapped to immutable Keryx `peer_id` values, with no URLs or credentials in inventory;
-- default-deny per-node operation policy and bounded deadlines/payloads;
-- strict envelopes for all four initial operations;
-- deterministic exact-name selection;
-- a direct Keryx controller adapter that preserves the actual routed peer and delivery route;
-- one `fleet-node` dispatcher with direct health/inventory/message handlers;
-- authenticated loopback Hermes Runs start/poll/stop support;
-- durable fail-closed task-to-run binding, known-run resume, and completed-result replay;
-- live Keryx inventory with distinct direct, registry-visible, not-visible, and unknown states;
-- durable Keryx status reattachment by task ID;
-- seven async Hermes model tools, the bounded `hermes fleet` CLI tree, and an operator skill;
-- foreground `fleet-node` and systemd deployment units;
-- owner-safe local initialization with `hermes fleet init`.
+```text
+hermes_fleet/           Python Fleet plugin/runtime
+crates/fleet-domain/    Rust domain types and authorization semantics
+crates/fleet-state/     Rust durable Fleet state
+fixtures/               Language-neutral compatibility fixtures
+ops/                    Service and deployment assets
+docs/                   Architecture, deployment, projection, and verification docs
+SKILL.md                 Hermes operator skill
+```
 
 ## Install as a Hermes plugin
 
-Hermes Fleet is a standalone Git directory plugin. Git must already be authorized for the repository:
+Git must already be authorized to access this repository.
 
 ```bash
 hermes plugins install Dadmin88/hermes-fleet --enable
@@ -75,17 +71,15 @@ hermes fleet init
 hermes plugins list --plain --no-bundled
 ```
 
-Restart a running gateway after installation or update so it loads the new model tools:
+Restart an already-running Hermes gateway after installing or updating the plugin so that process loads the current Fleet model tools:
 
 ```bash
 hermes gateway restart
 ```
 
-`init` creates missing state files without overwriting valid operator state. The Git checkout installed by the plugin manager is the supported Hermes plugin artifact; the wheel is for development and integration use.
+`hermes fleet init` creates missing Fleet state without overwriting valid operator-managed state.
 
-## Operator surfaces
-
-CLI commands:
+## Operator CLI
 
 ```text
 hermes fleet init
@@ -109,27 +103,50 @@ Model tools:
 - `fleet_get_task`
 - `fleet_cancel_task`
 
-Cross-node cancellation intentionally fails closed because Keryx cannot yet prove that a remote worker observed cancellation and stopped its bound Hermes run.
+Cross-node cancellation currently fails closed because Fleet cannot yet prove that the destination worker observed cancellation and stopped an already-bound Hermes run.
+
+## Development
+
+Python checks:
+
+```bash
+python -m pytest
+python -m ruff check .
+```
+
+Rust checks:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --workspace
+```
+
+Use the language-neutral fixtures when changing behavior shared by the Python and Rust implementations.
 
 ## Documentation
 
+Start with the [documentation index](docs/README.md).
+
 - [Architecture](docs/architecture.md)
-- [Managed projection V1 contract (N7 accepted)](docs/managed-projection-v1.md)
 - [Deployment](docs/deployment.md)
-- [Repeatable smoke test and acceptance record](docs/smoke-test.md)
+- [Managed projection V1](docs/managed-projection-v1.md)
+- [Integration verification](docs/smoke-test.md)
 - [Operator skill](SKILL.md)
-- [Completed implementation record](.hermes/plans/2026-08-05_054610-hermes-fleet-keryx-v0.1.0.md)
+- [Changelog](CHANGELOG.md)
 
-## Known limits and deferred work
+Implementation chronology, checkpoint hashes, machine-specific rollout notes, and agent plans belong in pull requests, issues, releases, or local workspace state rather than durable product documentation.
 
-- Cross-node cancellation is unavailable and reported honestly.
-- Relay offline mailboxes are bounded in-memory queues and do not survive relay restart.
-- Cross-node artifact bytes, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, workflow graphs, Kanban integration, Android/Termux, public-internet exposure, and multi-tenant architecture remain deferred.
-- The deployed Tailscale TLS certificate expires on 2026-09-17 and must be renewed before that date, followed by a relay restart.
-- The Katana Hermes gateway must be restarted after a Fleet plugin update before the model tools are available in that gateway process; CLI operations do not require a long-running Fleet controller daemon.
+## Known limitations
+
+- Cross-node running-task cancellation is not yet proven end to end and therefore remains unavailable.
+- Keryx relay offline mailbox durability is a Keryx concern; Fleet does not add a second mailbox or queue.
+- Cross-node artifact transfer, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, workflow graphs, and multi-tenant control are outside the current Fleet surface.
+- A running Hermes gateway must be restarted after a plugin update before that process sees newly installed Fleet model tools.
 
 ## License
 
-Current versions of Hermes Fleet are licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
+Hermes Fleet is licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
 
-Code published in earlier commits under the MIT License remains available under the license terms that applied when it was published.
+Code published in earlier commits under a different license remains available under the terms that applied when it was published.
