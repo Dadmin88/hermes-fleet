@@ -82,7 +82,11 @@ class FleetNodeWorker:
             raise ValueError("controller_peer_ids contains an invalid peer ID")
         self._hermes = hermes
         self._controller_peer_ids = frozenset(controller_peer_ids)
-        operations = advertised_operations or tuple(sorted(OPERATIONS))
+        operations = (
+            tuple(sorted(OPERATIONS))
+            if advertised_operations is None
+            else advertised_operations
+        )
         if (
             type(operations) is not tuple
             or not operations
@@ -191,6 +195,16 @@ class FleetNodeWorker:
             logger.info(
                 "fleet communication rejected task_id=%s peer_id=%s "
                 "status=metadata-mismatch",
+                task_id,
+                peer_id,
+            )
+            return
+
+        if envelope.operation not in self._advertised_operations:
+            await _fail(incoming, "Fleet operation is not currently available")
+            logger.info(
+                "fleet communication rejected task_id=%s peer_id=%s "
+                "status=operation-unavailable",
                 task_id,
                 peer_id,
             )

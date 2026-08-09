@@ -543,10 +543,12 @@ pub struct ResourceObservation {
     pub gpu: Option<GpuObservation>,
 }
 
-/// One node-authored operational sample. Identity is deliberately absent.
+/// One node-authored operational sample. Identity is deliberately absent; the
+/// admission generation binds the sample to the active managed projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeObservation {
+    pub binding_generation: u64,
     pub observed_at_ms: u64,
     pub network: Reachability,
     pub keryx: Availability,
@@ -562,7 +564,8 @@ pub struct InvalidObservation;
 
 impl NodeObservation {
     pub fn validate(&self) -> Result<(), InvalidObservation> {
-        if self.observed_at_ms == 0
+        if self.binding_generation == 0
+            || self.observed_at_ms == 0
             || !self.capacity.is_valid()
             || self.resources.cpu.is_some_and(|value| !value.is_valid())
             || self.resources.ram.is_some_and(|value| !value.is_valid())

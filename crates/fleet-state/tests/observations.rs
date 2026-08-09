@@ -36,7 +36,16 @@ fn projection(operation: &str, generation: u64) -> fleet_domain::ProjectionDocum
 }
 
 fn observation(observed_at_ms: u64, active_workers: u32) -> NodeObservation {
+    observation_for_generation(1, observed_at_ms, active_workers)
+}
+
+fn observation_for_generation(
+    binding_generation: u64,
+    observed_at_ms: u64,
+    active_workers: u32,
+) -> NodeObservation {
     NodeObservation {
+        binding_generation,
         observed_at_ms,
         network: Reachability::Reachable,
         keryx: Availability::Available,
@@ -203,6 +212,18 @@ fn disable_and_remove_invalidate_observation_before_readmission() {
         assert!(inactive.observation.is_none());
 
         store.apply_projection(projection("upsert", 3)).unwrap();
+        assert!(matches!(
+            store.record_observation(
+                "nodescale",
+                "network-1",
+                "device-1",
+                observation_for_generation(1, 1_150, 0),
+                1_250,
+            ),
+            Err(StateError::InvalidTransition(
+                "observation admission generation does not match active projection"
+            ))
+        ));
         let readmitted = store
             .inspect_node(
                 "nodescale",
@@ -213,12 +234,86 @@ fn disable_and_remove_invalidate_observation_before_readmission() {
             )
             .unwrap();
         assert_eq!(readmitted.managed_state, ManagedNodeState::Active);
+        assert_eq!(readmitted.binding_generation, Some(3));
         assert!(readmitted.observation.is_none());
         assert_eq!(
             readmitted.readiness.reasons,
             vec![ReadinessReason::ObservationMissing]
         );
+        store
+            .record_observation(
+                "nodescale",
+                "network-1",
+                "device-1",
+                observation_for_generation(3, 1_260, 0),
+                1_270,
+            )
+            .unwrap();
+        assert!(
+            store
+                .inspect_node(
+                    "nodescale",
+                    "network-1",
+                    "device-1",
+                    1_300,
+                    ReadinessPolicy::new(1_000).unwrap(),
+                )
+                .unwrap()
+                .readiness
+                .scheduler_ready
+        );
     }
+}
+
+#[test]
+fn active_binding_generation_change_invalidates_prior_observation() {
+    let temporary = tempdir().unwrap();
+    let store = active_store(&temporary.path().join("rebind.sqlite3"));
+    store
+        .record_observation(
+            "nodescale",
+            "network-1",
+            "device-1",
+            observation_for_generation(1, 1_000, 0),
+            1_100,
+        )
+        .unwrap();
+
+    store.apply_projection(projection("upsert", 2)).unwrap();
+    let rebound = store
+        .inspect_node(
+            "nodescale",
+            "network-1",
+            "device-1",
+            1_200,
+            ReadinessPolicy::new(1_000).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(rebound.binding_generation, Some(2));
+    assert!(rebound.observation.is_none());
+    assert_eq!(
+        rebound.readiness.reasons,
+        vec![ReadinessReason::ObservationMissing]
+    );
+    assert!(matches!(
+        store.record_observation(
+            "nodescale",
+            "network-1",
+            "device-1",
+            observation_for_generation(1, 1_050, 0),
+            1_210,
+        ),
+        Err(StateError::InvalidTransition(_))
+    ));
+    store
+        .record_observation(
+            "nodescale",
+            "network-1",
+            "device-1",
+            observation_for_generation(2, 1_220, 0),
+            1_230,
+        )
+        .unwrap();
 }
 
 #[test]

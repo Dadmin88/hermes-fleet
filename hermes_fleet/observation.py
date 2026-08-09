@@ -23,6 +23,7 @@ _U64_MAX = (1 << 64) - 1
 _READINESS_KEYS = frozenset(
     {
         "managed_state",
+        "binding_generation",
         "alive",
         "fresh",
         "scheduler_ready",
@@ -54,6 +55,7 @@ def normalize_readiness(value: object) -> dict[str, Any]:
     if type(value) is not dict or set(value) != _READINESS_KEYS:
         raise ValueError("readiness view has invalid fields")
     managed_state = value.get("managed_state")
+    binding_generation = value.get("binding_generation")
     alive = value.get("alive")
     fresh = value.get("fresh")
     scheduler_ready = value.get("scheduler_ready")
@@ -61,6 +63,13 @@ def normalize_readiness(value: object) -> dict[str, Any]:
     reasons = value.get("reasons")
     if managed_state not in {"unknown", "active", "disabled", "removed"}:
         raise ValueError("readiness managed state is invalid")
+    if managed_state == "unknown":
+        if binding_generation is not None:
+            raise ValueError("unknown node cannot have an admission generation")
+    else:
+        binding_generation = _bounded_int(
+            binding_generation, minimum=1, maximum=_U64_MAX
+        )
     if (
         type(alive) is not bool
         or type(fresh) is not bool
@@ -92,9 +101,15 @@ def normalize_readiness(value: object) -> dict[str, Any]:
         raise ValueError("readiness observation fields disagree")
     if last_observation is None and (observation_age_ms is not None or fresh or alive):
         raise ValueError("missing readiness observation cannot be alive")
+    if (
+        last_observation is not None
+        and last_observation["binding_generation"] != binding_generation
+    ):
+        raise ValueError("last observation admission generation is stale")
 
     return {
         "managed_state": managed_state,
+        "binding_generation": binding_generation,
         "alive": alive,
         "fresh": fresh,
         "scheduler_ready": scheduler_ready,
@@ -110,6 +125,7 @@ def _normalize_last_observation(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
     expected = {
+        "binding_generation",
         "observed_at_ms",
         "received_at_ms",
         "network",
@@ -119,6 +135,9 @@ def _normalize_last_observation(value: object) -> dict[str, Any] | None:
     }
     if type(value) is not dict or set(value) != expected:
         raise ValueError("last observation has invalid fields")
+    binding_generation = _bounded_int(
+        value["binding_generation"], minimum=1, maximum=_U64_MAX
+    )
     observed_at_ms = _bounded_int(value["observed_at_ms"], minimum=1, maximum=_U64_MAX)
     received_at_ms = _bounded_int(value["received_at_ms"], minimum=1, maximum=_U64_MAX)
     if value["network"] not in {"reachable", "unreachable"} or any(
@@ -127,6 +146,7 @@ def _normalize_last_observation(value: object) -> dict[str, Any] | None:
     ):
         raise ValueError("last observation availability is invalid")
     return {
+        "binding_generation": binding_generation,
         "observed_at_ms": observed_at_ms,
         "received_at_ms": received_at_ms,
         "network": value["network"],
@@ -294,6 +314,14 @@ class ObservationClient:
         except ValueError as error:
             raise RuntimeError("Fleet returned an invalid readiness view") from error
 
+    def binding_generation(self) -> int:
+        """Capture the active managed admission generation before sampling."""
+        readiness = self.inspect()
+        generation = readiness["binding_generation"]
+        if readiness["managed_state"] != "active" or type(generation) is not int:
+            raise RuntimeError("Fleet node is not actively admitted")
+        return generation
+
     def _request(self, kind: str, fields: dict[str, Any]) -> dict[str, Any]:
         request = {"schema": _SCHEMA, "kind": kind, **fields}
         payload = json.dumps(
@@ -326,6 +354,7 @@ class ObservationClient:
 
 def build_observation(
     *,
+    binding_generation: int,
     hermes_health: object,
     active_workers: int,
     max_workers: int,
@@ -336,7 +365,10 @@ def build_observation(
 ) -> dict[str, Any]:
     """Build the narrow scheduling sample owned by the Fleet worker."""
     if (
-        isinstance(active_workers, bool)
+        isinstance(binding_generation, bool)
+        or not isinstance(binding_generation, int)
+        or not 0 < binding_generation <= _U64_MAX
+        or isinstance(active_workers, bool)
         or not isinstance(active_workers, int)
         or isinstance(max_workers, bool)
         or not isinstance(max_workers, int)
@@ -344,7 +376,7 @@ def build_observation(
         or active_workers < 0
         or active_workers > max_workers
     ):
-        raise ValueError("worker capacity is invalid")
+        raise ValueError("observation generation or worker capacity is invalid")
     if any(
         type(value) is not bool
         for value in (network_reachable, keryx_available, worker_available)
@@ -362,6 +394,7 @@ def build_observation(
         )
     )
     return {
+        "binding_generation": binding_generation,
         "observed_at_ms": timestamp,
         "network": "reachable" if network_reachable else "unreachable",
         "keryx": "available" if keryx_available else "unavailable",

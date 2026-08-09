@@ -179,6 +179,25 @@ def test_fleet_node_binds_one_keryx_task_to_one_hermes_run(tmp_path) -> None:
     assert incoming.completed[0]["name"] == "hermes-result.txt"
 
 
+def test_fleet_node_rejects_policy_allowed_operation_when_not_advertised(
+    tmp_path,
+) -> None:
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(_payload(operation), operation)
+    hermes = _Hermes()
+    worker = _worker(
+        hermes,
+        tmp_path / "bindings.db",
+        advertised_operations=("fleet.health", "fleet.inventory", "fleet.message"),
+    )
+
+    asyncio.run(worker.handle_task(incoming))
+
+    assert incoming.completed is None
+    assert incoming.failed == "Fleet operation is not currently available"
+    assert hermes.start_calls == []
+
+
 def test_fleet_node_deadline_cancellation_is_terminal_for_exact_binding(
     tmp_path,
 ) -> None:
@@ -603,12 +622,14 @@ def test_fleet_node_health_and_inventory_add_readiness_when_observation_is_confi
 ) -> None:
     readiness = {
         "managed_state": "active",
+        "binding_generation": 1,
         "alive": True,
         "fresh": True,
         "scheduler_ready": True,
         "observation_age_ms": 10,
         "reasons": [],
         "last_observation": {
+            "binding_generation": 1,
             "observed_at_ms": 1000,
             "received_at_ms": 1001,
             "network": "reachable",

@@ -160,6 +160,7 @@ pub struct ObservationApply {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeOperationalView {
     pub managed_state: ManagedNodeState,
+    pub binding_generation: Option<u64>,
     pub observation: Option<ObservationRecord>,
     pub available_worker_slots: Option<u32>,
     pub readiness: NodeReadiness,
@@ -216,6 +217,10 @@ impl FleetStateStore {
             &desired.network_id,
             &desired.device_id,
         )?;
+        let invalidates_observation = desired.operation != ManagedOperation::Upsert
+            || current.as_ref().is_some_and(|record| {
+                record.document.binding_generation != desired.binding_generation
+            });
         let applied = apply_projection(current.as_ref(), desired.clone())
             .map_err(|_| StateError::InvalidInput("generated authority is invalid"))?;
         if applied.outcome == ApplyOutcome::Applied {
@@ -240,7 +245,7 @@ impl FleetStateStore {
                     document_json,
                 ],
             )?;
-            if desired.operation != ManagedOperation::Upsert {
+            if invalidates_observation {
                 transaction.execute(
                     "DELETE FROM node_observations
                      WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
@@ -345,6 +350,17 @@ impl FleetStateStore {
                 "observation identity is not an active managed node",
             ));
         }
+        let active_binding_generation = projection
+            .as_ref()
+            .map(|record| record.document.binding_generation.get())
+            .ok_or(StateError::CorruptState(
+                "active observation identity has no managed projection",
+            ))?;
+        if observation.binding_generation != active_binding_generation {
+            return Err(StateError::InvalidTransition(
+                "observation admission generation does not match active projection",
+            ));
+        }
 
         let current = load_observation(&transaction, source, network_id, device_id)?;
         let incoming_time = observation.observed_at_ms;
@@ -422,8 +438,19 @@ impl FleetStateStore {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
         let projection = load_projection(&transaction, source, network_id, device_id)?;
+        let binding_generation = projection
+            .as_ref()
+            .map(|record| record.document.binding_generation.get());
         let managed_state = managed_state(projection.as_ref());
         let observation = load_observation(&transaction, source, network_id, device_id)?;
+        if observation
+            .as_ref()
+            .is_some_and(|record| Some(record.observation.binding_generation) != binding_generation)
+        {
+            return Err(StateError::CorruptState(
+                "stored observation admission generation does not match projection",
+            ));
+        }
         let available_worker_slots = observation
             .as_ref()
             .map(|record| record.observation.capacity.available_worker_slots());
@@ -431,6 +458,7 @@ impl FleetStateStore {
         transaction.commit()?;
         Ok(NodeOperationalView {
             managed_state,
+            binding_generation,
             observation,
             available_worker_slots,
             readiness,

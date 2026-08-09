@@ -134,7 +134,7 @@ def test_keryx_signals_use_concrete_availability_and_reachability() -> None:
     assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (True, True)
 
     node.connected = False
-    assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (True, True)
+    assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (False, True)
 
     node.include_controller = False
     assert asyncio.run(_keryx_signals(node, ("peer-controller",))) == (False, True)
@@ -173,12 +173,16 @@ def test_observation_collection_and_publish_run_off_the_event_loop(
         def inspect(self) -> dict[str, Any]:
             return {}
 
+        def binding_generation(self) -> int:
+            return 7
+
     monkeypatch.setattr(node_service, "build_observation", build)
     asyncio.run(
         node_service._publish_observation(
             Observer(),
             {},
             0,
+            binding_generation=1,
             network_reachable=True,
             keryx_available=True,
             worker_available=True,
@@ -297,6 +301,52 @@ def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
     assert created[0].registration == 300
 
 
+def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import run_node_service
+
+    runtime = replace(
+        _runtime(tmp_path),
+        observation_socket=tmp_path / "fleet.sock",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    samples: list[dict[str, Any]] = []
+
+    class Observer:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def publish(self, observation: dict[str, Any]) -> str:
+            samples.append(observation)
+            return "recorded"
+
+        def inspect(self) -> dict[str, Any]:
+            return {}
+
+        def binding_generation(self) -> int:
+            return 1
+
+    async def exercise() -> None:
+        shutdown = asyncio.Event()
+        shutdown.set()
+        await run_node_service(
+            runtime,
+            card_factory=_card_factory([]),
+            node_factory=_Node,
+            shutdown=shutdown,
+            hermes_factory=lambda **kwargs: _Hermes(healthy=False, **kwargs),
+            observation_factory=Observer,
+        )
+
+    asyncio.run(exercise())
+
+    assert samples[0]["hermes"] == "unavailable"
+    assert samples[0]["worker"] == "unavailable"
+    assert samples[0]["binding_generation"] == 1
+
+
 def test_node_runtime_config_redacts_secrets_from_repr(tmp_path) -> None:
     rendered = repr(_runtime(tmp_path))
 
@@ -328,7 +378,7 @@ def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) ->
             self.samples.append(sample)
             return "recorded"
 
-        def inspect(self) -> dict[str, object]:
+        def inspect(self) -> dict[str, Any]:
             return {
                 "managed_state": "active",
                 "alive": True,
@@ -336,6 +386,9 @@ def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) ->
                 "scheduler_ready": True,
                 "reasons": [],
             }
+
+        def binding_generation(self) -> int:
+            return 7
 
     def node_factory(**kwargs):
         node = _Node(**kwargs)
@@ -363,6 +416,8 @@ def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) ->
         "device_id": "device-1",
     }
     assert len(observer.samples) == 2
+    assert observer.samples[0]["binding_generation"] == 7
+    assert observer.samples[1]["binding_generation"] == 7
     assert observer.samples[0]["network"] == "reachable"
     assert observer.samples[0]["keryx"] == "available"
     assert observer.samples[0]["hermes"] == "available"
@@ -407,6 +462,9 @@ def test_node_service_initial_capacity_includes_unresolved_restart_binding(
         def inspect(self) -> dict[str, Any]:
             return {}
 
+        def binding_generation(self) -> int:
+            return 7
+
     async def exercise() -> None:
         shutdown = asyncio.Event()
         shutdown.set()
@@ -442,6 +500,9 @@ def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
         def inspect(self) -> dict[str, Any]:
             return {}
 
+        def binding_generation(self) -> int:
+            return 7
+
     class Worker:
         observed_active_worker_count = 0
 
@@ -469,6 +530,7 @@ def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
                 capacity_updates,
                 shutdown,
                 0.01,
+                True,
             )
         )
 

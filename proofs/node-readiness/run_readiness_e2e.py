@@ -174,8 +174,11 @@ def cleanup_runtime(root: Path, fleet: subprocess.Popen[str] | None) -> None:
         shutil.rmtree(root, ignore_errors=False)
 
 
-def sample(*, active_workers: int, keryx: str = "available") -> dict[str, object]:
+def sample(
+    client: ObservationClient, *, active_workers: int, keryx: str = "available"
+) -> dict[str, object]:
     observation = build_observation(
+        binding_generation=client.binding_generation(),
         hermes_health={
             "api": "healthy",
             "run_submission": True,
@@ -222,20 +225,20 @@ def main() -> None:
             device_id="node-proof",
         )
 
-        if client.publish(sample(active_workers=0)) != "recorded":
+        if client.publish(sample(client, active_workers=0)) != "recorded":
             raise RuntimeError("first observation was not recorded")
         assert_reasons(client.inspect())
         print("NODE_READINESS_READY=PASS")
 
-        client.publish(sample(active_workers=1))
+        client.publish(sample(client, active_workers=1))
         assert_reasons(client.inspect(), "no_worker_capacity")
         print("NODE_READINESS_CAPACITY_EXHAUSTED=PASS")
 
-        client.publish(sample(active_workers=0, keryx="unavailable"))
+        client.publish(sample(client, active_workers=0, keryx="unavailable"))
         assert_reasons(client.inspect(), "keryx_unavailable")
         print("NODE_READINESS_LAYER_DROP=PASS")
 
-        client.publish(sample(active_workers=0))
+        client.publish(sample(client, active_workers=0))
         assert_reasons(client.inspect())
         print("NODE_READINESS_RECOVERY=PASS")
 
@@ -266,7 +269,7 @@ def main() -> None:
         assert_reasons(stale, "observation_stale")
         if stale.get("last_observation") is None:
             raise RuntimeError("stale evaluation deleted last-known state")
-        client.publish(sample(active_workers=0))
+        client.publish(sample(client, active_workers=0))
         assert_reasons(client.inspect())
         print("NODE_READINESS_FRESHNESS_AND_LAST_KNOWN=PASS")
 

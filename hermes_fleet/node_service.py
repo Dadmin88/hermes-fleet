@@ -46,6 +46,8 @@ class _Observation(Protocol):
 
     def inspect(self) -> dict[str, Any]: ...
 
+    def binding_generation(self) -> int: ...
+
 
 class _ObservedWorker(Protocol):
     @property
@@ -149,7 +151,9 @@ async def _keryx_signals(
         logger.warning("fleet-node Keryx observation returned invalid peer inventory")
         return False, False
     controller_routable = any(
-        peer["peer_id"] in controller_peer_ids and peer["local"] is False
+        peer["peer_id"] in controller_peer_ids
+        and peer["local"] is False
+        and peer["connected"] is True
         for peer in peers
     )
     return controller_routable, True
@@ -239,17 +243,21 @@ async def run_node_service(
         )
 
         if observer is not None:
-            network_reachable, keryx_available = await _keryx_signals(
-                node, runtime.controller_peer_ids
-            )
-            await _publish_observation(
-                observer,
-                health,
-                worker.observed_active_worker_count,
-                network_reachable=network_reachable,
-                keryx_available=keryx_available,
-                worker_available=True,
-            )
+            binding_generation = await _binding_generation(observer)
+            if binding_generation is not None:
+                health = await asyncio.to_thread(hermes.health)
+                network_reachable, keryx_available = await _keryx_signals(
+                    node, runtime.controller_peer_ids
+                )
+                await _publish_observation(
+                    observer,
+                    health,
+                    worker.observed_active_worker_count,
+                    binding_generation=binding_generation,
+                    network_reachable=network_reachable,
+                    keryx_available=keryx_available,
+                    worker_available=include_hermes_run,
+                )
             observation_task = asyncio.create_task(
                 _observation_loop(
                     observer,
@@ -260,6 +268,7 @@ async def run_node_service(
                     capacity_updates,
                     shutdown,
                     runtime.observation_interval_seconds,
+                    include_hermes_run,
                 ),
                 name="fleet-node-observation",
             )
@@ -277,14 +286,17 @@ async def run_node_service(
                     capacity_updates.put_nowait(None)
                 await asyncio.gather(observation_task, return_exceptions=True)
             if observer is not None:
-                await _publish_observation(
-                    observer,
-                    health,
-                    worker.observed_active_worker_count,
-                    network_reachable=False,
-                    keryx_available=False,
-                    worker_available=False,
-                )
+                binding_generation = await _binding_generation(observer)
+                if binding_generation is not None:
+                    await _publish_observation(
+                        observer,
+                        health,
+                        worker.observed_active_worker_count,
+                        binding_generation=binding_generation,
+                        network_reachable=False,
+                        keryx_available=False,
+                        worker_available=False,
+                    )
             await node.stop()
             await serve_task
         elif observation_task is not None and observation_task in done:
@@ -296,14 +308,17 @@ async def run_node_service(
                     capacity_updates.put_nowait(None)
                 await asyncio.gather(observation_task, return_exceptions=True)
             if observer is not None:
-                await _publish_observation(
-                    observer,
-                    health,
-                    worker.observed_active_worker_count,
-                    network_reachable=False,
-                    keryx_available=False,
-                    worker_available=False,
-                )
+                binding_generation = await _binding_generation(observer)
+                if binding_generation is not None:
+                    await _publish_observation(
+                        observer,
+                        health,
+                        worker.observed_active_worker_count,
+                        binding_generation=binding_generation,
+                        network_reachable=False,
+                        keryx_available=False,
+                        worker_available=False,
+                    )
             await serve_task
     finally:
         if observation_task is not None and not observation_task.done():
@@ -319,11 +334,20 @@ async def run_node_service(
             await node.stop()
 
 
+async def _binding_generation(observer: _Observation) -> int | None:
+    try:
+        return await asyncio.to_thread(observer.binding_generation)
+    except (OSError, RuntimeError, ValueError) as error:
+        logger.warning("fleet-node admission generation lookup failed: %s", error)
+        return None
+
+
 async def _publish_observation(
     observer: _Observation,
     health: object,
     active_workers: int,
     *,
+    binding_generation: int,
     network_reachable: bool,
     keryx_available: bool,
     worker_available: bool,
@@ -332,6 +356,7 @@ async def _publish_observation(
 
     def build_and_publish() -> str:
         sample = build_observation(
+            binding_generation=binding_generation,
             hermes_health=health,
             active_workers=active_workers,
             max_workers=1,
@@ -362,6 +387,7 @@ async def _observation_loop(
     capacity_updates: asyncio.Queue[None],
     shutdown: asyncio.Event,
     interval_seconds: float,
+    worker_available: bool,
 ) -> None:
     while not shutdown.is_set():
         try:
@@ -370,6 +396,9 @@ async def _observation_loop(
             pass
         if shutdown.is_set():
             return
+        binding_generation = await _binding_generation(observer)
+        if binding_generation is None:
+            continue
         try:
             health = await asyncio.to_thread(hermes.health)
         except (OSError, RuntimeError, ValueError) as error:
@@ -382,9 +411,10 @@ async def _observation_loop(
             observer,
             health,
             worker.observed_active_worker_count,
+            binding_generation=binding_generation,
             network_reachable=network_reachable,
             keryx_available=keryx_available,
-            worker_available=True,
+            worker_available=worker_available,
         )
 
 
