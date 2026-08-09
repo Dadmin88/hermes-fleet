@@ -263,9 +263,7 @@ def test_hermes_runs_client_confirms_exact_stop_before_reporting_deadline() -> N
         stop_requests = [
             request for request in api.requests if request[1].endswith("/stop")
         ]
-        assert [request[1] for request in stop_requests] == [
-            "/v1/runs/run-test/stop"
-        ]
+        assert [request[1] for request in stop_requests] == ["/v1/runs/run-test/stop"]
 
 
 def test_hermes_runs_client_treats_unconfirmed_deadline_stop_as_indeterminate(
