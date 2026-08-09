@@ -95,6 +95,24 @@ def test_store_rejects_symlinked_database_parent_without_creating_it(tmp_path) -
     assert not (real_parent / "managed-projections.sqlite3").exists()
 
 
+def test_store_rejects_lexical_dotdot_before_parent_normalization(tmp_path) -> None:
+    from hermes_fleet.managed_projection import ManagedProjectionStore
+
+    validated_parent = tmp_path / "validated"
+    validated_parent.mkdir(mode=0o700)
+    escaped_parent = tmp_path / "escaped-parent"
+    escaped_child = escaped_parent / "child"
+    escaped_child.mkdir(parents=True)
+    (validated_parent / "redirect").symlink_to(escaped_child, target_is_directory=True)
+    database_path = validated_parent / "redirect" / ".." / "escaped.sqlite3"
+    assert ".." in database_path.parts
+
+    with pytest.raises(ValueError, match="database parent"):
+        ManagedProjectionStore(database_path)
+
+    assert not (escaped_parent / "escaped.sqlite3").exists()
+
+
 def test_store_creates_private_same_uid_database_file_in_preprovisioned_parent(
     tmp_path,
 ) -> None:

@@ -870,6 +870,8 @@ def _require_nonsymlink_directory_components(path: Path, label: str) -> os.stat_
     """Lstat every lexical component without resolving an attacker-controlled link."""
     if not path.is_absolute():
         raise ValueError(f"{label} must be absolute")
+    if ".." in path.parts:
+        raise ValueError(f"unsafe {label}")
     normalized = Path(os.path.abspath(os.fspath(path)))
     current = Path(normalized.anchor)
     try:
