@@ -1,0 +1,39 @@
+{
+  "schema": "hermes-fleet.f0-domain-compat.v1",
+  "operations": [
+    {"value": "fleet.health", "valid": true, "executable": false},
+    {"value": "fleet.inventory", "valid": true, "executable": false},
+    {"value": "fleet.message", "valid": true, "executable": false},
+    {"value": "fleet.hermes.run", "valid": true, "executable": true},
+    {"value": "fleet.shell", "valid": false, "executable": false},
+    {"value": "*", "valid": false, "executable": false}
+  ],
+  "selection": {
+    "nodes": [
+      {"name": "beta", "peer_id": "peer-beta", "enabled": true, "priority": 20, "tags": ["linux", "gpu"], "allowed": ["fleet.health", "fleet.inventory"]},
+      {"name": "alpha", "peer_id": "peer-alpha", "enabled": true, "priority": 10, "tags": ["linux", "gpu"], "allowed": ["fleet.health", "fleet.inventory", "fleet.message"]},
+      {"name": "disabled", "peer_id": "peer-disabled", "enabled": false, "priority": 30, "tags": ["linux", "gpu"], "allowed": ["fleet.health"]}
+    ],
+    "cases": [
+      {"names": [" BETA "], "tags": [], "expected": ["beta"]},
+      {"names": ["alpha", "ALPHA"], "tags": [], "expected": ["alpha"]},
+      {"names": [], "tags": ["linux", "gpu"], "expected": ["beta", "alpha"]},
+      {"names": ["disabled"], "tags": [], "expected": []},
+      {"names": ["missing"], "tags": [], "expected_error": "unknown_node"},
+      {"names": [], "tags": ["missing"], "expected_error": "unknown_tag"},
+      {"names": ["alpha"], "tags": ["linux"], "expected_error": "mixed_selectors"}
+    ]
+  },
+  "managed_authority": [
+    {"generated": ["fleet.health", "fleet.inventory", "fleet.message"], "denied": [], "expected": ["fleet.health", "fleet.inventory", "fleet.message"]},
+    {"generated": ["fleet.health", "fleet.inventory", "fleet.message"], "denied": ["fleet.message"], "expected": ["fleet.health", "fleet.inventory"]},
+    {"generated": [], "denied": [], "expected": []}
+  ],
+  "run_recovery": [
+    {"state": {"kind": "creating"}, "expected": "fail_closed_indeterminate"},
+    {"state": {"kind": "running", "run_id": "run-1"}, "expected": "resume_known_run"},
+    {"state": {"kind": "completed", "run_id": "run-1", "result": "done"}, "expected": "replay_completed"},
+    {"state": {"kind": "cancelled", "run_id": "run-1"}, "expected": "fail_cancelled"},
+    {"state": {"kind": "indeterminate"}, "expected": "fail_closed_indeterminate"}
+  ]
+}

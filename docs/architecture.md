@@ -4,11 +4,11 @@
 
 Hermes Fleet v0.1 is a node communication and coordination layer built on [Hermes Keryx](https://github.com/Dadmin88/hermes-keryx). Keryx is the authenticated transport and durable task/result data plane. Direct Hermes A2A is not a v0.1 transport or fallback.
 
-## Managed projection V1 (N7 contract; not accepted)
+## Managed projection V1 (N7 accepted)
 
-The minimal N7 managed-projection contract is a separate, local Nodescale-to-Fleet interface. Fleet accepts its length-prefixed, strict `fleet.managed-projection.v1` JSON documents only on an authenticated Linux UDS after exact `SO_PEERCRED` verification of the configured Nodescale UID. It persists generated membership/enrollment/grants in a dedicated Fleet-owned store, separate from operator state and the v0.1 Keryx/task-to-run stores.
+The accepted N7 managed-projection contract is a separate, local Nodescale-to-Fleet interface. Fleet accepts its length-prefixed, strict `fleet.managed-projection.v1` JSON documents only on an authenticated Linux UDS after exact `SO_PEERCRED` verification of the configured Nodescale UID. It persists generated membership/enrollment/grants in a dedicated Fleet-owned store, separate from operator state and the v0.1 Keryx/task-to-run stores.
 
-Generated grants are limited to `fleet.health`, `fleet.inventory`, and `fleet.message`; a local operator deny always wins; and no managed projection grants `fleet.hermes.run`. Generation/hash application and authoritative durable read-back are specified in [Managed projection V1](managed-projection-v1.md). This is a contract for future implementation and acceptance, not a claim that the existing v0.1 deployment provides it.
+Generated grants are limited to `fleet.health`, `fleet.inventory`, and `fleet.message`; a local operator deny always wins; and no managed projection grants `fleet.hermes.run`. Generation/hash application and authoritative durable read-back are specified in [Managed projection V1](managed-projection-v1.md). N7 was accepted across the merged Fleet and Nodescale release trees after normal and interrupted disposable proofs, cleanup verification, bounded release review, and fresh CI.
 
 The responsibility boundary is:
 
