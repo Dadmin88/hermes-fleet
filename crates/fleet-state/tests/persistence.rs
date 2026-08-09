@@ -6,6 +6,7 @@ use std::{
 
 use fleet_domain::{
     ApplyOutcome, FleetOperation, ManagedOperation, ProjectionDocument, RunBindingState,
+    canonical_projection_hash,
 };
 use fleet_state::{FleetStateStore, RunRecoveryDecision, StateError, recovery_decision};
 use serde_json::json;
@@ -18,19 +19,21 @@ fn document(
     hash_seed: u64,
     operation: &str,
 ) -> ProjectionDocument {
-    let operations = if operation == "upsert" {
+    let operations = if operation == "upsert" && hash_seed % 2 == 0 {
+        json!(["fleet.health"])
+    } else if operation == "upsert" {
         json!(["fleet.health", "fleet.inventory", "fleet.message"])
     } else {
         json!([])
     };
-    serde_json::from_value(json!({
+    let mut document: ProjectionDocument = serde_json::from_value(json!({
         "source": "nodescale",
         "network_id": "network-1",
         "device_id": "device-1",
         "projection_generation": projection_generation.to_string(),
         "membership_generation": membership_generation.to_string(),
         "binding_generation": binding_generation.to_string(),
-        "content_hash": format!("{hash_seed:064x}"),
+        "content_hash": "",
         "operation": operation,
         "generated_operations": operations,
         "provenance": {
@@ -41,7 +44,9 @@ fn document(
             "controller": "nodescale"
         }
     }))
-    .unwrap()
+    .unwrap();
+    document.content_hash = canonical_projection_hash(&document);
+    document
 }
 
 #[test]
@@ -122,6 +127,12 @@ fn projection_rejections_leave_stored_document_unchanged() {
         store.apply_projection(initial.clone()).unwrap().outcome,
         ApplyOutcome::Applied
     );
+    let mut invalid_hash = initial.clone();
+    invalid_hash.content_hash = "a".repeat(64);
+    assert!(matches!(
+        store.apply_projection(invalid_hash),
+        Err(StateError::InvalidInput(_))
+    ));
 
     let cases = [
         (document(1, 4, 5, 2, "upsert"), ApplyOutcome::Conflict),
@@ -308,6 +319,40 @@ fn terminal_race_is_transactionally_fenced_and_uncertainty_fails_closed() {
         recovery_decision(&uncertain),
         RunRecoveryDecision::FailClosedIndeterminate
     );
+}
+
+#[test]
+fn logically_tampered_projection_hash_fails_closed_after_restart() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("tampered-content.sqlite3");
+    let store = FleetStateStore::open(&path).unwrap();
+    let mut desired = document(1, 1, 1, 1, "upsert");
+    desired.generated_operations = BTreeSet::from([FleetOperation::Health]);
+    desired.content_hash = canonical_projection_hash(&desired);
+    store.apply_projection(desired).unwrap();
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let raw: String = connection
+        .query_row("SELECT document_json FROM managed_projections", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let mut tampered: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    tampered["generated_operations"] = json!(["fleet.health", "fleet.inventory", "fleet.message"]);
+    connection
+        .execute(
+            "UPDATE managed_projections SET document_json = ?1",
+            [serde_json::to_string(&tampered).unwrap()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let restarted = FleetStateStore::open(&path).unwrap();
+    assert!(matches!(
+        restarted.inspect_projection("nodescale", "network-1", "device-1"),
+        Err(StateError::CorruptState(_))
+    ));
 }
 
 #[test]

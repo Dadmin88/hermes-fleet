@@ -7,6 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// The complete operation vocabulary already exposed by Python Hermes Fleet.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -236,6 +238,94 @@ pub struct ProjectionDocument {
     pub operation: ManagedOperation,
     pub generated_operations: BTreeSet<FleetOperation>,
     pub provenance: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct CanonicalProjectionMaterial<'a> {
+    source: &'a str,
+    network_id: &'a str,
+    device_id: &'a str,
+    projection_generation: Generation,
+    membership_generation: Generation,
+    binding_generation: Generation,
+    operation: ManagedOperation,
+    generated_operations: &'a BTreeSet<FleetOperation>,
+    provenance: &'a BTreeMap<String, String>,
+}
+
+/// Return the Python/Nodescale canonical SHA-256 digest for a projection body.
+pub fn canonical_projection_hash(document: &ProjectionDocument) -> String {
+    let material = CanonicalProjectionMaterial {
+        source: &document.source,
+        network_id: &document.network_id,
+        device_id: &document.device_id,
+        projection_generation: document.projection_generation,
+        membership_generation: document.membership_generation,
+        binding_generation: document.binding_generation,
+        operation: document.operation,
+        generated_operations: &document.generated_operations,
+        provenance: &document.provenance,
+    };
+    let value = serde_json::to_value(material).expect("projection material is serializable");
+    let mut canonical = String::new();
+    write_canonical_json(&value, &mut canonical);
+    format!("{:x}", Sha256::digest(canonical.as_bytes()))
+}
+
+fn write_canonical_json(value: &Value, output: &mut String) {
+    match value {
+        Value::Null => output.push_str("null"),
+        Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        Value::Number(value) => output.push_str(&value.to_string()),
+        Value::String(value) => write_ascii_json_string(value, output),
+        Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                write_canonical_json(value, output);
+            }
+            output.push(']');
+        }
+        Value::Object(values) => {
+            output.push('{');
+            let mut entries: Vec<_> = values.iter().collect();
+            entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            for (index, (key, value)) in entries.into_iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                write_ascii_json_string(key, output);
+                output.push(':');
+                write_canonical_json(value, output);
+            }
+            output.push('}');
+        }
+    }
+}
+
+fn write_ascii_json_string(value: &str, output: &mut String) {
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0C}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            value if value <= '\u{1f}' || value > '\u{7e}' => {
+                let mut units = [0_u16; 2];
+                for unit in value.encode_utf16(&mut units) {
+                    output.push_str(&format!("\\u{unit:04x}"));
+                }
+            }
+            value => output.push(value),
+        }
+    }
+    output.push('"');
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -12,6 +12,13 @@ N7 is a local authenticated projection boundary for Nodescale-managed Fleet
 state. It is not a Keryx transport, public API, remote control endpoint, Fleet
 execution path, or direct Nodescale access to Fleet data.
 
+The production boundary is the permanent Rust `fleet-managed-control` binary in
+`crates/fleet-control`. It authenticates the UDS peer, parses this exact
+language-neutral protocol, delegates projection decisions to `fleet-domain`, and
+persists only through `fleet-state`. The Python managed service remains the
+independent behavioral oracle and compatibility implementation; the supplied
+systemd unit now selects the Rust service.
+
 ## Local transport and peer authentication
 
 Fleet listens only on a Linux Unix-domain socket (UDS). Before reading a request
@@ -71,7 +78,7 @@ UID, and add this user-unit drop-in at
 [Service]
 Environment=FLEET_MANAGED_PROJECTION_SOCKET_GID=12345
 ExecStart=
-ExecStart=%h/.local/share/hermes-fleet/venv/bin/fleet-managed-projection --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --socket-gid ${FLEET_MANAGED_PROJECTION_SOCKET_GID} --shutdown-timeout 20 --log-level INFO
+ExecStart=%h/.local/bin/fleet-managed-control --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --socket-gid ${FLEET_MANAGED_PROJECTION_SOCKET_GID}
 ```
 
 Replace `12345` with the pre-provisioned group ID, then run
@@ -125,10 +132,11 @@ A request failure that reaches response handling is exactly:
 ```
 
 The exact durable `apply` outcomes are `applied`, `already_applied`, `conflict`,
-`stale`, and `gap`. `ok:true` is a handled local-control response, not proof of
-future durable observation. An exact replay is `already_applied`; a
+`stale`, `regression`, and `gap`. `ok:true` is a handled local-control response,
+not proof of future durable observation. An exact replay is `already_applied`; a
 same-generation non-identical projection is `conflict`; lower generation is
-`stale`; a non-successor generation is `gap`.
+`stale`; a newer projection that moves membership or binding generation backward
+is `regression`; and a non-successor projection generation is `gap`.
 
 `inspect` is the authoritative Fleet durable read-back. An absent record is
 exactly `generated:null` plus `effective:null`. A present `generated` result
