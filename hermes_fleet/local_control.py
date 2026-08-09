@@ -195,9 +195,7 @@ class LocalControlServer:
             raise ValueError("socket_path must be an absolute Path")
         if type(allowed_uid) is not int or allowed_uid < 0:
             raise ValueError("allowed_uid must be a non-negative integer")
-        if socket_gid is not None and (
-            type(socket_gid) is not int or socket_gid < 0
-        ):
+        if socket_gid is not None and (type(socket_gid) is not int or socket_gid < 0):
             raise ValueError("socket_gid must be a non-negative integer or None")
         if managed_projection is None:
             raise ValueError("managed_projection is required")
@@ -254,10 +252,7 @@ class LocalControlServer:
                 or (identity.st_dev, identity.st_ino) != self._owned_identity
                 or identity.st_uid != os.geteuid()
                 or stat.S_IMODE(identity.st_mode) != expected_mode
-                or (
-                    self.socket_gid is not None
-                    and identity.st_gid != self.socket_gid
-                )
+                or (self.socket_gid is not None and identity.st_gid != self.socket_gid)
             ):
                 raise ValueError("unsafe local-control socket path")
             listener.listen(MAX_CONNECTIONS)

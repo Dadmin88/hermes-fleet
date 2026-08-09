@@ -295,10 +295,9 @@ class ManagedProjectionStore:
                     outcome = "already_applied" if existing == incoming else "conflict"
                     self._append_audit(connection, key, incoming, outcome)
                     return ApplyResult(outcome)
-                if (
-                    int(membership_generation) < int(existing[1])
-                    or int(binding_generation) < int(existing[2])
-                ):
+                if int(membership_generation) < int(existing[1]) or int(
+                    binding_generation
+                ) < int(existing[2]):
                     self._append_audit(connection, key, incoming, "regression")
                     return ApplyResult("regression")
                 if incoming_generation != current_generation + 1:
@@ -829,11 +828,7 @@ def _require_safe_database_parent(database_path: Path) -> None:
         database_path.parent, "managed projection database parent"
     )
     mode = stat.S_IMODE(parent_identity.st_mode)
-    if (
-        parent_identity.st_uid != os.geteuid()
-        or mode & 0o077
-        or mode & 0o700 != 0o700
-    ):
+    if parent_identity.st_uid != os.geteuid() or mode & 0o077 or mode & 0o700 != 0o700:
         raise ValueError("unsafe managed projection database parent")
 
 

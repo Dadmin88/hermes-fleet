@@ -222,9 +222,7 @@ def test_fleet_node_replays_completion_when_deadline_transition_loses(
     operation = "fleet.hermes.run"
     incoming = _IncomingTask(_payload(operation), operation)
 
-    asyncio.run(
-        _worker(CompletingDeadlineHermes(), state_path).handle_task(incoming)
-    )
+    asyncio.run(_worker(CompletingDeadlineHermes(), state_path).handle_task(incoming))
 
     assert incoming.failed is None
     assert _completed_text(incoming) == "winner"

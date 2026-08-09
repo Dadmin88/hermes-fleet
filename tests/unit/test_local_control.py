@@ -183,9 +183,10 @@ def test_local_control_dispatches_typed_apply_and_inspect_requests(tmp_path) -> 
     assert type(wire_document) is dict
     assert wire_document is not applied_document
     assert wire_document["provenance"] is not applied_document["provenance"]
-    assert wire_document["generated_operations"] is not applied_document[
-        "generated_operations"
-    ]
+    assert (
+        wire_document["generated_operations"]
+        is not applied_document["generated_operations"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -375,9 +376,7 @@ def test_local_control_rejects_lexical_dotdot_before_parent_normalization(
     escaped_parent = tmp_path / "escaped-parent"
     escaped_child = escaped_parent / "child"
     escaped_child.mkdir(parents=True)
-    (validated_parent / "redirect").symlink_to(
-        escaped_child, target_is_directory=True
-    )
+    (validated_parent / "redirect").symlink_to(escaped_child, target_is_directory=True)
     lexical_parent = validated_parent / "redirect" / ".."
     assert ".." in lexical_parent.parts
 

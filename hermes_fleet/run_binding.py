@@ -8,9 +8,7 @@ from pathlib import Path
 
 _MAX_ID_CHARS = 256
 _MAX_RESULT_CHARS = 65_536
-_STATES = frozenset(
-    {"creating", "running", "completed", "cancelled", "indeterminate"}
-)
+_STATES = frozenset({"creating", "running", "completed", "cancelled", "indeterminate"})
 _SCHEMA_SQL = """
 CREATE TABLE run_bindings (
     task_id TEXT PRIMARY KEY,

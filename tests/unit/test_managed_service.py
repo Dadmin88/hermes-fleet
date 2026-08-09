@@ -288,8 +288,9 @@ def test_managed_service_installs_sigint_and_sigterm_shutdown_handlers() -> None
     assert shutdown.is_set()
 
 
-def test_managed_projection_systemd_unit_uses_explicit_bounded_service_arguments(
-) -> None:
+def test_managed_projection_systemd_unit_uses_explicit_bounded_service_arguments() -> (
+    None
+):
     unit_path = (
         Path(__file__).resolve().parents[2]
         / "ops"
@@ -300,8 +301,7 @@ def test_managed_projection_systemd_unit_uses_explicit_bounded_service_arguments
 
     assert "Type=simple" in unit
     assert (
-        "EnvironmentFile=%h/.config/hermes-fleet/fleet-managed-projection.env"
-        in unit
+        "EnvironmentFile=%h/.config/hermes-fleet/fleet-managed-projection.env" in unit
     )
     assert "RuntimeDirectory=" not in unit
     assert "--socket ${FLEET_MANAGED_PROJECTION_SOCKET}" in unit
