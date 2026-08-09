@@ -44,6 +44,18 @@ jobs:
       - name: Build locked Rust workspace
         run: cargo build --locked --workspace --all-targets --all-features
 
+      - name: Prove real Nodescale Rust client to Rust Fleet service
+        run: |
+          git init --quiet "$RUNNER_TEMP/nodescale-n7"
+          git -C "$RUNNER_TEMP/nodescale-n7" remote add origin https://github.com/Dadmin88/hermes-nodescale.git
+          git -C "$RUNNER_TEMP/nodescale-n7" fetch --depth 1 origin c0a9a7c873d7086375ac53245e6fd689a3686c7d
+          git -C "$RUNNER_TEMP/nodescale-n7" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/nodescale-n7" rev-parse HEAD)" = "c0a9a7c873d7086375ac53245e6fd689a3686c7d"
+          python3 proofs/managed-control/run_nodescale_rust_e2e.py \
+            --nodescale-root "$RUNNER_TEMP/nodescale-n7" \
+            --fleet-binary target/debug/fleet-managed-control \
+            --cargo cargo
+
   quality:
     name: Quality (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

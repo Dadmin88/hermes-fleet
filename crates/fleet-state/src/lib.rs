@@ -159,6 +159,11 @@ impl FleetStateStore {
 
     pub fn apply_projection(&self, desired: ProjectionDocument) -> Result<ProjectionApply> {
         validate_projection(&desired)?;
+        if fleet_domain::canonical_projection_hash(&desired) != desired.content_hash {
+            return Err(StateError::InvalidInput(
+                "managed projection content hash does not match its complete document",
+            ));
+        }
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = load_projection(
@@ -470,6 +475,11 @@ fn load_projection(
                 let value: serde_json::Value = serde_json::from_str(&json)?;
                 let document: ProjectionDocument = serde_json::from_value(value.clone())?;
                 validate_projection(&document)?;
+                if fleet_domain::canonical_projection_hash(&document) != document.content_hash {
+                    return Err(StateError::CorruptState(
+                        "managed projection content hash does not match its complete document",
+                    ));
+                }
                 if serde_json::to_value(&document)? != value
                     || document.source != source
                     || document.network_id != network_id

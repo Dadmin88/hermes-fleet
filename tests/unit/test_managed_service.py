@@ -310,9 +310,10 @@ def test_managed_projection_systemd_unit_uses_explicit_bounded_service_arguments
     # The shipped unit must launch in the documented same-UID mode when no
     # optional cross-UID group is configured. Cross-UID deployments add the
     # socket GID through the documented ExecStart drop-in.
+    assert "%h/.local/bin/fleet-managed-control" in unit
     assert "--socket-gid ${FLEET_MANAGED_PROJECTION_SOCKET_GID}" not in unit
-    assert "--shutdown-timeout 20" in unit
-    assert "--log-level INFO" in unit
+    assert "--shutdown-timeout" not in unit
+    assert "--log-level" not in unit
     assert "UMask=0077" in unit
     assert "Provision the exact socket and database parent directories" in unit
     assert "/bin/sh" not in unit

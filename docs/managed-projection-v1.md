@@ -4,6 +4,8 @@
 
 It is not a Keryx transport, public network API, remote execution path, or direct database-sharing mechanism. Fleet owns the receiving service and the durable state it creates.
 
+The production boundary is the permanent Rust `fleet-managed-control` binary in `crates/fleet-control`. It authenticates the UDS peer, parses this language-neutral protocol, delegates projection decisions to `fleet-domain`, and persists only through `fleet-state`. The Python implementation remains the independent behavioral oracle and compatibility implementation.
+
 ## Security boundary
 
 Fleet listens on a Linux Unix-domain socket and authenticates the connecting process with `SO_PEERCRED` before reading or dispatching a request.
@@ -117,9 +119,10 @@ The recognized durable outcomes are:
 - `already_applied`;
 - `conflict`;
 - `stale`;
+- `regression`;
 - `gap`.
 
-An exact replay may return `already_applied`. A same-generation request with different content is a conflict. Lower generations are stale. A request that skips the required successor generation is a gap.
+An exact replay may return `already_applied`. A same-generation request with different content is a conflict. Lower generations are stale. A newer projection that moves membership or binding generation backward is a regression. A request that skips the required successor projection generation is a gap.
 
 An `ok: true` apply response means the request was handled. It does not replace authoritative read-back after an uncertain client outcome or restart.
 
@@ -184,7 +187,7 @@ Example:
 [Service]
 Environment=FLEET_MANAGED_PROJECTION_SOCKET_GID=12345
 ExecStart=
-ExecStart=%h/.local/share/hermes-fleet/venv/bin/fleet-managed-projection --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --socket-gid ${FLEET_MANAGED_PROJECTION_SOCKET_GID} --shutdown-timeout 20 --log-level INFO
+ExecStart=%h/.local/bin/fleet-managed-control --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --socket-gid ${FLEET_MANAGED_PROJECTION_SOCKET_GID}
 ```
 
 Replace `12345` with the pre-provisioned group ID, then reload the user systemd manager and restart the unit. This mode creates a `0660` socket for group transport only. It does not weaken the exact `SO_PEERCRED` allowed-UID authorization check.

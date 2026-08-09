@@ -11,7 +11,7 @@ Type=simple
 # socket, database, and allowed UID only. See the documented drop-in for the
 # explicit cross-UID group socket mode.
 EnvironmentFile=%h/.config/hermes-fleet/fleet-managed-projection.env
-ExecStart=%h/.local/share/hermes-fleet/venv/bin/fleet-managed-projection --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --shutdown-timeout 20 --log-level INFO
+ExecStart=%h/.local/bin/fleet-managed-control --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID}
 UMask=0077
 Restart=on-failure
 RestartSec=5

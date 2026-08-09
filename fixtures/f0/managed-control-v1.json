@@ -1,0 +1,35 @@
+{
+  "schema": "hermes-fleet.managed-control-compat.v1",
+  "capabilities_request": {
+    "schema": "fleet.managed-projection.v1",
+    "kind": "capabilities"
+  },
+  "capabilities_result": {
+    "kinds": ["capabilities", "apply", "inspect"]
+  },
+  "document": {
+    "source": "nodescale",
+    "network_id": "network-control",
+    "device_id": "device-control",
+    "projection_generation": "1",
+    "membership_generation": "1",
+    "binding_generation": "1",
+    "content_hash": "c48a6b8d7c6b6c488a88e769d5419bcdc4075ae8cb63b3f593242a9f6c03c79b",
+    "operation": "upsert",
+    "generated_operations": ["fleet.health", "fleet.inventory", "fleet.message"],
+    "provenance": {
+      "source": "nodescale",
+      "network_id": "network-control",
+      "device_id": "device-control",
+      "snapshot": "1"
+    }
+  },
+  "apply_outcomes": ["applied", "already_applied"],
+  "inspect_selector": {
+    "source": "nodescale",
+    "network_id": "network-control",
+    "device_id": "device-control"
+  },
+  "expected_state": "active",
+  "expected_effective_operations": ["fleet.health", "fleet.inventory", "fleet.message"]
+}
