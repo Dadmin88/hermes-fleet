@@ -191,11 +191,14 @@ fn exact_profile_digest_round_trips_through_real_control_service() {
     assert_eq!(response["result"]["outcome"], "recorded");
 
     let readiness = inspect(&service.socket);
-    assert_eq!(readiness["result"]["profiles"], json!([{
-        "name": "agency-backend-engineer",
-        "version": "0.1.0",
-        "content_digest": DIGEST
-    }]));
+    assert_eq!(
+        readiness["result"]["profiles"],
+        json!([{
+            "name": "agency-backend-engineer",
+            "version": "0.1.0",
+            "content_digest": DIGEST
+        }])
+    );
 }
 
 #[test]
