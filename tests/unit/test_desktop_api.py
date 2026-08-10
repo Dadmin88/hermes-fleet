@@ -108,6 +108,7 @@ def _node(*, active: bool, alive: bool, ready: bool, device_id: str) -> dict:
             ),
             "last_observation": last_observation,
             "capacity": capacity,
+            "profiles": [] if active else None,
             "resources": resources,
         },
         "operations": ["fleet.health", "fleet.inventory"],
