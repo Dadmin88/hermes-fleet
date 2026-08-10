@@ -97,6 +97,14 @@ def test_graph_first_canvas_opens_evidence_in_an_explicit_overlay_drawer() -> No
     assert "className: 'h-full min-h-0 w-full shrink-0 overflow-auto" in source
     assert "canvasNodes.find(node => node.stable_id === selectedId) ?? null" in source
     assert "selectedNode && inspectorOpen" in source
+    assert source.count("children: 'Inspect selection'") == 2
+    select_callbacks = re.findall(
+        r"const selectNode = useCallback\(id => \{(.*?)\n  \}, \[\]\)",
+        source,
+        re.DOTALL,
+    )
+    assert len(select_callbacks) == 2
+    assert all("setInspectorOpen" not in callback for callback in select_callbacks)
     assert "Workflow node limit reached (256)." in source
     assert "title: 'Topology unavailable'" in source
     assert "fleet-workflow-surface" in source

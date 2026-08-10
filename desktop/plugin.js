@@ -3283,9 +3283,11 @@ function WorkflowModePanel({ history, setHistory }) {
   const selectedNode = workflow.nodes.find(node => node.id === selectedId) ?? null
   const atLimit = workflow.nodes.length >= WORKFLOW_LIMIT_COUNT
   const closeInspector = useCallback(() => setInspectorOpen(false), [])
+  const openInspector = useCallback(() => {
+    if (selectedId) setInspectorOpen(true)
+  }, [selectedId])
   const selectNode = useCallback(id => {
     setSelectedId(id)
-    setInspectorOpen(Boolean(id))
     setEditorNotice(null)
   }, [])
 
@@ -3457,6 +3459,12 @@ function WorkflowModePanel({ history, setHistory }) {
             disabled: !selectedId,
             children: 'Delete'
           }),
+          jsx(Button, {
+            type: 'button', size: 'sm', variant: 'outline',
+            onClick: openInspector,
+            disabled: !selectedId,
+            children: 'Inspect selection'
+          }),
           editorNotice
             ? jsx('span', {
                 className: 'ml-auto text-[0.6875rem] text-muted-foreground',
@@ -3570,9 +3578,11 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
   }, [graph.nodes, selectedId, visibleGraph.nodes])
 
   const closeInspector = useCallback(() => setInspectorOpen(false), [])
+  const openInspector = useCallback(() => {
+    if (selectedId) setInspectorOpen(true)
+  }, [selectedId])
   const selectNode = useCallback(id => {
     setSelectedId(id)
-    setInspectorOpen(Boolean(id))
   }, [])
   const createFromSelection = useCallback(() => {
     if (!selectedNode) return
@@ -3616,17 +3626,28 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
             }, key)
           ),
           selectedNode
-            ? jsx(Button, {
-                type: 'button',
-                size: 'sm',
-                variant: 'outline',
-                className: 'ml-auto',
-                onClick: createFromSelection,
-                disabled: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT,
-                title: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT
-                  ? 'Workflow node limit reached (256)'
-                  : 'Create or update the local workflow from this machine',
-                children: 'Create workflow from selection'
+            ? jsxs('div', {
+                className: 'ml-auto flex items-center gap-1.5',
+                children: [
+                  jsx(Button, {
+                    type: 'button',
+                    size: 'sm',
+                    variant: 'outline',
+                    onClick: openInspector,
+                    children: 'Inspect selection'
+                  }),
+                  jsx(Button, {
+                    type: 'button',
+                    size: 'sm',
+                    variant: 'outline',
+                    onClick: createFromSelection,
+                    disabled: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT,
+                    title: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT
+                      ? 'Workflow node limit reached (256)'
+                      : 'Create or update the local workflow from this machine',
+                    children: 'Create workflow from selection'
+                  })
+                ]
               })
             : null
         ]

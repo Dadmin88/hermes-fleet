@@ -169,8 +169,8 @@ It provides:
 - search and truthful status filters;
 - keyboard node navigation;
 - minimap with viewport bounds;
-- explicit selection;
-- a closable overlay Inspector while the graph remains visible.
+- selection that does not open or resize an overlay;
+- an explicit **Inspect selection** action that opens a closable Inspector while the graph remains visible.
 
 Nothing is selected by default. If a selected node disappears after refresh, selection closes rather than moving to another node.
 
@@ -286,7 +286,7 @@ Motion is restrained and state-triggered. No constant glow or pulse is used. Red
 
 ## Accessibility
 
-The Canvas exposes a labelled spatial region with button semantics for nodes, deterministic node order, a distinct visible roving-focus state, keyboard directional navigation, Enter/Space selection, Escape-to-close without clearing selection, and named zoom/fit controls. Inspector drawers are non-modal overlays so the graph remains visible. Host primitives provide keyboard and screen-reader behavior for search, segmented mode switching, scrolling, and context menus.
+The Canvas exposes a labelled spatial region with button semantics for nodes, deterministic node order, a distinct visible roving-focus state, keyboard directional navigation, Enter/Space selection without automatically opening the Inspector, an explicit **Inspect selection** action, Escape-to-close without clearing selection, and named zoom/fit controls. Inspector drawers are non-modal overlays so the graph remains visible. Host primitives provide keyboard and screen-reader behavior for search, segmented mode switching, scrolling, and context menus.
 
 Pointer targets must remain usable at zoomed presentation sizes. Future multiselect and connection gestures must preserve keyboard equivalents before they are considered complete.
 
@@ -302,4 +302,4 @@ A release candidate must prove:
 6. exact-byte atomic deployment and hash equality;
 7. live `fleet.desktop.v2` proof against current real Tailscale observations;
 8. zero duplicates, zero managed authority leakage, and topology `edges: []`;
-9. visual QA in the existing Hermes Desktop with nothing selected by default and one explicitly selected observed-only Inspector.
+9. visual QA in the existing Hermes Desktop with nothing selected by default, selection that leaves the drawer closed, and one explicitly opened observed-only Inspector.
