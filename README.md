@@ -136,6 +136,7 @@ Start with the [documentation index](docs/README.md).
 - [Managed projection V1](docs/managed-projection-v1.md)
 - [Node observations and scheduler readiness](docs/node-readiness.md)
 - [Fleet Desktop D1](docs/desktop.md)
+- [Fleet Canvas topology](docs/canvas.md)
 - [Integration verification](docs/smoke-test.md)
 - [Operator skill](SKILL.md)
 - [Changelog](CHANGELOG.md)
@@ -146,7 +147,7 @@ Implementation chronology, checkpoint hashes, machine-specific rollout notes, an
 
 - Cross-node running-task cancellation is not yet proven end to end and therefore remains unavailable.
 - Keryx relay offline mailbox durability is a Keryx concern; Fleet does not add a second mailbox or queue.
-- Cross-node artifact transfer, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, workflow graphs, and multi-tenant control are outside the current Fleet surface.
+- Cross-node artifact transfer, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, durable or executable workflow graphs, and multi-tenant control are outside the current Fleet surface. The Desktop includes only a local non-executing workflow-editor foundation.
 - A running Hermes gateway must be restarted after a plugin update before that process sees newly installed Fleet model tools.
 
 ## License

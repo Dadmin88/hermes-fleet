@@ -5,6 +5,7 @@ use std::{
     io::{Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -362,6 +363,77 @@ fn desktop_overview_lists_real_managed_nodes_with_current_readiness() {
 }
 
 #[test]
+fn desktop_alias_control_is_generation_fenced_and_updates_overview_naming() {
+    let root = private_tempdir();
+    let service = RunningService::start(root.path());
+    apply_managed(&service.socket);
+    let selector = json!({
+        "source": "nodescale",
+        "network_id": "net-demo",
+        "device_id": "node-demo"
+    });
+
+    let stale = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "set_alias",
+            "selector": selector,
+            "binding_generation": "2",
+            "alias": "Stale"
+        }),
+    );
+    assert_eq!(stale["schema"], "fleet.desktop-alias.v1");
+    assert_eq!(stale["kind"], "error");
+    assert_eq!(stale["ok"], false);
+
+    let set = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "set_alias",
+            "selector": selector,
+            "binding_generation": "1",
+            "alias": "Workstation"
+        }),
+    );
+    assert_eq!(set["schema"], "fleet.desktop-alias.v1");
+    assert_eq!(set["kind"], "set_alias");
+    assert_eq!(set["ok"], true);
+    assert_eq!(set["result"]["outcome"], "created");
+
+    let overview = transact(
+        &service.socket,
+        &json!({"schema": "fleet.desktop.v1", "kind": "overview"}),
+    );
+    let naming = &overview["result"]["nodes"][0]["naming"];
+    assert_eq!(naming["display_name"], "Workstation");
+    assert_eq!(naming["provider_name"], Value::Null);
+    assert_eq!(naming["alias"], "Workstation");
+    assert_eq!(naming["has_alias"], true);
+
+    let clear = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "clear_alias",
+            "selector": selector,
+            "binding_generation": "1"
+        }),
+    );
+    assert_eq!(clear["kind"], "clear_alias");
+    assert_eq!(clear["result"]["outcome"], "cleared");
+    let overview = transact(
+        &service.socket,
+        &json!({"schema": "fleet.desktop.v1", "kind": "overview"}),
+    );
+    assert_eq!(
+        overview["result"]["nodes"][0]["naming"]["display_name"],
+        "node-demo"
+    );
+}
+
+#[test]
 fn desktop_overview_supports_a_bounded_many_node_response() {
     let root = private_tempdir();
     let service = RunningService::start(root.path());
@@ -409,4 +481,29 @@ fn desktop_overview_rejects_more_than_the_bounded_node_limit() {
     assert_eq!(response["kind"], "error");
     assert_eq!(response["ok"], false);
     assert_eq!(response["error"], "invalid_request");
+}
+
+#[test]
+fn production_python_desktop_client_accepts_exactly_one_rust_service_frame() {
+    let root = private_tempdir();
+    let service = RunningService::start(root.path());
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = Command::new("python3")
+        .current_dir(&repository)
+        .env("PYTHONPATH", &repository)
+        .arg("-c")
+        .arg(
+            "import json, sys\nfrom pathlib import Path\nfrom hermes_fleet.desktop_api import DesktopApiClient\nprint(json.dumps(DesktopApiClient(socket_path=Path(sys.argv[1])).overview(), sort_keys=True))",
+        )
+        .arg(&service.socket)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "python client failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let overview: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(overview["schema"], "fleet.desktop.v1");
+    assert_eq!(overview["nodes"], json!([]));
 }
