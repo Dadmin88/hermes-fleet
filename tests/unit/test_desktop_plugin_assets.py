@@ -39,9 +39,12 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "aria-label': 'Readiness ladder'" in source
     assert "method: 'PUT'" in source
     assert "method: 'DELETE'" in source
-    assert "Reset to provider name" in source
+    assert "Clear local alias" in source
+    assert "Resetting name" not in source
+    assert "Name reset was rejected" not in source
     assert "Technical details" in source
     assert "Copy stable identity" in source
+    assert "title: 'Identity',\n            children: jsxs('div'" in source
     assert "fleet.desktop-events.v1" in source
     assert "ctx.socket('/events'" in source
     assert "queryClient.invalidateQueries({ queryKey: QUERY_KEY })" in source
@@ -489,6 +492,9 @@ console.log(JSON.stringify({
     .diffFleetOverview({ nodes: [stale] }, { nodes: [base] }, 3)
     .map(item => [item.kind, item.node_id]),
   staleResource: mod.buildResourceRows(stale.readiness)[0].value,
+  canvasCapacity: mod.formatCanvasCapacity(base.readiness),
+  staleCanvasCapacity: mod.formatCanvasCapacity(stale.readiness),
+  missingCanvasCapacity: mod.formatCanvasCapacity(missing.readiness),
   resources: mod.buildResourceRows(base.readiness).map(item => [item.key, item.value])
 }))
 """
@@ -513,11 +519,11 @@ console.log(JSON.stringify({
         "stale": [
             ["managed", "ready"],
             ["fresh", "blocked"],
-            ["network", "ready"],
-            ["keryx", "ready"],
-            ["hermes", "ready"],
-            ["worker", "ready"],
-            ["capacity", "ready"],
+            ["network", "unknown"],
+            ["keryx", "unknown"],
+            ["hermes", "unknown"],
+            ["worker", "unknown"],
+            ["capacity", "unknown"],
         ],
         "missing": [
             ["managed", "ready"],
@@ -541,6 +547,9 @@ console.log(JSON.stringify({
         },
         "activity": [["recovered", "fleet-node-" + "1" * 64]],
         "staleResource": "Last observed 2.5s ago: 1 / 3 active · 2 free",
+        "canvasCapacity": "Workers 1 / 3",
+        "staleCanvasCapacity": "Last observed 2.5s ago: Workers 1 / 3",
+        "missingCanvasCapacity": "No worker capacity",
         "resources": [
             ["workers", "1 / 3 active · 2 free"],
             ["cpu", "8 logical · 25.75% load"],

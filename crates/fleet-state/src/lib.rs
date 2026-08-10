@@ -337,31 +337,28 @@ impl FleetStateStore {
         validate_key(source, network_id, device_id)?;
         let connection = self.connect()?;
         let projection = load_projection(&connection, source, network_id, device_id)?;
-        if matches!(
+        let expected_binding_generation = if matches!(
             managed_state(projection.as_ref()),
             ManagedNodeState::Unknown | ManagedNodeState::Removed
         ) {
-            return Ok(None);
-        }
-        let binding_generation = projection
-            .as_ref()
-            .map(|record| record.document.binding_generation.get().to_string())
-            .ok_or(StateError::CorruptState(
-                "managed alias identity has no projection",
-            ))?;
-        let alias = connection
-            .query_row(
-                "SELECT alias FROM managed_node_aliases
-                 WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
-                   AND binding_generation = ?4",
-                params![source, network_id, device_id, binding_generation],
-                |row| row.get(0),
+            None
+        } else {
+            Some(
+                projection
+                    .as_ref()
+                    .map(|record| record.document.binding_generation.get())
+                    .ok_or(StateError::CorruptState(
+                        "managed alias identity has no projection",
+                    ))?,
             )
-            .optional()?;
-        if let Some(value) = alias.as_deref() {
-            validate_persisted_alias(value)?;
-        }
-        Ok(alias)
+        };
+        load_validated_alias(
+            &connection,
+            source,
+            network_id,
+            device_id,
+            expected_binding_generation,
+        )
     }
 
     pub fn set_node_alias(
@@ -664,23 +661,20 @@ impl FleetStateStore {
                 policy,
             )?;
             let document = record.document;
-            let alias = transaction
-                .query_row(
-                    "SELECT alias FROM managed_node_aliases
-                     WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
-                       AND binding_generation = ?4",
-                    params![
-                        source,
-                        network_id,
-                        device_id,
-                        document.binding_generation.get().to_string()
-                    ],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            if let Some(value) = alias.as_deref() {
-                validate_persisted_alias(value)?;
-            }
+            let alias = load_validated_alias(
+                &transaction,
+                &source,
+                &network_id,
+                &device_id,
+                if matches!(
+                    operational.managed_state,
+                    ManagedNodeState::Unknown | ManagedNodeState::Removed
+                ) {
+                    None
+                } else {
+                    Some(document.binding_generation.get())
+                },
+            )?;
             nodes.push(ManagedNodeView {
                 source,
                 network_id,
@@ -1442,6 +1436,36 @@ fn validate_alias(alias: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn load_validated_alias(
+    connection: &Connection,
+    source: &str,
+    network_id: &str,
+    device_id: &str,
+    expected_binding_generation: Option<u64>,
+) -> Result<Option<String>> {
+    let alias = connection
+        .query_row(
+            "SELECT binding_generation, alias FROM managed_node_aliases
+             WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
+            params![source, network_id, device_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((binding_generation, alias)) = alias else {
+        return Ok(None);
+    };
+    let expected_binding_generation = expected_binding_generation.ok_or(
+        StateError::CorruptState("managed alias has no active projection"),
+    )?;
+    if binding_generation != expected_binding_generation.to_string() {
+        return Err(StateError::CorruptState(
+            "managed alias binding generation does not match its projection",
+        ));
+    }
+    validate_persisted_alias(&alias)?;
+    Ok(Some(alias))
 }
 
 fn validate_persisted_alias(alias: &str) -> Result<()> {

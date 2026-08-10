@@ -195,6 +195,18 @@ function readinessStep(key, label, state, detail) {
   return { key, label, state, detail }
 }
 
+function observedState(readiness, hasEvidence, isReady) {
+  if (!hasEvidence || !readiness.fresh) return 'unknown'
+  return isReady ? 'ready' : 'blocked'
+}
+
+function observedDetail(readiness, value) {
+  if (value == null) return 'No evidence'
+  return readiness.fresh
+    ? value
+    : `Last observed ${formatFleetAge(readiness.observation_age_ms)}: ${value}`
+}
+
 export function buildReadinessLadder(node) {
   const readiness = node.readiness
   const observation = readiness.last_observation
@@ -215,32 +227,35 @@ export function buildReadinessLadder(node) {
     readinessStep(
       'network',
       'Network',
-      !observation ? 'unknown' : observation.network === 'reachable' ? 'ready' : 'blocked',
-      observation?.network ?? 'No evidence'
+      observedState(readiness, Boolean(observation), observation?.network === 'reachable'),
+      observedDetail(readiness, observation?.network)
     ),
     readinessStep(
       'keryx',
       'Keryx',
-      !observation ? 'unknown' : observation.keryx === 'available' ? 'ready' : 'blocked',
-      observation?.keryx ?? 'No evidence'
+      observedState(readiness, Boolean(observation), observation?.keryx === 'available'),
+      observedDetail(readiness, observation?.keryx)
     ),
     readinessStep(
       'hermes',
       'Hermes',
-      !observation ? 'unknown' : observation.hermes === 'available' ? 'ready' : 'blocked',
-      observation?.hermes ?? 'No evidence'
+      observedState(readiness, Boolean(observation), observation?.hermes === 'available'),
+      observedDetail(readiness, observation?.hermes)
     ),
     readinessStep(
       'worker',
       'Worker',
-      !observation ? 'unknown' : observation.worker === 'available' ? 'ready' : 'blocked',
-      observation?.worker ?? 'No evidence'
+      observedState(readiness, Boolean(observation), observation?.worker === 'available'),
+      observedDetail(readiness, observation?.worker)
     ),
     readinessStep(
       'capacity',
       'Capacity',
-      !capacity ? 'unknown' : capacity.available_worker_slots > 0 ? 'ready' : 'blocked',
-      capacity ? `${capacity.available_worker_slots} worker slot(s) free` : 'No evidence'
+      observedState(readiness, Boolean(capacity), capacity?.available_worker_slots > 0),
+      observedDetail(
+        readiness,
+        capacity ? `${capacity.available_worker_slots} worker slot(s) free` : null
+      )
     )
   ]
 }
@@ -249,6 +264,15 @@ function byteCapacity(value) {
   return value
     ? `${formatFleetBytes(value.available_bytes)} free / ${formatFleetBytes(value.total_bytes)}`
     : 'No evidence'
+}
+
+export function formatCanvasCapacity(readiness) {
+  const capacity = readiness.capacity
+  if (!capacity) return 'No worker capacity'
+  const label = `Workers ${capacity.active_workers} / ${capacity.max_workers}`
+  return readiness.fresh
+    ? label
+    : `Last observed ${formatFleetAge(readiness.observation_age_ms)}: ${label}`
 }
 
 export function buildResourceRows(readiness) {
@@ -508,10 +532,7 @@ function GraphNode({
   onPointerMove,
   onPointerEnd
 }) {
-  const capacity = node.source.readiness.capacity
-  const capacityLabel = capacity
-    ? `Workers ${capacity.active_workers} / ${capacity.max_workers}`
-    : 'No worker capacity'
+  const capacityLabel = formatCanvasCapacity(node.source.readiness)
 
   function focusSibling(event, offset, absolute = false) {
     const peers = [...event.currentTarget.parentElement.querySelectorAll('[data-fleet-node]')]
@@ -958,7 +979,7 @@ function NodeInspector({ node, ctx, refresh }) {
 
   async function resetAlias() {
     if (!node.naming.has_alias || pending) return
-    setMutation({ state: 'pending', message: 'Resetting name…' })
+    setMutation({ state: 'pending', message: 'Clearing local alias…' })
     try {
       await ctx.rest(`/nodes/${encodeURIComponent(node.stable_id)}/alias`, {
         method: 'DELETE',
@@ -975,7 +996,7 @@ function NodeInspector({ node, ctx, refresh }) {
       try {
         await reconcile()
       } catch {}
-      setMutation({ state: 'error', message: 'Name reset was rejected.' })
+      setMutation({ state: 'error', message: 'Local alias could not be cleared.' })
     }
   }
 
@@ -1018,14 +1039,19 @@ function NodeInspector({ node, ctx, refresh }) {
         children: [
           jsx(InspectorSection, {
             title: 'Identity',
-            children: jsxs('dl', {
+            children: jsxs('div', {
               className: 'grid gap-2',
               children: [
-                jsx(InspectorRow, { label: 'Source', value: node.identity.source, mono: true }),
-                jsx(InspectorRow, { label: 'Network', value: node.identity.network_id, mono: true }),
-                jsx(InspectorRow, { label: 'Device', value: node.identity.device_id, mono: true }),
-                jsx(InspectorRow, { label: 'Stable ID', value: node.stable_id, mono: true }),
-                jsx(InspectorRow, { label: 'Binding', value: node.managed.binding_generation, mono: true }),
+                jsxs('dl', {
+                  className: 'grid gap-2',
+                  children: [
+                    jsx(InspectorRow, { label: 'Source', value: node.identity.source, mono: true }),
+                    jsx(InspectorRow, { label: 'Network', value: node.identity.network_id, mono: true }),
+                    jsx(InspectorRow, { label: 'Device', value: node.identity.device_id, mono: true }),
+                    jsx(InspectorRow, { label: 'Stable ID', value: node.stable_id, mono: true }),
+                    jsx(InspectorRow, { label: 'Binding', value: node.managed.binding_generation, mono: true })
+                  ]
+                }),
                 jsx(Button, {
                   type: 'button',
                   size: 'sm',
@@ -1063,7 +1089,7 @@ function NodeInspector({ node, ctx, refresh }) {
                   className: 'text-[0.6875rem] text-muted-foreground',
                   children: node.naming.provider_name
                     ? `Provider name: ${node.naming.provider_name}`
-                    : `Provider name unavailable; reset uses stable device ID ${providerFallback}.`
+                    : `Provider name unavailable; clearing the alias uses stable device ID ${providerFallback}.`
                 }),
                 jsxs('div', {
                   className: 'flex flex-wrap gap-2',
@@ -1081,7 +1107,7 @@ function NodeInspector({ node, ctx, refresh }) {
                       variant: 'outline',
                       onClick: resetAlias,
                       disabled: !node.naming.has_alias || pending,
-                      children: node.naming.provider_name ? 'Reset to provider name' : 'Clear alias'
+                      children: 'Clear local alias'
                     })
                   ]
                 }),
