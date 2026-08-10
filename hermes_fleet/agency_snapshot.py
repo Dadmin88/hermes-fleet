@@ -8,10 +8,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Final, Iterator
+from typing import Any, Final
 
 from . import profile_inventory
 
@@ -57,11 +58,16 @@ class AgencySource:
             or len(self.repository) > _MAX_REPOSITORY_CHARS
             or self.repository != self.repository.strip()
             or self.repository.startswith("-")
-            or any(character.isspace() or ord(character) < 32 for character in self.repository)
+            or any(
+                character.isspace() or ord(character) < 32
+                for character in self.repository
+            )
         ):
             raise AgencySnapshotError("Agency repository identity is invalid")
         if not _valid_git_object_id(self.revision):
-            raise AgencySnapshotError("Agency revision must be an exact full git object ID")
+            raise AgencySnapshotError(
+                "Agency revision must be an exact full git object ID"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +121,9 @@ class AgencySnapshot:
         manifest = local_path / "distribution.yaml"
         try:
             if manifest.is_symlink() or not manifest.is_file():
-                raise AgencySnapshotError("Agency profile distribution manifest is invalid")
+                raise AgencySnapshotError(
+                    "Agency profile distribution manifest is invalid"
+                )
             identity = profile_inventory._read_distribution_identity(manifest)
         except (OSError, UnicodeError, ValueError) as error:
             raise AgencySnapshotError(
@@ -168,7 +176,9 @@ def acquire_agency_snapshot(
         try:
             temporary_root.chmod(0o700)
         except OSError as error:
-            raise AgencySnapshotError("temporary Agency checkout cannot be secured") from error
+            raise AgencySnapshotError(
+                "temporary Agency checkout cannot be secured"
+            ) from error
         checkout = temporary_root / "checkout"
         environment = os.environ.copy()
         environment["GIT_TERMINAL_PROMPT"] = "0"
@@ -217,7 +227,9 @@ def acquire_agency_snapshot(
             environment=environment,
         )
         if actual_revision != source.revision:
-            raise AgencySnapshotError("Agency checkout revision does not match requested pin")
+            raise AgencySnapshotError(
+                "Agency checkout revision does not match requested pin"
+            )
 
         catalog_bytes = _run_catalog(
             checkout, timeout_seconds=catalog_timeout_seconds
@@ -308,10 +320,14 @@ def _parse_catalog(
     raw_profiles = document["profiles"]
     if type(raw_profiles) is not list or len(raw_profiles) != profile_count:
         raise AgencySnapshotError("Agency profile roster is inconsistent")
-    profiles = tuple(_catalog_profile(item, agency_version=version) for item in raw_profiles)
+    profiles = tuple(
+        _catalog_profile(item, agency_version=version) for item in raw_profiles
+    )
     names = [profile.name for profile in profiles]
     if names != sorted(names) or len(names) != len(set(names)):
-        raise AgencySnapshotError("Agency profile roster is not deterministic and unique")
+        raise AgencySnapshotError(
+            "Agency profile roster is not deterministic and unique"
+        )
     if orchestrator not in set(names):
         raise AgencySnapshotError("Agency orchestrator is absent from the roster")
 
@@ -345,7 +361,9 @@ def _catalog_profile(value: object, *, agency_version: str) -> _CatalogProfile:
         raise AgencySnapshotError("Agency profile name is invalid")
     version = _version(item["version"])
     if version != agency_version:
-        raise AgencySnapshotError("Agency profile version disagrees with catalog version")
+        raise AgencySnapshotError(
+            "Agency profile version disagrees with catalog version"
+        )
     category = _safe_token(item["category"], _MAX_CATEGORY_BYTES, "profile category")
     priority = item["priority"]
     if priority not in {"standard", "backbone"}:
@@ -454,7 +472,9 @@ def _run_git_text(
     except UnicodeError as error:
         raise AgencySnapshotError("pinned Agency git verification failed") from error
     if not _valid_git_object_id(value):
-        raise AgencySnapshotError("pinned Agency git verification returned invalid identity")
+        raise AgencySnapshotError(
+            "pinned Agency git verification returned invalid identity"
+        )
     return value
 
 
@@ -478,14 +498,20 @@ def _safe_distribution_directory(root: Path, relative: str) -> Path:
         for part in PurePosixPath(relative).parts:
             candidate = candidate / part
             if candidate.is_symlink():
-                raise AgencySnapshotError("Agency profile distribution path contains a symlink")
+                raise AgencySnapshotError(
+                    "Agency profile distribution path contains a symlink"
+                )
         resolved = candidate.resolve(strict=True)
     except OSError as error:
-        raise AgencySnapshotError("Agency profile distribution path cannot be resolved") from error
+        raise AgencySnapshotError(
+            "Agency profile distribution path cannot be resolved"
+        ) from error
     try:
         resolved.relative_to(root)
     except ValueError as error:
-        raise AgencySnapshotError("Agency profile distribution path escapes checkout") from error
+        raise AgencySnapshotError(
+            "Agency profile distribution path escapes checkout"
+        ) from error
     if not resolved.is_dir():
         raise AgencySnapshotError("Agency profile distribution path is not a directory")
     return resolved
