@@ -20,7 +20,7 @@ import {
   queryClient,
   useQuery
 } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const QUERY_KEY = ['hermes-fleet', 'desktop', 'overview']
@@ -541,21 +541,51 @@ function workflowConnectionKind(sourcePort, targetPort) {
   return null
 }
 
-export function workflowConnectionCompatibility(workflow, input) {
+function workflowConnectionEndpointKey(source, sourcePort, target, targetPort) {
+  return `${source}\u0000${sourcePort}\u0000${target}\u0000${targetPort}`
+}
+
+function workflowConnectionInputKey(target, targetPort) {
+  return `${target}\u0000${targetPort}`
+}
+
+export function createWorkflowConnectionIndex(workflow) {
   if (
     !isPlainRecord(workflow) ||
     !Array.isArray(workflow.nodes) ||
-    !Array.isArray(workflow.connections) ||
-    !isPlainRecord(input)
+    !Array.isArray(workflow.connections)
   ) {
-    return { valid: false, reason: 'invalid connection request' }
+    return null
   }
-  const sourceNode = workflow.nodes.find(
-    node => isPlainRecord(node) && node.id === input.source
-  )
-  const targetNode = workflow.nodes.find(
-    node => isPlainRecord(node) && node.id === input.target
-  )
+  const nodeById = new Map()
+  for (const node of workflow.nodes) {
+    if (isPlainRecord(node) && validWorkflowId(node.id)) nodeById.set(node.id, node)
+  }
+  const endpointKeys = new Set()
+  const occupiedInputKeys = new Set()
+  for (const edge of workflow.connections) {
+    if (!isPlainRecord(edge)) continue
+    endpointKeys.add(workflowConnectionEndpointKey(
+      edge.source,
+      edge.sourcePort,
+      edge.target,
+      edge.targetPort
+    ))
+    occupiedInputKeys.add(workflowConnectionInputKey(edge.target, edge.targetPort))
+  }
+  return { nodeById, endpointKeys, occupiedInputKeys }
+}
+
+export function workflowConnectionCompatibilityFromIndex(index, input) {
+  if (
+    !isPlainRecord(index) ||
+    !(index.nodeById instanceof Map) ||
+    !(index.endpointKeys instanceof Set) ||
+    !(index.occupiedInputKeys instanceof Set) ||
+    !isPlainRecord(input)
+  ) return { valid: false, reason: 'invalid connection request' }
+  const sourceNode = index.nodeById.get(input.source)
+  const targetNode = index.nodeById.get(input.target)
   if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) {
     return { valid: false, reason: 'invalid connection endpoints' }
   }
@@ -567,18 +597,43 @@ export function workflowConnectionCompatibility(workflow, input) {
     ? workflowConnectionKind(sourcePort, targetPort)
     : null
   if (!kind) return { valid: false, reason: 'incompatible workflow ports' }
-  if (workflow.connections.some(edge =>
-    isPlainRecord(edge) &&
-    edge.source === input.source &&
-    edge.sourcePort === input.sourcePort &&
-    edge.target === input.target &&
-    edge.targetPort === input.targetPort
-  )) return { valid: false, reason: 'duplicate workflow connection' }
-  if (workflow.connections.some(edge =>
-    isPlainRecord(edge) &&
-    edge.target === input.target && edge.targetPort === input.targetPort
-  )) return { valid: false, reason: 'workflow input already connected' }
+  if (index.endpointKeys.has(workflowConnectionEndpointKey(
+    input.source,
+    input.sourcePort,
+    input.target,
+    input.targetPort
+  ))) return { valid: false, reason: 'duplicate workflow connection' }
+  if (index.occupiedInputKeys.has(workflowConnectionInputKey(
+    input.target,
+    input.targetPort
+  ))) return { valid: false, reason: 'workflow input already connected' }
   return { valid: true, kind }
+}
+
+export function workflowConnectionCompatibility(workflow, input) {
+  const index = createWorkflowConnectionIndex(workflow)
+  return index
+    ? workflowConnectionCompatibilityFromIndex(index, input)
+    : { valid: false, reason: 'invalid connection request' }
+}
+
+export function createWorkflowConnectionCompatibilityMap(workflow, source, sourcePort) {
+  const index = createWorkflowConnectionIndex(workflow)
+  const compatibility = new Map()
+  if (!index) return compatibility
+  for (const node of index.nodeById.values()) {
+    const descriptor = getFleetNodeType(node.type)
+    for (const port of descriptor?.inputs ?? []) {
+      const key = workflowConnectionInputKey(node.id, port.id)
+      compatibility.set(key, workflowConnectionCompatibilityFromIndex(index, {
+        source,
+        sourcePort,
+        target: node.id,
+        targetPort: port.id
+      }))
+    }
+  }
+  return compatibility
 }
 
 function validConnectionPoint(value) {
@@ -694,11 +749,24 @@ export function updateFleetSelection(selection, id, options = {}) {
 }
 
 export function nodesInsideSelection(nodes, bounds) {
-  if (!bounds || !Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) return []
+  if (
+    !Array.isArray(nodes) ||
+    !bounds ||
+    !Number.isFinite(bounds.x) ||
+    !Number.isFinite(bounds.y) ||
+    !Number.isFinite(bounds.width) ||
+    !Number.isFinite(bounds.height)
+  ) return []
   const right = bounds.x + Math.max(0, bounds.width)
   const bottom = bounds.y + Math.max(0, bounds.height)
   return nodes
     .filter(node =>
+      isPlainRecord(node) &&
+      validWorkflowId(node.id) &&
+      Number.isFinite(node.x) &&
+      Number.isFinite(node.y) &&
+      Number.isFinite(node.width) &&
+      Number.isFinite(node.height) &&
       node.x >= bounds.x &&
       node.y >= bounds.y &&
       node.x + node.width <= right &&
@@ -2097,7 +2165,15 @@ function GraphEdges({
               if (event.key === 'Delete' || event.key === 'Backspace') {
                 event.preventDefault()
                 event.stopPropagation()
+                const peers = [...event.currentTarget.ownerSVGElement.querySelectorAll('[data-fleet-edge]')]
+                const current = peers.indexOf(event.currentTarget)
+                const fallback = peers.length > 1
+                  ? peers[current < peers.length - 1 ? current + 1 : current - 1]
+                  : event.currentTarget.ownerSVGElement
                 onDeleteEdge(edge.id)
+                requestAnimationFrame(() => {
+                  if (fallback?.isConnected) fallback.focus({ preventScroll: true })
+                })
               }
             }
           : undefined,
@@ -2424,10 +2500,13 @@ function WorkflowPortHandle({
   onEnd,
   onCancel,
   onCommit,
-  onTargetFocus
+  onTargetFocus,
+  rovingPortKey,
+  onPortFocus
 }) {
   const x = direction === 'output' ? node.width : 0
   const y = ((index + 1) / (total + 1)) * node.height
+  const portKey = `${node.id}:${direction}:${port.id}`
   const active = direction === 'output' && draft?.source === node.id && draft.sourcePort === port.id
   const connectionState = active
     ? 'active'
@@ -2439,6 +2518,15 @@ function WorkflowPortHandle({
   function focusCompatibleSibling(event, offset) {
     const peers = [...event.currentTarget.ownerSVGElement.querySelectorAll(
       "[data-connection-compatible='true']"
+    )]
+    const current = peers.indexOf(event.currentTarget)
+    if (current < 0 || !peers.length) return
+    peers[(current + offset + peers.length) % peers.length].focus({ preventScroll: true })
+  }
+
+  function focusOutputSibling(event, offset) {
+    const peers = [...event.currentTarget.ownerSVGElement.querySelectorAll(
+      "[data-direction='output']"
     )]
     const current = peers.indexOf(event.currentTarget)
     if (current < 0 || !peers.length) return
@@ -2470,6 +2558,14 @@ function WorkflowPortHandle({
       event.preventDefault()
       event.stopPropagation()
       focusCompatibleSibling(event, event.shiftKey ? -1 : 1)
+    } else if (!draft && direction === 'output' && ['ArrowRight', 'ArrowDown'].includes(event.key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      focusOutputSibling(event, 1)
+    } else if (!draft && direction === 'output' && ['ArrowLeft', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      focusOutputSibling(event, -1)
     }
   }
 
@@ -2477,16 +2573,22 @@ function WorkflowPortHandle({
     className: 'fleet-port-handle',
     transform: `translate(${x} ${y})`,
     role: direction === 'output' || keyboardTarget ? 'button' : 'img',
-    tabIndex: direction === 'output' ? (draft ? -1 : 0) : keyboardTarget ? 0 : -1,
+    tabIndex: rovingPortKey === portKey && (direction === 'output' ? !draft : keyboardTarget)
+      ? 0
+      : -1,
     'aria-label': workflowPortAriaLabel(node, port, direction, sourceLabel),
     'data-fleet-port': port.id,
+    'data-port-key': portKey,
     'data-direction': direction,
     'data-port-kind': port.kind,
     'data-port-id': port.id,
     'data-connection-state': connectionState,
     'data-connection-compatible': keyboardTarget,
     onClick: event => event.stopPropagation(),
-    onFocus: keyboardTarget ? () => onTargetFocus(node.id, port.id) : undefined,
+    onFocus: () => {
+      onPortFocus(portKey)
+      if (keyboardTarget) onTargetFocus(node.id, port.id)
+    },
     onKeyDown,
     onPointerDown: direction === 'output'
       ? event => {
@@ -2607,6 +2709,7 @@ function GraphNode({
     onMouseLeave: () => onHover(null),
     onKeyDown,
     onPointerDown: event => {
+      event.stopPropagation()
       event.currentTarget.focus({ preventScroll: true })
       onPointerDown(event, node)
     },
@@ -2661,7 +2764,9 @@ function WorkflowNodePorts({
   onEnd,
   onCancel,
   onCommit,
-  onTargetFocus
+  onTargetFocus,
+  rovingPortKey,
+  onPortFocus
 }) {
   return jsx('g', {
     className: 'fleet-workflow-node-ports',
@@ -2685,7 +2790,9 @@ function WorkflowNodePorts({
           onEnd,
           onCancel,
           onCommit,
-          onTargetFocus
+          onTargetFocus,
+          rovingPortKey,
+          onPortFocus
         }, `input:${port.id}`)
       ),
       ...node.nodeType.outputs.map((port, index) =>
@@ -2703,12 +2810,47 @@ function WorkflowNodePorts({
           onEnd,
           onCancel,
           onCommit,
-          onTargetFocus
+          onTargetFocus,
+          rovingPortKey,
+          onPortFocus
         }, `output:${port.id}`)
       )
     ]
   }, `ports:${node.id}`)
 }
+
+const MemoGraphGroups = memo(GraphGroups)
+const MemoGraphEdges = memo(GraphEdges)
+
+const FleetCanvasStaticScene = memo(function FleetCanvasStaticScene({
+  graph,
+  selectedId,
+  rovingId,
+  hoveredId,
+  animatedIds,
+  handlers
+}) {
+  return jsx('g', {
+    children: graph.nodes.map(node =>
+      jsx(GraphNode, {
+        node,
+        selected: selectedId === node.id,
+        focused: rovingId === node.id,
+        hovered: hoveredId === node.id,
+        animated: animatedIds.has(node.id),
+        onSelect: handlers.selectNode,
+        onRovingFocus: handlers.focusNode,
+        onCenter: handlers.centerNode,
+        onHover: handlers.hoverNode,
+        onMove: handlers.moveNode,
+        onPointerDown: handlers.beginNodeDrag,
+        onPointerMove: handlers.movePointer,
+        onPointerEnd: handlers.endPointer,
+        onPointerCancel: handlers.cancelPointer
+      }, node.id)
+    )
+  })
+})
 
 function FleetCanvas({
   graph,
@@ -2728,13 +2870,16 @@ function FleetCanvas({
 }) {
   const rootRef = useRef(null)
   const pointerRef = useRef(null)
+  const sceneHandlersRef = useRef(null)
   const initializedRef = useRef(false)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 })
   const [hoveredId, setHoveredId] = useState(null)
   const [rovingId, setRovingId] = useState(null)
+  const [rovingPortKey, setRovingPortKey] = useState(null)
   const [connectionDraft, setConnectionDraft] = useState(null)
   const connectionDraftRef = useRef(null)
+  const connectionInvokerRef = useRef(null)
   const connectionMoveFrameRef = useRef(null)
   const connectionMoveSampleRef = useRef(null)
   const canvasMoveFrameRef = useRef(null)
@@ -2744,6 +2889,25 @@ function FleetCanvas({
     () => new Map(graph.nodes.map(node => [node.id, node])),
     [graph.nodes]
   )
+  const outputPortKeys = useMemo(() => graph.nodes.flatMap(node =>
+    (node.nodeType?.outputs ?? []).map(port => `${node.id}:output:${port.id}`)
+  ), [graph.nodes])
+  const effectiveRovingPortKey = connectionDraft?.keyboard
+    ? rovingPortKey
+    : outputPortKeys.includes(rovingPortKey)
+      ? rovingPortKey
+      : outputPortKeys[0] ?? null
+  const connectionCompatibilityMap = useMemo(() => {
+    if (!connectionDraft || !connectionAuthoring?.compatibilityMap) return null
+    return connectionAuthoring.compatibilityMap({
+      source: connectionDraft.source,
+      sourcePort: connectionDraft.sourcePort
+    })
+  }, [
+    connectionAuthoring,
+    connectionDraft?.source,
+    connectionDraft?.sourcePort
+  ])
   const connectionSourceLabel = connectionDraft
     ? nodeById.get(connectionDraft.source)?.label ?? connectionDraft.source
     : null
@@ -2764,6 +2928,8 @@ function FleetCanvas({
 
   function compatibilityForTarget(nodeId, portId, draft = connectionDraftRef.current) {
     if (!draft || !connectionAuthoring) return { valid: false, reason: 'not authoring' }
+    const indexed = connectionCompatibilityMap?.get(workflowConnectionInputKey(nodeId, portId))
+    if (indexed) return indexed
     return connectionAuthoring.compatibility({
       source: draft.source,
       sourcePort: draft.sourcePort,
@@ -2801,7 +2967,9 @@ function FleetCanvas({
 
   function cancelConnection(message = null) {
     const active = pointerRef.current
+    const invoker = connectionInvokerRef.current
     pointerRef.current = null
+    connectionInvokerRef.current = null
     if (connectionMoveFrameRef.current != null) {
       cancelAnimationFrame(connectionMoveFrameRef.current)
       connectionMoveFrameRef.current = null
@@ -2811,8 +2979,12 @@ function FleetCanvas({
       active?.kind === 'connection' &&
       active.captureElement?.hasPointerCapture?.(active.pointerId)
     ) active.captureElement.releasePointerCapture(active.pointerId)
+    if (invoker) setRovingPortKey(invoker.key)
     setDraft(workflowConnectionDraftReducer(connectionDraftRef.current, { type: 'cancel' }))
     if (message) connectionAuthoring?.onNotice(message)
+    if (invoker) requestAnimationFrame(() => {
+      if (invoker.element?.isConnected) invoker.element.focus({ preventScroll: true })
+    })
   }
 
   function commitConnection(targetNodeId, targetPortId) {
@@ -2849,7 +3021,18 @@ function FleetCanvas({
   }
 
   function beginConnection(event, node, port, point, keyboard) {
-    if (!connectionAuthoring || port.direction !== 'output') return
+    if (
+      !connectionAuthoring ||
+      port.direction !== 'output' ||
+      event.isPrimary === false ||
+      pointerRef.current ||
+      connectionDraftRef.current
+    ) return
+    const sourceKey = `${node.id}:output:${port.id}`
+    if (keyboard) {
+      connectionInvokerRef.current = { element: event.currentTarget, key: sourceKey }
+      setRovingPortKey(sourceKey)
+    }
     const draft = workflowConnectionDraftReducer(null, {
       type: 'start',
       source: node.id,
@@ -2942,6 +3125,11 @@ function FleetCanvas({
   }
 
   useEffect(() => {
+    const active = pointerRef.current
+    if (active?.kind === 'node' && !nodeById.has(active.id)) {
+      cancelActiveCanvasGesture()
+      return
+    }
     const draft = connectionDraftRef.current
     if (!draft) return
     const sourceNode = nodeById.get(draft.source)
@@ -2962,16 +3150,18 @@ function FleetCanvas({
       cancelAnimationFrame(connectionMoveFrameRef.current)
       connectionMoveFrameRef.current = null
     }
+    connectionMoveSampleRef.current = null
     if (canvasMoveFrameRef.current != null) {
       cancelAnimationFrame(canvasMoveFrameRef.current)
       canvasMoveFrameRef.current = null
     }
+    canvasMoveSampleRef.current = null
+    connectionInvokerRef.current = null
     const active = pointerRef.current
     pointerRef.current = null
-    if (
-      active?.kind === 'connection' &&
-      active.captureElement?.hasPointerCapture?.(active.pointerId)
-    ) active.captureElement.releasePointerCapture(active.pointerId)
+    if (active?.captureElement?.hasPointerCapture?.(active.pointerId)) {
+      active.captureElement.releasePointerCapture(active.pointerId)
+    }
   }, [])
 
   useEffect(() => {
@@ -3042,7 +3232,10 @@ function FleetCanvas({
   )
 
   function beginPan(event) {
-    if (event.button !== 0) return
+    if (
+      event.button !== 0 ||
+      event.isPrimary === false || pointerRef.current || connectionDraftRef.current
+    ) return
     if (event.target === event.currentTarget) {
       setSelectedId(null)
       setSelectedEdgeId?.(null)
@@ -3059,11 +3252,15 @@ function FleetCanvas({
   }
 
   function beginNodeDrag(event, node) {
-    if (event.button !== 0) return
+    if (
+      event.button !== 0 ||
+      event.isPrimary === false || pointerRef.current || connectionDraftRef.current
+    ) return
     event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
     setSelectedId(node.id)
+    setSelectedEdgeId?.(null)
     pointerRef.current = {
       kind: 'node',
       pointerId: event.pointerId,
@@ -3222,6 +3419,39 @@ function FleetCanvas({
     }
   }
 
+  sceneHandlersRef.current = {
+    selectNode: id => {
+      setSelectedId(id)
+      setSelectedEdgeId?.(null)
+    },
+    focusNode: setRovingId,
+    centerNode,
+    hoverNode: setHoveredId,
+    moveNode: moveNodeByKeyboard,
+    beginNodeDrag,
+    movePointer,
+    endPointer,
+    cancelPointer,
+    selectEdge: id => {
+      setSelectedId(null)
+      setSelectedEdgeId?.(id)
+    },
+    deleteEdge: onDeleteEdge
+  }
+  const sceneHandlers = useMemo(() => ({
+    selectNode: (...args) => sceneHandlersRef.current.selectNode(...args),
+    focusNode: (...args) => sceneHandlersRef.current.focusNode(...args),
+    centerNode: (...args) => sceneHandlersRef.current.centerNode(...args),
+    hoverNode: (...args) => sceneHandlersRef.current.hoverNode(...args),
+    moveNode: (...args) => sceneHandlersRef.current.moveNode(...args),
+    beginNodeDrag: (...args) => sceneHandlersRef.current.beginNodeDrag(...args),
+    movePointer: (...args) => sceneHandlersRef.current.movePointer(...args),
+    endPointer: (...args) => sceneHandlersRef.current.endPointer(...args),
+    cancelPointer: (...args) => sceneHandlersRef.current.cancelPointer(...args),
+    selectEdge: (...args) => sceneHandlersRef.current.selectEdge(...args),
+    deleteEdge: (...args) => sceneHandlersRef.current.deleteEdge?.(...args)
+  }), [])
+
   return jsxs('div', {
     className: 'fleet-canvas-surface relative min-h-0 flex-1 overflow-hidden rounded-2xl',
     children: [
@@ -3295,42 +3525,22 @@ function FleetCanvas({
           transform: `translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`,
           children: [
             jsx(WorkflowEdgeDefinitions, {}),
-            jsx(GraphGroups, { groups: graph.groups }),
-            jsx(GraphEdges, {
+            jsx(MemoGraphGroups, { groups: graph.groups }),
+            jsx(MemoGraphEdges, {
               edges: graph.edges,
               nodeById,
               selectedEdgeId,
-              onSelectEdge: setSelectedEdgeId
-                ? id => {
-                    setSelectedId(null)
-                    setSelectedEdgeId(id)
-                  }
-                : null,
-              onDeleteEdge
+              onSelectEdge: setSelectedEdgeId ? sceneHandlers.selectEdge : null,
+              onDeleteEdge: onDeleteEdge ? sceneHandlers.deleteEdge : null
             }),
             jsx(ProvisionalWorkflowEdge, { draft: connectionDraft, nodeById }),
-            jsx('g', {
-              children: graph.nodes.map(node =>
-                jsx(GraphNode, {
-                  node,
-                  selected: selectedId === node.id,
-                  focused: rovingId === node.id,
-                  hovered: hoveredId === node.id,
-                  animated: animatedIds.has(node.id),
-                  onSelect: id => {
-                    setSelectedId(id)
-                    setSelectedEdgeId?.(null)
-                  },
-                  onRovingFocus: setRovingId,
-                  onCenter: centerNode,
-                  onHover: setHoveredId,
-                  onMove: moveNodeByKeyboard,
-                  onPointerDown: beginNodeDrag,
-                  onPointerMove: movePointer,
-                  onPointerEnd: endPointer,
-                  onPointerCancel: cancelPointer
-                }, node.id)
-              )
+            jsx(FleetCanvasStaticScene, {
+              graph,
+              selectedId,
+              rovingId,
+              hoveredId,
+              animatedIds,
+              handlers: sceneHandlers
             }),
             connectionAuthoring
               ? jsx('g', {
@@ -3350,7 +3560,9 @@ function FleetCanvas({
                         onEnd: endPointer,
                         onCancel: cancelConnection,
                         onCommit: commitConnection,
-                        onTargetFocus: focusConnectionTarget
+                        onTargetFocus: focusConnectionTarget,
+                        rovingPortKey: effectiveRovingPortKey,
+                        onPortFocus: setRovingPortKey
                       }, `ports:${node.id}`)
                     )
                 })
@@ -4223,6 +4435,11 @@ function WorkflowModePanel({ history, setHistory }) {
 
   const connectionAuthoring = useMemo(() => ({
     compatibility: input => workflowConnectionCompatibility(workflow, input),
+    compatibilityMap: input => createWorkflowConnectionCompatibilityMap(
+      workflow,
+      input.source,
+      input.sourcePort
+    ),
     onConnectionCommit: createConnection,
     onNotice: setEditorNotice
   }), [createConnection, workflow])
@@ -4407,17 +4624,18 @@ function WorkflowModePanel({ history, setHistory }) {
             disabled: !selectedId,
             children: 'Inspect selection'
           }),
-          editorNotice
-            ? jsx('span', {
-                className: 'ml-auto text-[0.6875rem] text-muted-foreground',
-                role: 'status',
-                'aria-live': 'polite',
-                children: editorNotice
-              })
-            : jsx('span', {
-                className: 'ml-auto text-[0.6875rem] text-muted-foreground',
-                children: `${workflow.nodes.length} node${workflow.nodes.length === 1 ? '' : 's'} · ${workflow.connections.length} connection${workflow.connections.length === 1 ? '' : 's'} · execution unavailable`
-              })
+          jsx('span', {
+            className: 'sr-only',
+            role: 'status',
+            'aria-live': 'polite',
+            'aria-atomic': true,
+            children: editorNotice ?? ''
+          }),
+          jsx('span', {
+            className: 'ml-auto text-[0.6875rem] text-muted-foreground',
+            'aria-hidden': true,
+            children: editorNotice ?? `${workflow.nodes.length} node${workflow.nodes.length === 1 ? '' : 's'} · ${workflow.connections.length} connection${workflow.connections.length === 1 ? '' : 's'} · execution unavailable`
+          })
         ]
       }),
       jsxs('div', {

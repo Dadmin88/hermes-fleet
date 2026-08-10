@@ -126,7 +126,7 @@ def test_graph_first_canvas_renders_groups_minimap_and_compact_status() -> None:
     source = PLUGIN.read_text(encoding="utf-8")
 
     assert "function GraphGroups" in source
-    assert "jsx(GraphGroups, { groups: graph.groups })" in source
+    assert "jsx(MemoGraphGroups, { groups: graph.groups })" in source
     assert "function FleetMiniMap" in source
     assert "'aria-label': 'Fleet minimap'" in source
     assert "children: '0 relationship edges'" in source
@@ -193,6 +193,7 @@ const sdkUrl = dataUrl(`
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
 const reactUrl = dataUrl(`
+  export const memo = value => value
   export const useCallback = value => value
   export const useEffect = () => undefined
   export const useMemo = factory => factory()
@@ -332,6 +333,14 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
         "fleet-provisional-edge",
         "markerEnd",
         "Connect ${node.label} ${port.label}",
+        "export function createWorkflowConnectionIndex",
+        "function workflowConnectionCompatibilityFromIndex",
+        "connectionCompatibilityMap",
+        "connectionInvokerRef",
+        "rovingPortKey",
+        "aria-atomic",
+        "const FleetCanvasStaticScene = memo",
+        "sceneHandlersRef",
     ):
         assert interaction_contract in source
 
@@ -340,6 +349,27 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
     ]
     assert "WorkflowPortHandle" not in graph_node_block
     assert "onContextMenu" in graph_node_block
+    assert (
+        "event.stopPropagation()\n      event.currentTarget.focus" in graph_node_block
+    )
+
+    begin_node_drag_block = source[
+        source.index("function beginNodeDrag") : source.index(
+            "function applyCanvasMove"
+        )
+    ]
+    assert "event.isPrimary === false || pointerRef.current" in begin_node_drag_block
+    assert "setSelectedEdgeId?.(null)" in begin_node_drag_block
+
+    begin_pan_block = source[
+        source.index("function beginPan") : source.index("function beginNodeDrag")
+    ]
+    assert "event.isPrimary === false || pointerRef.current" in begin_pan_block
+
+    live_region_block = source[
+        source.index("role: 'status'") - 240 : source.index("role: 'status'") + 240
+    ]
+    assert "editorNotice ?? ''" in live_region_block
 
     script = r"""
 import fs from 'node:fs'
@@ -369,6 +399,7 @@ const sdkUrl = dataUrl(`
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
 const reactUrl = dataUrl(`
+  export const memo = value => value
   export const useCallback = value => value
   export const useEffect = () => undefined
   export const useMemo = factory => factory()
@@ -583,6 +614,25 @@ const boxed = mod.nodesInsideSelection([
   { id: 'a', x: 0, y: 0, width: 100, height: 80 },
   { id: 'b', x: 300, y: 300, width: 100, height: 80 }
 ], { x: -5, y: -5, width: 120, height: 100 })
+const nonFiniteBoxed = mod.nodesInsideSelection([
+  { id: 'near', x: 0, y: 0, width: 1, height: 1 },
+  { id: 'far', x: 999999, y: 0, width: 1, height: 1 }
+], { x: 0, y: 0, width: Infinity, height: 1 })
+const compatibilityIndex = mod.createWorkflowConnectionIndex(workflowWithSecondSource)
+const indexedDuplicate = mod.workflowConnectionCompatibilityFromIndex(
+  compatibilityIndex,
+  {
+    source: 'trigger-1', sourcePort: 'control',
+    target: 'delay-1', targetPort: 'control'
+  }
+)
+const indexedOccupied = mod.workflowConnectionCompatibilityFromIndex(
+  compatibilityIndex,
+  {
+    source: 'trigger-2', sourcePort: 'control',
+    target: 'delay-1', targetPort: 'control'
+  }
+)
 console.log(JSON.stringify({
   ids,
   descriptor: mod.FLEET_NODE_TYPES['manual-trigger'],
@@ -652,7 +702,10 @@ console.log(JSON.stringify({
   invalidHistoryRejected: rejects(() =>
     mod.createWorkflowHistory({ ...workflow, execution: { run: 'x' } })
   ),
-  boxed
+  boxed,
+  nonFiniteBoxed,
+  indexedDuplicate,
+  indexedOccupied
 }))
 """
     completed = subprocess.run(
@@ -774,6 +827,15 @@ console.log(JSON.stringify({
     assert loaded["invalidHistoryRejected"] is True
     assert "execution" not in loaded["topology"]
     assert loaded["boxed"] == ["a"]
+    assert loaded["nonFiniteBoxed"] == []
+    assert loaded["indexedDuplicate"] == {
+        "valid": False,
+        "reason": "duplicate workflow connection",
+    }
+    assert loaded["indexedOccupied"] == {
+        "valid": False,
+        "reason": "workflow input already connected",
+    }
 
 
 def test_desktop_plugin_evaluates_and_registers_current_sdk_contributions() -> None:
@@ -810,6 +872,7 @@ const sdkUrl = dataUrl(`
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
 const reactUrl = dataUrl(`
+  export const memo = value => value
   export const useCallback = value => value
   export const useEffect = () => undefined
   export const useMemo = factory => factory()
@@ -954,6 +1017,7 @@ const sdkUrl = dataUrl(`
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
 const reactUrl = dataUrl(`
+  export const memo = value => value
   export const useCallback = value => value
   export const useEffect = () => undefined
   export const useMemo = factory => factory()
@@ -1270,6 +1334,7 @@ const sdkUrl = dataUrl(`
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
 const reactUrl = dataUrl(`
+  export const memo = value => value
   export const useCallback = value => value
   export const useEffect = () => undefined
   export const useMemo = factory => factory()
