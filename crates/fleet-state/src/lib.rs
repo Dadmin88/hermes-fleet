@@ -611,7 +611,6 @@ impl FleetStateStore {
             return Err(StateError::InvalidInput("result text is too large"));
         }
         self.transition_run(task_id, |current| match current {
-            RunBindingState::Creating => unreachable!(),
             RunBindingState::Running { run_id: existing } if existing == run_id => {
                 Ok(RunBindingState::Completed {
                     run_id: run_id.to_owned(),
@@ -856,7 +855,13 @@ fn load_observation(
             let observation: NodeObservation = serde_json::from_value(value.clone())?;
             validate_observation(&observation, received_at_ms as u64)
                 .map_err(|_| StateError::CorruptState("persisted node observation is invalid"))?;
-            if serde_json::to_value(&observation)? != value
+            let mut canonical_value = value.clone();
+            if let serde_json::Value::Object(fields) = &mut canonical_value {
+                fields
+                    .entry("profiles".to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+            if serde_json::to_value(&observation)? != canonical_value
                 || observation.observed_at_ms != observed_at_ms as u64
             {
                 return Err(StateError::CorruptState(
@@ -1241,9 +1246,9 @@ fn validate_profile_query(profile_name: &str, required_version: Option<&str>) ->
     let valid_name = !profile_name.is_empty()
         && profile_name.len() <= MAX_PROFILE_NAME_BYTES
         && !matches!(profile_name, "." | "..")
-        && profile_name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-        });
+        && profile_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
     let valid_version = required_version.is_none_or(|version| {
         !version.is_empty()
             && version.len() <= MAX_PROFILE_VERSION_BYTES
