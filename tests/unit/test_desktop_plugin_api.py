@@ -31,10 +31,37 @@ def test_overview_route_uses_authoritative_desktop_client(
     module = _load_api()
     socket_path = tmp_path / "fleet.sock"
     monkeypatch.setenv("FLEET_MANAGED_PROJECTION_SOCKET", str(socket_path))
-    expected = {
+    monkeypatch.delenv("NODESCALE_OBSERVATION_SOCKET", raising=False)
+    monkeypatch.delenv("NODESCALE_OBSERVATION_NETWORK_ID", raising=False)
+    managed = {
         "schema": "fleet.desktop.v1",
-        "summary": {"managed": 0, "active": 0, "alive": 0, "ready": 0, "not_ready": 0},
+        "summary": {
+            "managed": 0,
+            "active": 0,
+            "alive": 0,
+            "ready": 0,
+            "not_ready": 0,
+        },
         "nodes": [],
+    }
+    expected = {
+        "schema": "fleet.desktop.v2",
+        "summary": {
+            "managed": 0,
+            "active": 0,
+            "alive": 0,
+            "ready": 0,
+            "not_ready": 0,
+            "observed_unmanaged": 0,
+        },
+        "nodes": [],
+        "observed_nodes": [],
+        "observations": {
+            "state": "disabled",
+            "network_id": None,
+            "reconciliation": None,
+            "truncated": False,
+        },
     }
     captured: list[Path] = []
 
@@ -43,12 +70,152 @@ def test_overview_route_uses_authoritative_desktop_client(
             captured.append(socket_path)
 
         def overview(self) -> dict:
-            return expected
+            return managed
 
     monkeypatch.setattr(module, "DesktopApiClient", FakeClient)
 
     assert asyncio.run(module.overview()) == expected
     assert captured == [socket_path]
+
+
+def test_overview_route_adds_observed_evidence_without_managed_authority(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_api()
+    managed_path = tmp_path / "fleet.sock"
+    observed_path = tmp_path / "observed.sock"
+    network_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setenv("FLEET_MANAGED_PROJECTION_SOCKET", str(managed_path))
+    monkeypatch.setenv("NODESCALE_OBSERVATION_SOCKET", str(observed_path))
+    monkeypatch.setenv("NODESCALE_OBSERVATION_NETWORK_ID", network_id)
+    observation = {
+        "observed_id": "sha256:" + "a" * 64,
+        "network_id": network_id,
+        "provider_kind": "headscale",
+        "provider_instance_id": "22222222-2222-2222-2222-222222222222",
+        "provider_node_id": "node-1",
+        "hostname": "fleet-accept-a",
+        "given_name": "fleet-accept-a",
+        "addresses": ["100.64.0.1"],
+        "tags": [],
+        "registered_at": None,
+        "last_seen_at": "2026-08-10T00:00:01+00:00",
+        "expires_at": None,
+        "online": True,
+        "expired": False,
+        "classification": "discovered_unmanaged",
+        "first_observed_at": "2026-08-10T00:00:00+00:00",
+        "last_observed_at": "2026-08-10T00:00:01+00:00",
+        "snapshot_at": "2026-08-10T00:00:01+00:00",
+    }
+
+    class ManagedClient:
+        def __init__(self, *, socket_path: Path) -> None:
+            assert socket_path == managed_path
+
+        def overview(self) -> dict:
+            return {
+                "schema": "fleet.desktop.v1",
+                "summary": {
+                    "managed": 0,
+                    "active": 0,
+                    "alive": 0,
+                    "ready": 0,
+                    "not_ready": 0,
+                },
+                "nodes": [],
+            }
+
+    class ObservedClient:
+        def __init__(self, *, socket_path: Path, network_id: str) -> None:
+            assert socket_path == observed_path
+            assert network_id == "11111111-1111-1111-1111-111111111111"
+
+        def overview(self) -> dict:
+            return {
+                "schema": "nodescale.observations.v1",
+                "network_id": network_id,
+                "reconciliation": {
+                    "state": "healthy",
+                    "last_attempted_at": "2026-08-10T00:00:01+00:00",
+                    "last_successful_at": "2026-08-10T00:00:01+00:00",
+                    "observed_count": 1,
+                },
+                "observations": [observation],
+                "truncated": False,
+            }
+
+    monkeypatch.setattr(module, "DesktopApiClient", ManagedClient)
+    monkeypatch.setattr(module, "NodescaleObservationClient", ObservedClient)
+
+    result = asyncio.run(module.overview())
+    assert result["schema"] == "fleet.desktop.v2"
+    assert result["summary"]["managed"] == 0
+    assert result["summary"]["observed_unmanaged"] == 1
+    assert result["nodes"] == []
+    assert result["observed_nodes"] == [observation]
+    assert result["observations"] == {
+        "state": "available",
+        "network_id": network_id,
+        "reconciliation": {
+            "state": "healthy",
+            "last_attempted_at": "2026-08-10T00:00:01+00:00",
+            "last_successful_at": "2026-08-10T00:00:01+00:00",
+            "observed_count": 1,
+        },
+        "truncated": False,
+    }
+    assert "operations" not in result["observed_nodes"][0]
+    assert "readiness" not in result["observed_nodes"][0]
+    assert "managed" not in result["observed_nodes"][0]
+
+
+def test_observation_outage_does_not_hide_managed_fleet_state(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_api()
+    network_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setenv("NODESCALE_OBSERVATION_SOCKET", str(tmp_path / "missing.sock"))
+    monkeypatch.setenv("NODESCALE_OBSERVATION_NETWORK_ID", network_id)
+
+    class ManagedClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def overview(self) -> dict:
+            return {
+                "schema": "fleet.desktop.v1",
+                "summary": {
+                    "managed": 1,
+                    "active": 1,
+                    "alive": 1,
+                    "ready": 1,
+                    "not_ready": 0,
+                },
+                "nodes": [{"stable_id": "managed-node"}],
+            }
+
+    class UnavailableObservedClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def overview(self) -> dict:
+            raise OSError("private observed socket detail")
+
+    monkeypatch.setattr(module, "DesktopApiClient", ManagedClient)
+    monkeypatch.setattr(module, "NodescaleObservationClient", UnavailableObservedClient)
+
+    result = asyncio.run(module.overview())
+    assert result["summary"]["managed"] == 1
+    assert result["summary"]["observed_unmanaged"] == 0
+    assert result["nodes"] == [{"stable_id": "managed-node"}]
+    assert result["observed_nodes"] == []
+    assert result["observations"] == {
+        "state": "unavailable",
+        "network_id": network_id,
+        "reconciliation": None,
+        "truncated": False,
+    }
 
 
 def test_overview_route_returns_service_unavailable_without_leaking_details(
@@ -93,6 +260,9 @@ def test_typed_event_contract_is_stable_and_router_exposes_websocket():
         {"nodes": [{"readiness": {"observation_age_ms": 1, "fresh": True}}]}
     ) == module._overview_digest(
         {"nodes": [{"readiness": {"observation_age_ms": 999, "fresh": True}}]}
+    )
+    assert module._overview_digest({"observed_nodes": []}) != module._overview_digest(
+        {"observed_nodes": [{"observed_id": "sha256:" + "a" * 64}]}
     )
     assert any(
         getattr(route, "path", None) == "/events" for route in module.router.routes

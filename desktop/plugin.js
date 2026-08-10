@@ -92,7 +92,10 @@ function useFleetActivity(overview) {
   const previousRef = useRef(null)
   const sequenceRef = useRef(0)
   useEffect(() => {
-    if (!overview || overview.schema !== 'fleet.desktop.v1') return
+    if (
+      !overview ||
+      !['fleet.desktop.v1', 'fleet.desktop.v2'].includes(overview.schema)
+    ) return
     const previous = previousRef.current
     previousRef.current = overview
     if (!previous) return
@@ -342,6 +345,39 @@ function normalizedSearch(value) {
     .toLowerCase()
 }
 
+function providerLabel(value) {
+  if (value === 'headscale') return 'Headscale'
+  if (value === 'tailscale') return 'Tailscale'
+  if (value === 'fake') return 'Fake provider'
+  return 'Provider'
+}
+
+export function buildFleetCanvasNodes(overview) {
+  const managed = Array.isArray(overview?.nodes)
+    ? overview.nodes.map(node => ({ ...node, kind: 'managed' }))
+    : []
+  const observed = Array.isArray(overview?.observed_nodes)
+    ? overview.observed_nodes
+        .filter(node => /^sha256:[0-9a-f]{64}$/.test(node?.observed_id ?? ''))
+        .map(node => ({
+          kind: 'observed',
+          stable_id: `observed-node-${node.observed_id.slice(7)}`,
+          naming: {
+            display_name: node.given_name || node.hostname || node.provider_node_id
+          },
+          provider: {
+            label: providerLabel(node.provider_kind),
+            kind: node.provider_kind,
+            instance_id: node.provider_instance_id,
+            node_id: node.provider_node_id,
+            network_id: node.network_id
+          },
+          observation: node
+        }))
+    : []
+  return [...managed, ...observed]
+}
+
 export function buildFleetGraph(nodes, storedPositions = {}) {
   const positions = sanitizeFleetPositions(storedPositions)
   const idCounts = new Map()
@@ -354,27 +390,41 @@ export function buildFleetGraph(nodes, storedPositions = {}) {
   const columns = Math.max(1, Math.ceil(Math.sqrt(ordered.length)))
   const graphNodes = ordered.map((node, index) => {
     const saved = positions[node.stable_id]
-    const status = statusFor(node)
+    const observed = node.kind === 'observed'
+    const status = observed
+      ? { key: 'observed', label: 'OBSERVED · UNMANAGED', tone: 'muted' }
+      : statusFor(node)
     const x = saved?.x ?? (index % columns) * NODE_STEP_X
     const y = saved?.y ?? Math.floor(index / columns) * NODE_STEP_Y
-    const searchText = normalizedSearch(
-      [
-        node.naming.display_name,
-        node.naming.alias,
-        node.naming.provider_name,
-        node.identity.source,
-        node.identity.network_id,
-        node.identity.device_id,
-        status.label,
-        ...node.operations
-      ]
-        .filter(Boolean)
-        .join(' ')
-    )
+    const searchValues = observed
+      ? [
+          node.naming.display_name,
+          node.provider.label,
+          node.provider.kind,
+          node.provider.network_id,
+          node.provider.instance_id,
+          node.provider.node_id,
+          node.observation.hostname,
+          ...node.observation.addresses,
+          ...node.observation.tags,
+          status.label
+        ]
+      : [
+          node.naming.display_name,
+          node.naming.alias,
+          node.naming.provider_name,
+          node.identity.source,
+          node.identity.network_id,
+          node.identity.device_id,
+          status.label,
+          ...node.operations
+        ]
+    const searchText = normalizedSearch(searchValues.filter(Boolean).join(' '))
     return {
       id: node.stable_id,
       label: node.naming.display_name,
       status,
+      detail: observed ? node.provider.label : formatCanvasCapacity(node.readiness),
       searchText,
       x,
       y,
@@ -384,8 +434,8 @@ export function buildFleetGraph(nodes, storedPositions = {}) {
     }
   })
 
-  // fleet.desktop.v1 currently provides no relationship authority. The graph
-  // engine supports edges, but the D2 adapter must remain edge-free until a
+  // fleet.desktop.v2 currently provides no relationship authority. The graph
+  // engine supports edges, but the adapter must remain edge-free until a
   // versioned Fleet relationship contract supplies real evidence.
   return { nodes: graphNodes, edges: [] }
 }
@@ -477,6 +527,7 @@ function statusColor(status) {
   if (status.key === 'ready') return 'var(--ui-green)'
   if (status.key === 'attention') return 'var(--ui-yellow)'
   if (status.key === 'inactive') return 'var(--ui-text-quaternary)'
+  if (status.key === 'observed') return 'var(--ui-accent)'
   return 'var(--ui-red)'
 }
 
@@ -532,7 +583,8 @@ function GraphNode({
   onPointerMove,
   onPointerEnd
 }) {
-  const capacityLabel = formatCanvasCapacity(node.source.readiness)
+  const detailLabel = node.detail
+  const identityLabel = node.source.kind === 'observed' ? 'Observed identity' : 'Stable identity'
 
   function focusSibling(event, offset, absolute = false) {
     const peers = [...event.currentTarget.parentElement.querySelectorAll('[data-fleet-node]')]
@@ -575,7 +627,7 @@ function GraphNode({
     role: 'treeitem',
     tabIndex: selected ? 0 : -1,
     'aria-selected': selected,
-    'aria-label': `${node.label}, ${node.status.label}, ${capacityLabel}, Stable identity ${node.id}`,
+    'aria-label': `${node.label}, ${node.status.label}, ${detailLabel}, ${identityLabel} ${node.id}`,
     'data-fleet-node': node.id,
     className: animated ? 'motion-safe:animate-pulse transition-opacity duration-300' : 'transition-opacity duration-300',
     onClick: event => {
@@ -597,7 +649,7 @@ function GraphNode({
     style: { cursor: 'grab', outline: 'none' },
     children: [
       jsx('title', {
-        children: `${node.label} — ${node.status.label} — Stable identity ${node.id}`
+        children: `${node.label} — ${node.status.label} — ${identityLabel} ${node.id}`
       }),
       jsx('rect', {
         width: node.width,
@@ -610,6 +662,7 @@ function GraphNode({
             ? 'var(--ui-text-primary)'
             : 'var(--ui-stroke-secondary)',
         strokeWidth: selected ? 3 : 1.5,
+        strokeDasharray: node.source.kind === 'observed' ? '6 4' : undefined,
         vectorEffect: 'non-scaling-stroke'
       }),
       jsx('circle', {
@@ -640,7 +693,7 @@ function GraphNode({
         y: 74,
         fill: 'var(--ui-text-tertiary)',
         fontSize: 11,
-        children: capacityLabel
+        children: detailLabel
       })
     ]
   })
@@ -942,6 +995,109 @@ function ReadinessLadder({ node }) {
   })
 }
 
+function observedValue(value) {
+  if (value == null) return 'Unknown'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  return String(value)
+}
+
+function ObservedNodeInspector({ node }) {
+  const observation = node.observation
+  return jsxs('aside', {
+    className: 'min-h-0 w-full shrink-0 overflow-auto rounded-lg border border-border bg-background p-4 lg:w-96',
+    'aria-label': `Observed node inspector for ${node.naming.display_name}`,
+    children: [
+      jsxs('div', {
+        className: 'mb-4 flex items-start justify-between gap-3',
+        children: [
+          jsxs('div', {
+            className: 'min-w-0',
+            children: [
+              jsx('p', {
+                className: 'text-xs font-semibold uppercase tracking-wide text-accent-foreground',
+                children: 'Observed · unmanaged'
+              }),
+              jsx('h2', {
+                className: 'truncate text-base font-semibold text-foreground',
+                children: node.naming.display_name
+              })
+            ]
+          }),
+          jsx(StatusDot, { tone: 'muted' })
+        ]
+      }),
+      jsxs('div', {
+        className: 'grid gap-4',
+        children: [
+          jsx('p', {
+            className: 'rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground',
+            children: 'Provider observation only. This node is not admitted to Fleet and has no Fleet readiness, alias, reservation, scheduler, or execution authority.'
+          }),
+          jsx(InspectorSection, {
+            title: 'Provider identity',
+            children: jsxs('dl', {
+              className: 'grid gap-2',
+              children: [
+                jsx(InspectorRow, { label: 'Provider', value: node.provider.label }),
+                jsx(InspectorRow, { label: 'Network', value: node.provider.network_id, mono: true }),
+                jsx(InspectorRow, { label: 'Instance', value: node.provider.instance_id, mono: true }),
+                jsx(InspectorRow, { label: 'Provider node', value: node.provider.node_id, mono: true }),
+                jsx(InspectorRow, { label: 'Observed ID', value: observation.observed_id, mono: true })
+              ]
+            })
+          }),
+          jsx(InspectorSection, {
+            title: 'Observation evidence',
+            children: jsxs('dl', {
+              className: 'grid gap-2',
+              children: [
+                jsx(InspectorRow, { label: 'Classification', value: observation.classification.replaceAll('_', ' ') }),
+                jsx(InspectorRow, { label: 'Online', value: observedValue(observation.online) }),
+                jsx(InspectorRow, { label: 'Expired', value: observedValue(observation.expired) }),
+                jsx(InspectorRow, { label: 'Last seen', value: observedValue(observation.last_seen_at) }),
+                jsx(InspectorRow, { label: 'First observed', value: observation.first_observed_at }),
+                jsx(InspectorRow, { label: 'Last observed', value: observation.last_observed_at }),
+                jsx(InspectorRow, { label: 'Snapshot', value: observation.snapshot_at })
+              ]
+            })
+          }),
+          jsx(InspectorSection, {
+            title: 'Provider metadata',
+            children: jsxs('dl', {
+              className: 'grid gap-2',
+              children: [
+                jsx(InspectorRow, {
+                  label: 'Addresses',
+                  value: observation.addresses.length ? observation.addresses.join(', ') : 'None observed',
+                  mono: true
+                }),
+                jsx(InspectorRow, {
+                  label: 'Tags',
+                  value: observation.tags.length ? observation.tags.join(', ') : 'None observed',
+                  mono: true
+                })
+              ]
+            })
+          }),
+          jsx('details', {
+            className: 'border-t border-border pt-3',
+            children: [
+              jsx('summary', {
+                className: 'cursor-pointer text-xs font-semibold text-foreground',
+                children: 'Technical details'
+              }),
+              jsx('pre', {
+                className: 'mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border p-2 text-[0.6875rem] text-muted-foreground',
+                children: JSON.stringify(observation, null, 2)
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  })
+}
+
 function NodeInspector({ node, ctx, refresh }) {
   const [alias, setAlias] = useState(node.naming.alias ?? '')
   const [mutation, setMutation] = useState({ state: 'idle', message: '' })
@@ -1181,6 +1337,7 @@ function NodeInspector({ node, ctx, refresh }) {
 
 const FILTERS = [
   ['all', 'All'],
+  ['observed', 'Observed'],
   ['ready', 'Ready'],
   ['attention', 'Attention'],
   ['awaiting', 'Awaiting evidence'],
@@ -1193,20 +1350,24 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
   const [positions, setPositions] = useState(() =>
     sanitizeFleetPositions(ctx.storage.get(LAYOUT_STORAGE_KEY, {}))
   )
-  const [selectedId, setSelectedId] = useState(overview.nodes[0]?.stable_id ?? null)
+  const canvasNodes = useMemo(
+    () => buildFleetCanvasNodes(overview),
+    [overview.nodes, overview.observed_nodes]
+  )
+  const [selectedId, setSelectedId] = useState(canvasNodes[0]?.stable_id ?? null)
   const positionsRef = useRef(positions)
   positionsRef.current = positions
 
   const graph = useMemo(
-    () => buildFleetGraph(overview.nodes, positions),
-    [overview.nodes, positions]
+    () => buildFleetGraph(canvasNodes, positions),
+    [canvasNodes, positions]
   )
   const visibleGraph = useMemo(
     () => filterFleetGraph(graph, query, filter),
     [filter, graph, query]
   )
   const selectedNode =
-    overview.nodes.find(node => node.stable_id === selectedId) ?? overview.nodes[0]
+    canvasNodes.find(node => node.stable_id === selectedId) ?? canvasNodes[0]
   const animatedIds = useMemo(
     () => new Set(activity.slice(0, 8).map(entry => entry.node_id)),
     [activity]
@@ -1238,8 +1399,8 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
             type: 'search',
             value: query,
             onChange: event => setQuery(event.target.value),
-            placeholder: 'Search Fleet nodes',
-            'aria-label': 'Search Fleet nodes',
+            placeholder: 'Search nodes and observations',
+            'aria-label': 'Search nodes and observations',
             className: 'h-9 min-w-56 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
           }),
           ...FILTERS.map(([key, label]) =>
@@ -1266,7 +1427,11 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
             setSelectedId,
             animatedIds
           }),
-          jsx(NodeInspector, { node: selectedNode, ctx, refresh })
+          selectedNode
+            ? selectedNode.kind === 'observed'
+              ? jsx(ObservedNodeInspector, { node: selectedNode })
+              : jsx(NodeInspector, { node: selectedNode, ctx, refresh })
+            : null
         ]
       }),
       jsxs('div', {
@@ -1276,7 +1441,8 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
             ['good', 'Ready'],
             ['warn', 'Needs attention'],
             ['bad', 'Awaiting evidence'],
-            ['muted', 'Inactive']
+            ['muted', 'Inactive'],
+            ['muted', 'Observed · unmanaged']
           ].map(([tone, label]) =>
             jsxs('span', {
               className: 'inline-flex items-center gap-1.5',
@@ -1338,7 +1504,10 @@ function FleetStatusChip({ ctx }) {
   if (!query.data) return jsxs('span', { className: 'inline-flex items-center gap-1.5 text-xs', children: [jsx(StatusDot, { tone: 'muted' }), 'Fleet unavailable'] })
   return jsxs('span', {
     className: 'inline-flex items-center gap-1.5 text-xs',
-    children: [jsx(StatusDot, { tone: query.data.summary.not_ready ? 'warn' : 'good' }), `Fleet ${query.data.summary.ready}/${query.data.summary.managed} ready`]
+    children: [
+      jsx(StatusDot, { tone: query.data.summary.not_ready ? 'warn' : 'good' }),
+      `Fleet ${query.data.summary.ready}/${query.data.summary.managed} ready · ${query.data.summary.observed_unmanaged} observed`
+    ]
   })
 }
 
@@ -1383,7 +1552,7 @@ function FleetPage({ ctx }) {
   }
 
   const overview = query.data
-  if (!overview.nodes.length) {
+  if (!buildFleetCanvasNodes(overview).length) {
     return jsxs('main', {
       className: 'flex h-full min-h-64 flex-col',
       children: [
@@ -1413,7 +1582,7 @@ function FleetPage({ ctx }) {
               jsx('h1', { className: 'text-base font-semibold text-foreground', children: 'Fleet Canvas' }),
               jsx('p', {
                 className: 'mt-1 text-xs text-muted-foreground',
-                children: 'Current managed-node readiness on a stable operator layout.'
+                children: 'Managed Fleet authority and distinct provider observations on a stable operator layout.'
               })
             ]
           }),
@@ -1421,6 +1590,7 @@ function FleetPage({ ctx }) {
             className: 'flex min-w-0 flex-wrap items-start justify-end gap-4',
             children: [
               jsx(SummaryItem, { label: 'Managed', value: overview.summary.managed }),
+              jsx(SummaryItem, { label: 'Observed', value: overview.summary.observed_unmanaged }),
               jsx(SummaryItem, { label: 'Alive', value: overview.summary.alive }),
               jsx(SummaryItem, { label: 'Ready', value: overview.summary.ready }),
               jsx(SummaryItem, { label: 'Needs attention', value: overview.summary.not_ready }),

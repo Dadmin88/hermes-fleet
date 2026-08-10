@@ -36,10 +36,18 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "ctx.storage.get(LAYOUT_STORAGE_KEY" in source
     assert "ctx.storage.set(LAYOUT_STORAGE_KEY" in source
     assert "function NodeInspector" in source
+    assert "function ObservedNodeInspector" in source
+    assert "Observed · unmanaged" in source
+    assert "Provider observation only." in source
+    assert "selectedNode.kind === 'observed'" in source
+    assert "observed-node-${node.observed_id.slice(7)}" in source
     assert "aria-label': 'Readiness ladder'" in source
     assert "method: 'PUT'" in source
     assert "method: 'DELETE'" in source
     assert "Clear local alias" in source
+    assert (
+        "['fleet.desktop.v1', 'fleet.desktop.v2'].includes(overview.schema)" in source
+    )
     assert "Resetting name" not in source
     assert "Name reset was rejected" not in source
     assert "Technical details" in source
@@ -55,7 +63,10 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "STATUSBAR_AREAS.right" in source
     assert "role: 'tree'" in source
     assert "role: 'treeitem'" in source
-    assert "Stable identity ${node.id}" in source
+    assert (
+        "node.source.kind === 'observed' ? 'Observed identity' : 'Stable identity'"
+        in source
+    )
     assert "ResizeObserver" in source
     assert "function GraphEdges" in source
     assert "edges: []" in source
@@ -306,6 +317,28 @@ const duplicateGraph = mod.buildFleetGraph([
   node('node-unique'),
   node('node-duplicate', { name: 'second' })
 ])
+const observed = {
+  observed_id: 'sha256:' + 'a'.repeat(64),
+  network_id: 'network-1',
+  provider_kind: 'headscale',
+  provider_instance_id: 'instance-1',
+  provider_node_id: 'provider-node-1',
+  hostname: 'observed-host',
+  given_name: 'Observed Worker',
+  addresses: ['100.64.0.9'],
+  tags: ['tag:worker'],
+  online: true,
+  expired: false,
+  classification: 'discovered_unmanaged',
+  first_observed_at: '2026-08-10T00:00:00+00:00',
+  last_observed_at: '2026-08-10T00:00:01+00:00',
+  snapshot_at: '2026-08-10T00:00:01+00:00'
+}
+const combinedNodes = mod.buildFleetCanvasNodes({
+  nodes: [node('managed-node', { ready: true })],
+  observed_nodes: [observed]
+})
+const combinedGraph = mod.buildFleetGraph(combinedNodes)
 const oversizedPositions = mod.sanitizeFleetPositions(Object.fromEntries(
   Array.from({ length: 257 }, (_, index) => [`node-${index}`, { x: index, y: index }])
 ))
@@ -336,6 +369,17 @@ console.log(JSON.stringify({
     item => Number.isFinite(item.x) && Number.isFinite(item.y)
   ),
   duplicateIds: duplicateGraph.nodes.map(item => item.id),
+  combined: combinedGraph.nodes.map(item => ({
+    id: item.id,
+    label: item.label,
+    kind: item.source.kind,
+    status: item.status.label,
+    detail: item.detail,
+    hasReadiness: 'readiness' in item.source,
+    hasOperations: 'operations' in item.source,
+    hasManaged: 'managed' in item.source
+  })),
+  combinedEdges: combinedGraph.edges,
   oversizedPositionCount: Object.keys(oversizedPositions).length
 }))
 """
@@ -375,6 +419,29 @@ console.log(JSON.stringify({
         "manyUnique": 256,
         "manyFinite": True,
         "duplicateIds": ["node-unique"],
+        "combined": [
+            {
+                "id": "managed-node",
+                "label": "managed-node",
+                "kind": "managed",
+                "status": "READY",
+                "detail": "No worker capacity",
+                "hasReadiness": True,
+                "hasOperations": True,
+                "hasManaged": True,
+            },
+            {
+                "id": "observed-node-" + "a" * 64,
+                "label": "Observed Worker",
+                "kind": "observed",
+                "status": "OBSERVED · UNMANAGED",
+                "detail": "Headscale",
+                "hasReadiness": False,
+                "hasOperations": False,
+                "hasManaged": False,
+            },
+        ],
+        "combinedEdges": [],
         "oversizedPositionCount": 0,
     }
 
