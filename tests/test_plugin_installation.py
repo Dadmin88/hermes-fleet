@@ -52,7 +52,7 @@ def _build_git_artifact(destination: Path) -> None:
     _run(
         ["git", "config", "user.email", "fleet-tests@example.invalid"], cwd=destination
     )
-    _run(["git", "add", "--all"], cwd=destination)
+    _run(["git", "add", "--force", "--all"], cwd=destination)
     _run(["git", "commit", "--quiet", "-m", "test plugin artifact"], cwd=destination)
 
 
@@ -85,6 +85,7 @@ def test_git_artifact_installs_and_registers_outside_source_checkout(
     assert (installed / "__init__.py").is_file()
     assert (installed / "dashboard" / "manifest.json").is_file()
     assert (installed / "dashboard" / "plugin_api.py").is_file()
+    assert (installed / "dashboard" / "dist" / "index.js").is_file()
     assert (installed / "desktop" / "plugin.js").is_file()
 
     inspection = _run(

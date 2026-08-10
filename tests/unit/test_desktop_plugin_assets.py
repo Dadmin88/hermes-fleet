@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "desktop" / "plugin.js"
+LEGACY_ENTRY = ROOT / "dashboard" / "dist" / "index.js"
 IMPORT_SPECIFIER = re.compile(r"(from\s*|import\s*\(\s*|import\s+)(['\"])([^'\"]+)\2")
 
 
@@ -102,3 +103,28 @@ console.log(JSON.stringify({ id: plugin.id, contributions: serializable }))
             },
         ],
     }
+
+
+def test_hidden_legacy_dashboard_entry_registers_without_visible_ui() -> None:
+    script = r"""
+import fs from 'node:fs'
+const registrations = []
+globalThis.window = {
+  __HERMES_PLUGINS__: {
+    register: (name, component) => registrations.push({ name, result: component() })
+  }
+}
+const source = fs.readFileSync(process.argv[1], 'utf8')
+const url = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+await import(url)
+console.log(JSON.stringify(registrations))
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(LEGACY_ENTRY)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [{"name": "hermes-fleet", "result": None}]

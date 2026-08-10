@@ -6,5 +6,6 @@
   "tab": {
     "hidden": true
   },
+  "entry": "dist/index.js",
   "api": "plugin_api.py"
 }
