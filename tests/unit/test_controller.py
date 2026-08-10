@@ -134,7 +134,7 @@ def test_controller_builds_each_initial_operation_without_transport_branching() 
                 now_ms=lambda: 10_000,
             )
         )
-        payload = json.loads(keryx.calls[0]["message"]["parts"][0]["text"])
+        payload = json.loads(keryx.calls[0]["message"][0]["parts"][0]["text"])
         assert payload["operation"] == operation
         assert payload["input"] == input_data
 
@@ -259,6 +259,9 @@ def test_high_level_controller_accepts_worker_inventory_response() -> None:
                 "max_workers": 1,
                 "available_worker_slots": 1,
             },
+            "profiles": [
+                {"name": "agency-backend-engineer", "version": "0.1.0"}
+            ],
             "resources": {
                 "cpu": None,
                 "ram": None,
