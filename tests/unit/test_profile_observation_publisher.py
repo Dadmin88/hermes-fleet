@@ -102,9 +102,7 @@ def test_publish_observation_scans_builds_and_publishes_off_event_loop(
 
     event_loop_thread = threading.get_ident()
     worker_threads: list[int] = []
-    expected_profiles = [
-        {"name": "agency-backend-engineer", "version": "0.1.0"}
-    ]
+    expected_profiles = [{"name": "agency-backend-engineer", "version": "0.1.0"}]
 
     def scan() -> list[dict[str, str]]:
         worker_threads.append(threading.get_ident())
