@@ -459,7 +459,7 @@ def _run_git_text(
 
 
 def _safe_checkout_root(path: Path) -> Path:
-    if type(path) is not Path or not path.is_absolute():
+    if not isinstance(path, Path) or not path.is_absolute():
         raise AgencySnapshotError("Agency checkout root is invalid")
     try:
         if path.is_symlink() or not path.is_dir():
