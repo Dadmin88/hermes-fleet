@@ -78,10 +78,7 @@ def scan_profile_distributions(
                 "installed Hermes profile inventory exceeds the bound"
             )
 
-    return [
-        {"name": name, "version": discovered[name]}
-        for name in sorted(discovered)
-    ]
+    return [{"name": name, "version": discovered[name]} for name in sorted(discovered)]
 
 
 def _read_distribution_identity(path: Path) -> tuple[str, str] | None:
@@ -139,7 +136,6 @@ def _valid_version(value: str) -> bool:
         0 < len(value) <= _MAX_VERSION_LENGTH
         and value.strip() == value
         and all(
-            32 < ord(character) < 127 and not character.isspace()
-            for character in value
+            32 < ord(character) < 127 and not character.isspace() for character in value
         )
     )
