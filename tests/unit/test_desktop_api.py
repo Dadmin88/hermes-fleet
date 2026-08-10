@@ -9,7 +9,11 @@ import pytest
 
 
 def _serve_once(
-    path: Path, response: dict | bytes, captured: list[dict]
+    path: Path,
+    response: dict | bytes,
+    captured: list[dict],
+    *,
+    trailing: bytes = b"",
 ) -> threading.Thread:
     ready = threading.Event()
 
@@ -30,7 +34,7 @@ def _serve_once(
                     if isinstance(response, bytes)
                     else json.dumps(response, separators=(",", ":")).encode()
                 )
-                connection.sendall(struct.pack("!I", len(encoded)) + encoded)
+                connection.sendall(struct.pack("!I", len(encoded)) + encoded + trailing)
 
     thread = threading.Thread(target=serve)
     thread.start()
@@ -193,6 +197,17 @@ def test_desktop_client_rejects_unknown_backend_fields(tmp_path):
     thread.join(timeout=2)
 
 
+def test_desktop_client_rejects_trailing_frame_bytes(tmp_path):
+    from hermes_fleet.desktop_api import DesktopApiClient
+
+    socket_path = tmp_path / "fleet.sock"
+    thread = _serve_once(socket_path, _response([]), [], trailing=b"JUNK")
+
+    with pytest.raises(RuntimeError, match="trailing Desktop frame bytes"):
+        DesktopApiClient(socket_path=socket_path).overview()
+    thread.join(timeout=2)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -224,3 +239,90 @@ def test_desktop_client_rejects_lone_surrogate_display_text(tmp_path):
     with pytest.raises(RuntimeError, match="invalid Desktop node"):
         DesktopApiClient(socket_path=socket_path).overview()
     thread.join(timeout=2)
+
+
+def test_desktop_alias_client_sends_generation_fenced_set_and_clear(tmp_path):
+    from hermes_fleet.desktop_api import DesktopApiClient
+
+    socket_path = tmp_path / "fleet.sock"
+    captured: list[dict] = []
+    thread = _serve_once(
+        socket_path,
+        {
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "set_alias",
+            "ok": True,
+            "result": {"outcome": "created"},
+        },
+        captured,
+    )
+    client = DesktopApiClient(socket_path=socket_path)
+    assert (
+        client.set_alias(
+            source="nodescale",
+            network_id="network-1",
+            device_id="node-a",
+            binding_generation="7",
+            alias="Workstation",
+        )
+        == "created"
+    )
+    thread.join(timeout=2)
+    assert captured == [
+        {
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "set_alias",
+            "selector": {
+                "source": "nodescale",
+                "network_id": "network-1",
+                "device_id": "node-a",
+            },
+            "binding_generation": "7",
+            "alias": "Workstation",
+        }
+    ]
+
+    captured = []
+    clear_socket_path = tmp_path / "fleet-clear.sock"
+    thread = _serve_once(
+        clear_socket_path,
+        {
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "clear_alias",
+            "ok": True,
+            "result": {"outcome": "cleared"},
+        },
+        captured,
+    )
+    clear_client = DesktopApiClient(socket_path=clear_socket_path)
+    assert (
+        clear_client.clear_alias(
+            source="nodescale",
+            network_id="network-1",
+            device_id="node-a",
+            binding_generation="7",
+        )
+        == "cleared"
+    )
+    thread.join(timeout=2)
+    assert captured[0]["kind"] == "clear_alias"
+    assert "alias" not in captured[0]
+
+
+@pytest.mark.parametrize(
+    "alias", ["", " padded", "padded ", "line\nbreak", "zero\u200bwidth"]
+)
+def test_desktop_alias_client_rejects_invalid_display_text_without_connecting(
+    tmp_path, alias
+):
+    from hermes_fleet.desktop_api import DesktopApiClient
+
+    client = DesktopApiClient(socket_path=tmp_path / "missing.sock")
+    with pytest.raises(ValueError, match="alias"):
+        client.set_alias(
+            source="nodescale",
+            network_id="network-1",
+            device_id="node-a",
+            binding_generation="1",
+            alias=alias,
+        )
