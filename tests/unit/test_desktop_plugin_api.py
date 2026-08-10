@@ -77,6 +77,7 @@ def test_overview_route_uses_authoritative_desktop_client(
     monkeypatch.setenv("FLEET_MANAGED_PROJECTION_SOCKET", str(socket_path))
     monkeypatch.delenv("NODESCALE_OBSERVATION_SOCKET", raising=False)
     monkeypatch.delenv("NODESCALE_OBSERVATION_NETWORK_ID", raising=False)
+    monkeypatch.setattr(module, "get_fleet_dir", lambda: tmp_path)
     managed = {
         "schema": "fleet.desktop.v1",
         "summary": {
