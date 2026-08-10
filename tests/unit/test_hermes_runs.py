@@ -249,7 +249,7 @@ def test_hermes_runs_client_confirms_exact_stop_before_reporting_deadline() -> N
     from hermes_fleet.hermes_runs import HermesRunDeadlineExceeded, HermesRunsClient
 
     api = _RunsAPI([{"status": "running"}])
-    api.stop_delay_seconds = 0.4
+    api.stop_delay_seconds = 0.1
     with api.serve() as endpoint:
         with pytest.raises(HermesRunDeadlineExceeded):
             HermesRunsClient(
@@ -280,11 +280,11 @@ def test_hermes_runs_client_treats_unconfirmed_deadline_stop_as_indeterminate(
         api_key="secret-token-for-test",
         poll_interval_seconds=0.001,
     )
-    requests: list[tuple[str, str]] = []
+    requests: list[tuple[str, str, float | None]] = []
 
     def request_json(method, path, document=None, *, timeout_seconds=None):
-        del document, timeout_seconds
-        requests.append((method, path))
+        del document
+        requests.append((method, path, timeout_seconds))
         if method == "GET":
             return 200, {"status": "running"}
         raise HermesRunError("stop was not confirmed")
@@ -294,7 +294,7 @@ def test_hermes_runs_client_treats_unconfirmed_deadline_stop_as_indeterminate(
     with pytest.raises(HermesRunIndeterminate, match="cancellation is indeterminate"):
         client.wait(run_id="run-test", timeout_seconds=0.001)
 
-    assert requests[-1] == ("POST", "/v1/runs/run-test/stop")
+    assert requests[-1] == ("POST", "/v1/runs/run-test/stop", 0.25)
 
 
 @pytest.mark.parametrize(

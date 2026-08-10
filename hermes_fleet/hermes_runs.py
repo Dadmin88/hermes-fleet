@@ -231,7 +231,7 @@ class HermesRunsClient:
     def _cancel_at_deadline(self, run_id: str) -> None:
         """Confirm exact-run cancellation outside the expired execution budget."""
         try:
-            self.stop(run_id)
+            self.stop(run_id, timeout_seconds=0.25)
         except HermesRunError:
             raise HermesRunIndeterminate(
                 "Hermes deadline cancellation is indeterminate"

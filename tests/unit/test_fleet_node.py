@@ -87,6 +87,7 @@ class _Hermes:
         self.start_timeouts: list[float | None] = []
         self.wait_calls: list[tuple[str, float]] = []
         self.stop_calls: list[str] = []
+        self.stop_timeouts: list[float | None] = []
 
     def health(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
         self.health_calls += 1
@@ -116,8 +117,8 @@ class _Hermes:
         return HermesRunResult(run_id=run_id, text="terminal answer")
 
     def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None:
-        del timeout_seconds
         self.stop_calls.append(run_id)
+        self.stop_timeouts.append(timeout_seconds)
 
 
 def _worker(
@@ -593,6 +594,36 @@ def test_fleet_node_rechecks_deadline_immediately_before_run_start(tmp_path) -> 
 
     assert hermes.start_calls == []
     assert incoming.failed == "Fleet Hermes submission is indeterminate"
+
+
+def test_fleet_node_bounds_stop_after_bound_run_deadline(tmp_path) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    binding_path = tmp_path / "bindings.db"
+    store = RunBindingStore(binding_path)
+    store.reserve("task-bound")
+    store.bind_run("task-bound", "run-bound")
+    operation = "fleet.hermes.run"
+    incoming = _IncomingTask(
+        _payload(operation),
+        operation,
+        task_id="task-bound",
+        metadata=_metadata(operation, fleet_deadline_ms="10020"),
+    )
+    hermes = _Hermes()
+    clock = iter((10_000, 10_021))
+
+    asyncio.run(
+        _worker(
+            hermes,
+            binding_path,
+            now_ms=lambda: next(clock),
+        ).handle_task(incoming)
+    )
+
+    assert incoming.failed == "Fleet task deadline has expired"
+    assert hermes.stop_calls == ["run-bound"]
+    assert hermes.stop_timeouts == [0.25]
 
 
 def test_fleet_node_normalizes_invalid_remote_envelopes(tmp_path) -> None:
