@@ -67,12 +67,16 @@ def scan_profile_distributions(
         name, version = identity
         current = discovered.get(name)
         if current is not None and current != version:
-            raise ProfileInventoryError(
-                f"conflicting installed versions for Hermes profile distribution {name!r}"
+            message = (
+                "conflicting installed versions for Hermes profile distribution "
+                f"{name!r}"
             )
+            raise ProfileInventoryError(message)
         discovered[name] = version
         if len(discovered) > max_profiles:
-            raise ProfileInventoryError("installed Hermes profile inventory exceeds the bound")
+            raise ProfileInventoryError(
+                "installed Hermes profile inventory exceeds the bound"
+            )
 
     return [
         {"name": name, "version": discovered[name]}
@@ -134,5 +138,8 @@ def _valid_version(value: str) -> bool:
     return (
         0 < len(value) <= _MAX_VERSION_LENGTH
         and value.strip() == value
-        and all(32 < ord(character) < 127 and not character.isspace() for character in value)
+        and all(
+            32 < ord(character) < 127 and not character.isspace()
+            for character in value
+        )
     )

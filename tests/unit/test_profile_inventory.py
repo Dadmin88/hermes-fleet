@@ -2,6 +2,11 @@ from pathlib import Path
 
 import pytest
 
+from hermes_fleet.profile_inventory import (
+    ProfileInventoryError,
+    scan_profile_distributions,
+)
+
 
 def _distribution(path: Path, *, name: str, version: str) -> None:
     path.mkdir(parents=True)
@@ -11,12 +16,18 @@ def _distribution(path: Path, *, name: str, version: str) -> None:
     )
 
 
-def test_profile_inventory_scans_only_distribution_profiles_in_canonical_order(tmp_path) -> None:
-    from hermes_fleet.profile_inventory import scan_profile_distributions
-
+def test_profile_inventory_scans_distribution_profiles_in_order(tmp_path) -> None:
     root = tmp_path / "profiles"
-    _distribution(root / "z-local-alias", name="agency-backend-engineer", version="0.1.0")
-    _distribution(root / "a-local-alias", name="agency-ai-engineer", version="0.1.0")
+    _distribution(
+        root / "z-local-alias",
+        name="agency-backend-engineer",
+        version="0.1.0",
+    )
+    _distribution(
+        root / "a-local-alias",
+        name="agency-ai-engineer",
+        version="0.1.0",
+    )
     (root / "plain-local-profile").mkdir()
     (root / "README.txt").write_text("not a profile", encoding="utf-8")
 
@@ -26,12 +37,18 @@ def test_profile_inventory_scans_only_distribution_profiles_in_canonical_order(t
     ]
 
 
-def test_profile_inventory_deduplicates_identical_distribution_aliases(tmp_path) -> None:
-    from hermes_fleet.profile_inventory import scan_profile_distributions
-
+def test_profile_inventory_deduplicates_identical_aliases(tmp_path) -> None:
     root = tmp_path / "profiles"
-    _distribution(root / "first", name="agency-backend-engineer", version="0.1.0")
-    _distribution(root / "second", name="agency-backend-engineer", version="0.1.0")
+    _distribution(
+        root / "first",
+        name="agency-backend-engineer",
+        version="0.1.0",
+    )
+    _distribution(
+        root / "second",
+        name="agency-backend-engineer",
+        version="0.1.0",
+    )
 
     assert scan_profile_distributions(root) == [
         {"name": "agency-backend-engineer", "version": "0.1.0"}
@@ -39,26 +56,31 @@ def test_profile_inventory_deduplicates_identical_distribution_aliases(tmp_path)
 
 
 def test_profile_inventory_fails_closed_on_conflicting_versions(tmp_path) -> None:
-    from hermes_fleet.profile_inventory import ProfileInventoryError, scan_profile_distributions
-
     root = tmp_path / "profiles"
-    _distribution(root / "first", name="agency-backend-engineer", version="0.1.0")
-    _distribution(root / "second", name="agency-backend-engineer", version="0.2.0")
+    _distribution(
+        root / "first",
+        name="agency-backend-engineer",
+        version="0.1.0",
+    )
+    _distribution(
+        root / "second",
+        name="agency-backend-engineer",
+        version="0.2.0",
+    )
 
     with pytest.raises(ProfileInventoryError, match="conflicting installed versions"):
         scan_profile_distributions(root)
 
 
 def test_profile_inventory_omits_malformed_and_unsafe_entries(tmp_path) -> None:
-    from hermes_fleet.profile_inventory import scan_profile_distributions
-
     root = tmp_path / "profiles"
     _distribution(root / "good", name="agency-code-reviewer", version="0.1.0")
 
     missing_version = root / "missing-version"
     missing_version.mkdir(parents=True)
     (missing_version / "distribution.yaml").write_text(
-        "name: agency-missing-version\n", encoding="utf-8"
+        "name: agency-missing-version\n",
+        encoding="utf-8",
     )
 
     invalid_name = root / "invalid-name"
@@ -84,14 +106,15 @@ def test_profile_inventory_omits_malformed_and_unsafe_entries(tmp_path) -> None:
 
 
 def test_profile_inventory_skips_symlinked_profiles_and_manifests(tmp_path) -> None:
-    from hermes_fleet.profile_inventory import scan_profile_distributions
-
     root = tmp_path / "profiles"
     root.mkdir()
     external = tmp_path / "external"
     _distribution(external / "profile", name="agency-external", version="0.1.0")
 
-    (root / "linked-profile").symlink_to(external / "profile", target_is_directory=True)
+    (root / "linked-profile").symlink_to(
+        external / "profile",
+        target_is_directory=True,
+    )
 
     linked_manifest_profile = root / "linked-manifest"
     linked_manifest_profile.mkdir()
@@ -103,8 +126,6 @@ def test_profile_inventory_skips_symlinked_profiles_and_manifests(tmp_path) -> N
 
 
 def test_profile_inventory_enforces_explicit_profile_bound(tmp_path) -> None:
-    from hermes_fleet.profile_inventory import ProfileInventoryError, scan_profile_distributions
-
     root = tmp_path / "profiles"
     _distribution(root / "one", name="agency-one", version="0.1.0")
     _distribution(root / "two", name="agency-two", version="0.1.0")
@@ -114,6 +135,4 @@ def test_profile_inventory_enforces_explicit_profile_bound(tmp_path) -> None:
 
 
 def test_missing_profiles_root_reports_empty_inventory(tmp_path) -> None:
-    from hermes_fleet.profile_inventory import scan_profile_distributions
-
     assert scan_profile_distributions(tmp_path / "missing") == []
