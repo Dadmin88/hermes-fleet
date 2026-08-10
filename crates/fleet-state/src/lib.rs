@@ -484,13 +484,7 @@ impl FleetStateStore {
         now_ms: u64,
         policy: ReadinessPolicy,
     ) -> Result<Vec<ProfileNodeCandidate>> {
-        self.find_profile_candidates_matching(
-            profile_name,
-            required_version,
-            None,
-            now_ms,
-            policy,
-        )
+        self.find_profile_candidates_matching(profile_name, required_version, None, now_ms, policy)
     }
 
     pub fn find_exact_profile_candidates(
