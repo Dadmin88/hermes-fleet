@@ -69,7 +69,7 @@ jobs:
               elif "pub struct ManagedNodeView" in ours and "pub struct ProfileNodeCandidate" in theirs and "pub struct ProfilePlacementCandidate" in theirs:
                   resolved = (
                       ours.rstrip()
-                      + "\n\n#[derive(Clone, Debug, Eq, PartialEq)]\n"
+                      + "\n}\n\n#[derive(Clone, Debug, Eq, PartialEq)]\n"
                       + theirs.lstrip()
                   )
               else:
