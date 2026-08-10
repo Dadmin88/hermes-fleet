@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 import stat
+from pathlib import Path
 from typing import Final
 
 _DEFAULT_PROFILES_ROOT: Final[Path] = Path.home() / ".hermes" / "profiles"
@@ -231,7 +231,10 @@ def _hash_stable_file(path: Path, expected_stat: object) -> str | None:
         return None
 
     stable_fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")
-    if any(getattr(expected_stat, field) != getattr(after, field) for field in stable_fields):
+    if any(
+        getattr(expected_stat, field) != getattr(after, field)
+        for field in stable_fields
+    ):
         return None
     if not stat.S_ISREG(after.st_mode):
         return None
