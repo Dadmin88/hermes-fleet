@@ -98,9 +98,7 @@ def test_observation_client_returns_bounded_readiness_inspection(tmp_path) -> No
             "max_workers": 1,
             "available_worker_slots": 1,
         },
-        "profiles": [
-            {"name": "agency-backend-engineer", "version": "0.1.0"}
-        ],
+        "profiles": [{"name": "agency-backend-engineer", "version": "0.1.0"}],
         "resources": {
             "cpu": None,
             "ram": None,
