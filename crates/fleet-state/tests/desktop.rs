@@ -47,6 +47,7 @@ fn observation() -> NodeObservation {
             active_workers: 1,
             max_workers: 3,
         },
+        profiles: Vec::new(),
         resources: ResourceObservation::default(),
     }
 }

@@ -64,6 +64,7 @@ fn observation_for_generation(
             active_workers,
             max_workers: 2,
         },
+        profiles: Vec::new(),
         resources: ResourceObservation::default(),
     }
 }

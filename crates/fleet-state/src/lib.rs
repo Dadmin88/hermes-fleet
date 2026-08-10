@@ -2,8 +2,8 @@
 //!
 //! This crate persists accepted managed projection, one current scheduling
 //! observation per managed node, and duplicate-safe Hermes run-binding truth.
-//! It deliberately contains no transport, scheduler, telemetry history, profile,
-//! Sentinel, or UI responsibilities.
+//! It deliberately contains no transport, scheduler, telemetry history, profile
+//! installation, Sentinel, or UI responsibilities.
 
 use std::{
     collections::BTreeSet,
@@ -14,9 +14,9 @@ use std::{
 
 use fleet_domain::{
     ApplyOutcome, FleetOperation, Generation, ManagedNodeState, ManagedOperation,
-    ManagedProjectionRecord, NodeObservation, NodeReadiness, ObservationRecord, ProjectionApply,
-    ProjectionDocument, ReadinessPolicy, RecoveryAction, RunBindingState, apply_projection,
-    evaluate_readiness,
+    ManagedProjectionRecord, NodeObservation, NodeReadiness, ObservationRecord, ProfilePresence,
+    ProjectionApply, ProjectionDocument, ReadinessPolicy, RecoveryAction, ResourceObservation,
+    RunBindingState, apply_projection, evaluate_readiness,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,9 @@ CREATE TABLE managed_node_aliases (
 const MAX_IDENTIFIER_CHARS: usize = 256;
 const MAX_OBSERVATION_FUTURE_SKEW_MS: u64 = 5_000;
 const MAX_RESULT_CHARS: usize = 65_536;
+const MAX_PROFILE_NAME_BYTES: usize = 128;
+const MAX_PROFILE_VERSION_BYTES: usize = 128;
+const PROFILE_CONTENT_DIGEST_BYTES: usize = 64;
 
 #[derive(Debug)]
 pub enum StateError {
@@ -220,6 +223,29 @@ pub struct ManagedNodeView {
     pub effective_operations: BTreeSet<FleetOperation>,
     pub operator_denied_operations: BTreeSet<FleetOperation>,
     pub operational: NodeOperationalView,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileNodeCandidate {
+    pub source: String,
+    pub network_id: String,
+    pub device_id: String,
+    pub profile_version: String,
+    pub profile_content_digest: Option<String>,
+    pub available_worker_slots: u32,
+    pub readiness: NodeReadiness,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfilePlacementCandidate {
+    pub source: String,
+    pub network_id: String,
+    pub device_id: String,
+    pub admission_generation: u64,
+    pub available_worker_slots: u32,
+    pub existing_profile: Option<ProfilePresence>,
+    pub resources: ResourceObservation,
+    pub readiness: NodeReadiness,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -694,6 +720,210 @@ impl FleetStateStore {
         Ok(nodes)
     }
 
+    pub fn find_profile_candidates(
+        &self,
+        profile_name: &str,
+        required_version: Option<&str>,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfileNodeCandidate>> {
+        self.find_profile_candidates_matching(profile_name, required_version, None, now_ms, policy)
+    }
+
+    pub fn find_exact_profile_candidates(
+        &self,
+        profile_name: &str,
+        required_version: Option<&str>,
+        required_content_digest: &str,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfileNodeCandidate>> {
+        validate_profile_content_digest(required_content_digest)?;
+        self.find_profile_candidates_matching(
+            profile_name,
+            required_version,
+            Some(required_content_digest),
+            now_ms,
+            policy,
+        )
+    }
+
+    fn find_profile_candidates_matching(
+        &self,
+        profile_name: &str,
+        required_version: Option<&str>,
+        required_content_digest: Option<&str>,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfileNodeCandidate>> {
+        validate_profile_query(profile_name, required_version)?;
+        if now_ms == 0 || now_ms > i64::MAX as u64 {
+            return Err(StateError::InvalidInput(
+                "inspection timestamp is outside the supported range",
+            ));
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let keys = {
+            let mut statement = transaction.prepare(
+                "SELECT source, network_id, device_id
+                 FROM managed_projections
+                 ORDER BY source, network_id, device_id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut candidates = Vec::new();
+        for (source, network_id, device_id) in keys {
+            let projection = load_projection(&transaction, &source, &network_id, &device_id)?;
+            let admission_generation = projection
+                .as_ref()
+                .map(|record| record.document.projection_generation.get());
+            let managed_state = managed_state(projection.as_ref());
+            if managed_state != ManagedNodeState::Active {
+                continue;
+            }
+
+            let observation = load_observation(&transaction, &source, &network_id, &device_id)?;
+            if observation.as_ref().is_some_and(|record| {
+                Some(record.observation.admission_generation) != admission_generation
+            }) {
+                return Err(StateError::CorruptState(
+                    "stored observation admission generation does not match projection",
+                ));
+            }
+            let Some(record) = observation else {
+                continue;
+            };
+            let readiness = evaluate_readiness(managed_state, Some(&record), now_ms, policy);
+            if !readiness.scheduler_ready {
+                continue;
+            }
+            let Some(profile) = record
+                .observation
+                .profiles
+                .iter()
+                .find(|profile| profile.name == profile_name)
+            else {
+                continue;
+            };
+            if required_version.is_some_and(|version| profile.version != version) {
+                continue;
+            }
+            if required_content_digest
+                .is_some_and(|digest| profile.content_digest.as_deref() != Some(digest))
+            {
+                continue;
+            }
+
+            candidates.push(ProfileNodeCandidate {
+                source,
+                network_id,
+                device_id,
+                profile_version: profile.version.clone(),
+                profile_content_digest: profile.content_digest.clone(),
+                available_worker_slots: record.observation.capacity.available_worker_slots(),
+                readiness,
+            });
+        }
+        transaction.commit()?;
+        Ok(candidates)
+    }
+
+    pub fn find_profile_placement_candidates(
+        &self,
+        profile_name: &str,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfilePlacementCandidate>> {
+        validate_profile_query(profile_name, None)?;
+        if now_ms == 0 || now_ms > i64::MAX as u64 {
+            return Err(StateError::InvalidInput(
+                "inspection timestamp is outside the supported range",
+            ));
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let keys = {
+            let mut statement = transaction.prepare(
+                "SELECT source, network_id, device_id
+                 FROM managed_projections
+                 ORDER BY source, network_id, device_id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut candidates = Vec::new();
+        for (source, network_id, device_id) in keys {
+            let projection = load_projection(&transaction, &source, &network_id, &device_id)?;
+            let admission_generation = projection
+                .as_ref()
+                .map(|record| record.document.projection_generation.get());
+            let managed_state = managed_state(projection.as_ref());
+            if managed_state != ManagedNodeState::Active {
+                continue;
+            }
+            let Some(admission_generation) = admission_generation else {
+                return Err(StateError::CorruptState(
+                    "active placement identity has no admission generation",
+                ));
+            };
+
+            let observation = load_observation(&transaction, &source, &network_id, &device_id)?;
+            if observation.as_ref().is_some_and(|record| {
+                record.observation.admission_generation != admission_generation
+            }) {
+                return Err(StateError::CorruptState(
+                    "stored observation admission generation does not match projection",
+                ));
+            }
+            let Some(record) = observation else {
+                continue;
+            };
+            let readiness = evaluate_readiness(managed_state, Some(&record), now_ms, policy);
+            if !readiness.scheduler_ready {
+                continue;
+            }
+            let existing_profile = record
+                .observation
+                .profiles
+                .iter()
+                .find(|profile| profile.name == profile_name)
+                .cloned();
+
+            candidates.push(ProfilePlacementCandidate {
+                source,
+                network_id,
+                device_id,
+                admission_generation,
+                available_worker_slots: record.observation.capacity.available_worker_slots(),
+                existing_profile,
+                resources: record.observation.resources.clone(),
+                readiness,
+            });
+        }
+        transaction.commit()?;
+        Ok(candidates)
+    }
+
     pub fn reserve_run(&self, task_id: &str) -> Result<RunReservation> {
         validate_identifier(task_id, "task ID")?;
         let mut connection = self.connect()?;
@@ -1004,7 +1234,13 @@ fn load_observation(
             let observation: NodeObservation = serde_json::from_value(value.clone())?;
             validate_observation(&observation, received_at_ms as u64)
                 .map_err(|_| StateError::CorruptState("persisted node observation is invalid"))?;
-            if serde_json::to_value(&observation)? != value
+            let mut canonical_value = value.clone();
+            if let serde_json::Value::Object(fields) = &mut canonical_value {
+                fields
+                    .entry("profiles".to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+            if serde_json::to_value(&observation)? != canonical_value
                 || observation.observed_at_ms != observed_at_ms as u64
             {
                 return Err(StateError::CorruptState(
@@ -1554,6 +1790,39 @@ fn validate_key(source: &str, network_id: &str, device_id: &str) -> Result<()> {
     }
     validate_identifier(network_id, "network ID")?;
     validate_identifier(device_id, "device ID")
+}
+
+fn validate_profile_query(profile_name: &str, required_version: Option<&str>) -> Result<()> {
+    let valid_name = !profile_name.is_empty()
+        && profile_name.len() <= MAX_PROFILE_NAME_BYTES
+        && !matches!(profile_name, "." | "..")
+        && profile_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    let valid_version = required_version.is_none_or(|version| {
+        !version.is_empty()
+            && version.len() <= MAX_PROFILE_VERSION_BYTES
+            && version.bytes().all(|byte| byte.is_ascii_graphic())
+    });
+    if !valid_name || !valid_version {
+        return Err(StateError::InvalidInput(
+            "profile query is not bounded canonical text",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_profile_content_digest(value: &str) -> Result<()> {
+    if value.len() != PROFILE_CONTENT_DIGEST_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(StateError::InvalidInput(
+            "profile content digest must be lowercase SHA-256 hexadecimal",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_identifier(value: &str, _label: &'static str) -> Result<()> {
