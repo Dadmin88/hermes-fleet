@@ -241,9 +241,7 @@ def test_alias_route_reports_generation_conflict_without_leaking_details(
     )
     with pytest.raises(HTTPException) as error:
         asyncio.run(
-            module.set_alias(
-                _stable_id("nodescale", "network-1", "node-a"), request
-            )
+            module.set_alias(_stable_id("nodescale", "network-1", "node-a"), request)
         )
     assert error.value.status_code == 409
     assert error.value.detail == "Fleet rejected the alias update."

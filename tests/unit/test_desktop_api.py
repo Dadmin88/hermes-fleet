@@ -34,9 +34,7 @@ def _serve_once(
                     if isinstance(response, bytes)
                     else json.dumps(response, separators=(",", ":")).encode()
                 )
-                connection.sendall(
-                    struct.pack("!I", len(encoded)) + encoded + trailing
-                )
+                connection.sendall(struct.pack("!I", len(encoded)) + encoded + trailing)
 
     thread = threading.Thread(target=serve)
     thread.start()
