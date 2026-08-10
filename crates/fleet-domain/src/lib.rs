@@ -543,6 +543,43 @@ pub struct ResourceObservation {
     pub gpu: Option<GpuObservation>,
 }
 
+const MAX_PROFILE_PRESENCE: usize = 256;
+const MAX_PROFILE_NAME_BYTES: usize = 128;
+const MAX_PROFILE_VERSION_BYTES: usize = 128;
+
+/// One installed Hermes profile distribution advertised by a Fleet node.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfilePresence {
+    pub name: String,
+    pub version: String,
+}
+
+impl ProfilePresence {
+    fn is_valid(&self) -> bool {
+        let name = self.name.as_str();
+        let version = self.version.as_str();
+        !name.is_empty()
+            && name.len() <= MAX_PROFILE_NAME_BYTES
+            && name != "."
+            && name != ".."
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+            })
+            && !version.is_empty()
+            && version.len() <= MAX_PROFILE_VERSION_BYTES
+            && version.bytes().all(|byte| byte.is_ascii_graphic())
+    }
+}
+
+fn profile_presence_is_valid(profiles: &[ProfilePresence]) -> bool {
+    profiles.len() <= MAX_PROFILE_PRESENCE
+        && profiles.iter().all(ProfilePresence::is_valid)
+        && profiles
+            .windows(2)
+            .all(|pair| pair[0].name.as_str() < pair[1].name.as_str())
+}
+
 /// One node-authored operational sample. Identity is deliberately absent; the
 /// strictly advancing projection generation fences the sample to one admission epoch.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -556,6 +593,8 @@ pub struct NodeObservation {
     pub worker: Availability,
     pub capacity: WorkerCapacity,
     #[serde(default)]
+    pub profiles: Vec<ProfilePresence>,
+    #[serde(default)]
     pub resources: ResourceObservation,
 }
 
@@ -567,6 +606,7 @@ impl NodeObservation {
         if self.admission_generation == 0
             || self.observed_at_ms == 0
             || !self.capacity.is_valid()
+            || !profile_presence_is_valid(&self.profiles)
             || self.resources.cpu.is_some_and(|value| !value.is_valid())
             || self.resources.ram.is_some_and(|value| !value.is_valid())
             || self
