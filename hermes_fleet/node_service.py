@@ -19,6 +19,7 @@ from .fleet_node import FleetNodeWorker
 from .hermes_runs import HermesRunsClient
 from .models import FleetDefaults, NodeConfig, _require_exact_type
 from .observation import ObservationClient, build_observation
+from .profile_inventory import scan_profile_distributions
 from .run_binding import RunBindingStore
 from .selection import select_nodes
 
@@ -355,6 +356,7 @@ async def _publish_observation(
     observed_at_ms = int(time.time() * 1_000)
 
     def build_and_publish() -> str:
+        profiles = scan_profile_distributions()
         sample = build_observation(
             admission_generation=admission_generation,
             hermes_health=health,
@@ -364,6 +366,7 @@ async def _publish_observation(
             keryx_available=keryx_available,
             worker_available=worker_available,
             now_ms=lambda: observed_at_ms,
+            profiles=profiles,
         )
         return observer.publish(sample)
 
