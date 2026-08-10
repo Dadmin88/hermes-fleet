@@ -45,6 +45,9 @@ fn profile(name: &str, version: &str) -> ProfilePresence {
     }
 }
 
+// Test-only constructor keeps each readiness layer explicit so the exclusion
+// matrix below shows which single layer made a candidate ineligible.
+#[allow(clippy::too_many_arguments)]
 fn observation(
     admission_generation: u64,
     observed_at_ms: u64,
