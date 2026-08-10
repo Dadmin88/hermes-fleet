@@ -59,7 +59,13 @@ jobs:
               theirs = text[theirs_start:finish]
               hunks.append((ours, theirs))
 
-              if "Generation" in ours and "ProfilePresence" in theirs and "ResourceObservation" in theirs:
+              if (
+                  "Generation" in ours
+                  and "ProfilePresence" in theirs
+                  and "ResourceObservation" in theirs
+                  and "pub struct" not in ours
+                  and "pub struct" not in theirs
+              ):
                   resolved = (
                       "    ApplyOutcome, FleetOperation, Generation, ManagedNodeState, ManagedOperation,\n"
                       "    ManagedProjectionRecord, NodeObservation, NodeReadiness, ObservationRecord, ProfilePresence,\n"
@@ -96,9 +102,6 @@ jobs:
             git diff --name-only --diff-filter=U >&2
             exit 1
           }
-
-          echo "--- resolved fleet-state region ---"
-          nl -ba crates/fleet-state/src/lib.rs | sed -n '190,260p'
 
           cargo fmt --all
           node --check desktop/plugin.js
