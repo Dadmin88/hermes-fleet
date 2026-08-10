@@ -97,20 +97,9 @@ fn add_active_node(store: &FleetStateStore, device_id: &str) {
         .unwrap();
 }
 
-fn record(
-    store: &FleetStateStore,
-    device_id: &str,
-    sample: NodeObservation,
-    received_at_ms: u64,
-) {
+fn record(store: &FleetStateStore, device_id: &str, sample: NodeObservation, received_at_ms: u64) {
     store
-        .record_observation(
-            "nodescale",
-            "network-1",
-            device_id,
-            sample,
-            received_at_ms,
-        )
+        .record_observation("nodescale", "network-1", device_id, sample, received_at_ms)
         .unwrap();
 }
 
@@ -135,12 +124,7 @@ fn returns_all_ready_matching_nodes_in_deterministic_identity_order() {
     }
 
     let candidates = store
-        .find_profile_candidates(
-            "agency-backend-engineer",
-            None,
-            1_200,
-            policy(),
-        )
+        .find_profile_candidates("agency-backend-engineer", None, 1_200, policy())
         .unwrap();
 
     assert_eq!(candidates.len(), 2);
@@ -183,12 +167,7 @@ fn filters_by_exact_version_without_substituting_another_profile() {
     );
 
     let any_version = store
-        .find_profile_candidates(
-            "agency-backend-engineer",
-            None,
-            1_200,
-            policy(),
-        )
+        .find_profile_candidates("agency-backend-engineer", None, 1_200, policy())
         .unwrap();
     assert_eq!(
         any_version
@@ -199,12 +178,7 @@ fn filters_by_exact_version_without_substituting_another_profile() {
     );
 
     let exact = store
-        .find_profile_candidates(
-            "agency-backend-engineer",
-            Some("0.2.0"),
-            1_200,
-            policy(),
-        )
+        .find_profile_candidates("agency-backend-engineer", Some("0.2.0"), 1_200, policy())
         .unwrap();
     assert_eq!(exact.len(), 1);
     assert_eq!(exact[0].device_id, "backend-new");
@@ -212,12 +186,7 @@ fn filters_by_exact_version_without_substituting_another_profile() {
 
     assert!(
         store
-            .find_profile_candidates(
-                "agency-backend-engineer",
-                Some("9.9.9"),
-                1_200,
-                policy(),
-            )
+            .find_profile_candidates("agency-backend-engineer", Some("9.9.9"), 1_200, policy(),)
             .unwrap()
             .is_empty()
     );
