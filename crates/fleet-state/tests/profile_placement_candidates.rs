@@ -6,7 +6,11 @@ use tempfile::tempdir;
 const DIGEST_A: &str = "7a9480c8d1d3e34ee64f66cfc8c06d7bfdcc6f9c7fdeee6d433cbdb637259b0f";
 const DIGEST_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-fn projection(device_id: &str, operation: &str, generation: u64) -> fleet_domain::ProjectionDocument {
+fn projection(
+    device_id: &str,
+    operation: &str,
+    generation: u64,
+) -> fleet_domain::ProjectionDocument {
     let generation = generation.to_string();
     let mut document: fleet_domain::ProjectionDocument = serde_json::from_value(json!({
         "source": "nodescale",
@@ -135,17 +139,10 @@ fn returns_all_ready_targets_with_existing_same_name_profile_and_resources() {
         requested
     );
     assert_eq!(
-        digestless
-            .existing_profile
-            .as_ref()
-            .unwrap()
-            .content_digest,
+        digestless.existing_profile.as_ref().unwrap().content_digest,
         None
     );
-    assert_eq!(
-        digestless.resources.cpu.as_ref().unwrap().logical_cores,
-        8
-    );
+    assert_eq!(digestless.resources.cpu.as_ref().unwrap().logical_cores, 8);
     assert_eq!(
         digestless.resources.ram.as_ref().unwrap().available_bytes,
         8_000_000_000
