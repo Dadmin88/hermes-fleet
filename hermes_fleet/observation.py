@@ -23,6 +23,7 @@ _U64_MAX = (1 << 64) - 1
 _MAX_PROFILE_COUNT = 256
 _MAX_PROFILE_NAME_BYTES = 128
 _MAX_PROFILE_VERSION_BYTES = 128
+_PROFILE_CONTENT_DIGEST_BYTES = 64
 _READINESS_KEYS = frozenset(
     {
         "managed_state",
@@ -245,10 +246,14 @@ def _normalize_profiles(value: object) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
     previous_name: str | None = None
     for item in value:
-        if type(item) is not dict or set(item) != {"name", "version"}:
+        if type(item) is not dict or set(item) not in (
+            {"name", "version"},
+            {"name", "version", "content_digest"},
+        ):
             raise ValueError("profile presence fields are invalid")
         name = item["name"]
         version = item["version"]
+        content_digest = item.get("content_digest")
         if (
             type(name) is not str
             or not 0 < len(name) <= _MAX_PROFILE_NAME_BYTES
@@ -267,10 +272,24 @@ def _normalize_profiles(value: object) -> list[dict[str, str]]:
                 or not 32 < ord(character) < 127
                 for character in version
             )
+            or (
+                content_digest is not None
+                and (
+                    type(content_digest) is not str
+                    or len(content_digest) != _PROFILE_CONTENT_DIGEST_BYTES
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in content_digest
+                    )
+                )
+            )
             or (previous_name is not None and name <= previous_name)
         ):
             raise ValueError("profile presence identity is invalid")
-        normalized.append({"name": name, "version": version})
+        profile = {"name": name, "version": version}
+        if content_digest is not None:
+            profile["content_digest"] = content_digest
+        normalized.append(profile)
         previous_name = name
     return normalized
 
