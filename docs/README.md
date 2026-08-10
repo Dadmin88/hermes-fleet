@@ -8,6 +8,8 @@ This directory contains the durable public documentation for Hermes Fleet. It de
 - [Deployment](deployment.md) — generic service topology, configuration, rollout, verification, and rollback guidance.
 - [Managed projection V1](managed-projection-v1.md) — authenticated local Nodescale-to-Fleet managed-state contract.
 - [Node observations and scheduler readiness](node-readiness.md) — layered liveness, freshness, capacity, reason codes, and operator configuration.
+- [Fleet Desktop D1](desktop.md) — native Hermes Desktop packaging, real-state projection, installation, and troubleshooting.
+- [Fleet Canvas topology](canvas.md) — truthful node graph, stable local layout, controls, accessibility, and edge provenance boundary.
 - [Integration verification](smoke-test.md) — repeatable two-node checks for direct communication, deliberate execution, deadlines, and trust boundaries.
 
 ## Other repository references

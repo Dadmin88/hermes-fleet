@@ -13,18 +13,19 @@ use std::{
 };
 
 use fleet_domain::{
-    ApplyOutcome, FleetOperation, ManagedNodeState, ManagedOperation, ManagedProjectionRecord,
-    NodeObservation, NodeReadiness, ObservationRecord, ProfilePresence, ProjectionApply,
-    ProjectionDocument, ReadinessPolicy, RecoveryAction, ResourceObservation, RunBindingState,
-    apply_projection, evaluate_readiness,
+    ApplyOutcome, FleetOperation, Generation, ManagedNodeState, ManagedOperation,
+    ManagedProjectionRecord, NodeObservation, NodeReadiness, ObservationRecord, ProfilePresence,
+    ProjectionApply, ProjectionDocument, ReadinessPolicy, RecoveryAction, ResourceObservation,
+    RunBindingState, apply_projection, evaluate_readiness,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const MIGRATION_1: &str = include_str!("../migrations/0001_fleet_state.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_node_observations.sql");
 const MIGRATION_3: &str = include_str!("../migrations/0003_admission_generation.sql");
+const MIGRATION_4: &str = include_str!("../migrations/0004_managed_node_aliases.sql");
 const FLEET_STATE_SCHEMA_V1_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 1)
@@ -33,9 +34,13 @@ const FLEET_STATE_SCHEMA_V2_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 2)
 ) STRICT";
-const FLEET_STATE_SCHEMA_SQL: &str = "
+const FLEET_STATE_SCHEMA_V3_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 3)
+) STRICT";
+const FLEET_STATE_SCHEMA_SQL: &str = "
+CREATE TABLE fleet_state_schema (
+    version INTEGER PRIMARY KEY CHECK (version = 4)
 ) STRICT";
 const MANAGED_PROJECTIONS_SQL: &str = "
 CREATE TABLE managed_projections (
@@ -71,6 +76,20 @@ CREATE TABLE node_observations (
     observed_at_ms INTEGER NOT NULL CHECK (observed_at_ms > 0),
     received_at_ms INTEGER NOT NULL CHECK (received_at_ms > 0),
     observation_json TEXT NOT NULL CHECK (json_valid(observation_json)),
+    PRIMARY KEY (source, network_id, device_id),
+    FOREIGN KEY (source, network_id, device_id)
+        REFERENCES managed_projections(source, network_id, device_id)
+        ON UPDATE CASCADE ON DELETE CASCADE
+) STRICT";
+const MANAGED_NODE_ALIASES_SQL: &str = "
+CREATE TABLE managed_node_aliases (
+    source TEXT NOT NULL,
+    network_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    binding_generation TEXT NOT NULL,
+    alias TEXT NOT NULL
+        CHECK (length(alias) BETWEEN 1 AND 128)
+        CHECK (alias = trim(alias)),
     PRIMARY KEY (source, network_id, device_id),
     FOREIGN KEY (source, network_id, device_id)
         REFERENCES managed_projections(source, network_id, device_id)
@@ -160,6 +179,21 @@ pub enum ObservationOutcome {
     Conflict,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AliasSetOutcome {
+    Created,
+    Replaced,
+    Unchanged,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AliasClearOutcome {
+    Cleared,
+    AlreadyClear,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservationApply {
     pub outcome: ObservationOutcome,
@@ -173,6 +207,22 @@ pub struct NodeOperationalView {
     pub observation: Option<ObservationRecord>,
     pub available_worker_slots: Option<u32>,
     pub readiness: NodeReadiness,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedNodeView {
+    pub source: String,
+    pub network_id: String,
+    pub device_id: String,
+    pub alias: Option<String>,
+    pub projection_generation: Generation,
+    pub membership_generation: Generation,
+    pub binding_generation: Generation,
+    pub managed_state: ManagedNodeState,
+    pub generated_operations: BTreeSet<FleetOperation>,
+    pub effective_operations: BTreeSet<FleetOperation>,
+    pub operator_denied_operations: BTreeSet<FleetOperation>,
+    pub operational: NodeOperationalView,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,6 +302,9 @@ impl FleetStateStore {
         let applied = apply_projection(current.as_ref(), desired.clone())
             .map_err(|_| StateError::InvalidInput("generated authority is invalid"))?;
         if applied.outcome == ApplyOutcome::Applied {
+            let binding_changed = current.as_ref().is_some_and(|record| {
+                record.document.binding_generation != desired.binding_generation
+            });
             let document_json = serde_json::to_string(&desired)?;
             transaction.execute(
                 "INSERT INTO managed_projections (
@@ -278,6 +331,13 @@ impl FleetStateStore {
                  WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
                 params![desired.source, desired.network_id, desired.device_id],
             )?;
+            if binding_changed || desired.operation == ManagedOperation::Remove {
+                transaction.execute(
+                    "DELETE FROM managed_node_aliases
+                     WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
+                    params![desired.source, desired.network_id, desired.device_id],
+                )?;
+            }
         }
         transaction.commit()?;
         Ok(applied)
@@ -291,37 +351,153 @@ impl FleetStateStore {
     ) -> Result<ProjectionView> {
         validate_key(source, network_id, device_id)?;
         let connection = self.connect()?;
-        let generated = load_projection(&connection, source, network_id, device_id)?;
-        let mut statement = connection.prepare(
-            "SELECT operation FROM operator_projection_denies
-             WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
-             ORDER BY operation",
-        )?;
-        let denied = statement
-            .query_map(params![source, network_id, device_id], |row| {
-                row.get::<_, String>(0)
-            })?
-            .map(|value| {
-                let value = value?;
-                FleetOperation::parse(&value).map_err(|_| rusqlite::Error::InvalidQuery)
-            })
-            .collect::<std::result::Result<BTreeSet<_>, _>>()?;
-        let effective_operations = generated
+        inspect_projection_from(&connection, source, network_id, device_id)
+    }
+
+    pub fn inspect_node_alias(
+        &self,
+        source: &str,
+        network_id: &str,
+        device_id: &str,
+    ) -> Result<Option<String>> {
+        validate_key(source, network_id, device_id)?;
+        let connection = self.connect()?;
+        let projection = load_projection(&connection, source, network_id, device_id)?;
+        let expected_binding_generation = if matches!(
+            managed_state(projection.as_ref()),
+            ManagedNodeState::Unknown | ManagedNodeState::Removed
+        ) {
+            None
+        } else {
+            Some(
+                projection
+                    .as_ref()
+                    .map(|record| record.document.binding_generation.get())
+                    .ok_or(StateError::CorruptState(
+                        "managed alias identity has no projection",
+                    ))?,
+            )
+        };
+        load_validated_alias(
+            &connection,
+            source,
+            network_id,
+            device_id,
+            expected_binding_generation,
+        )
+    }
+
+    pub fn set_node_alias(
+        &self,
+        source: &str,
+        network_id: &str,
+        device_id: &str,
+        expected_binding_generation: u64,
+        alias: &str,
+    ) -> Result<AliasSetOutcome> {
+        validate_key(source, network_id, device_id)?;
+        validate_alias(alias)?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let projection = load_projection(&transaction, source, network_id, device_id)?;
+        if matches!(
+            managed_state(projection.as_ref()),
+            ManagedNodeState::Unknown | ManagedNodeState::Removed
+        ) {
+            return Err(StateError::InvalidTransition(
+                "alias identity is not a managed node",
+            ));
+        }
+        let binding_generation = projection
             .as_ref()
-            .filter(|record| record.document.operation == ManagedOperation::Upsert)
-            .map(|record| {
-                record
-                    .document
-                    .generated_operations
-                    .difference(&denied)
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(ProjectionView {
-            generated,
-            effective_operations,
-            operator_denied_operations: denied,
+            .map(|record| record.document.binding_generation.get())
+            .ok_or(StateError::CorruptState(
+                "managed alias identity has no projection",
+            ))?;
+        if expected_binding_generation == 0 || expected_binding_generation != binding_generation {
+            return Err(StateError::InvalidTransition(
+                "alias binding generation is stale",
+            ));
+        }
+        let binding_generation = binding_generation.to_string();
+        let current = transaction
+            .query_row(
+                "SELECT binding_generation, alias FROM managed_node_aliases
+                 WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
+                params![source, network_id, device_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let outcome = match current.as_ref() {
+            Some((generation, current_alias))
+                if generation == &binding_generation && current_alias == alias =>
+            {
+                AliasSetOutcome::Unchanged
+            }
+            Some(_) => AliasSetOutcome::Replaced,
+            None => AliasSetOutcome::Created,
+        };
+        if outcome != AliasSetOutcome::Unchanged {
+            transaction.execute(
+                "INSERT INTO managed_node_aliases
+                 (source, network_id, device_id, binding_generation, alias)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(source, network_id, device_id) DO UPDATE SET
+                    binding_generation = excluded.binding_generation,
+                    alias = excluded.alias",
+                params![source, network_id, device_id, binding_generation, alias],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(outcome)
+    }
+
+    pub fn clear_node_alias(
+        &self,
+        source: &str,
+        network_id: &str,
+        device_id: &str,
+        expected_binding_generation: u64,
+    ) -> Result<AliasClearOutcome> {
+        validate_key(source, network_id, device_id)?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let projection = load_projection(&transaction, source, network_id, device_id)?;
+        if matches!(
+            managed_state(projection.as_ref()),
+            ManagedNodeState::Unknown | ManagedNodeState::Removed
+        ) {
+            return Err(StateError::InvalidTransition(
+                "alias identity is not a managed node",
+            ));
+        }
+        let binding_generation = projection
+            .as_ref()
+            .map(|record| record.document.binding_generation.get())
+            .ok_or(StateError::CorruptState(
+                "managed alias identity has no projection",
+            ))?;
+        if expected_binding_generation == 0 || expected_binding_generation != binding_generation {
+            return Err(StateError::InvalidTransition(
+                "alias binding generation is stale",
+            ));
+        }
+        let changed = transaction.execute(
+            "DELETE FROM managed_node_aliases
+             WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
+               AND binding_generation = ?4",
+            params![
+                source,
+                network_id,
+                device_id,
+                binding_generation.to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(if changed == 0 {
+            AliasClearOutcome::AlreadyClear
+        } else {
+            AliasClearOutcome::Cleared
         })
     }
 
@@ -463,31 +639,85 @@ impl FleetStateStore {
         }
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let projection = load_projection(&transaction, source, network_id, device_id)?;
-        let admission_generation = projection
-            .as_ref()
-            .map(|record| record.document.projection_generation.get());
-        let managed_state = managed_state(projection.as_ref());
-        let observation = load_observation(&transaction, source, network_id, device_id)?;
-        if observation.as_ref().is_some_and(|record| {
-            Some(record.observation.admission_generation) != admission_generation
-        }) {
-            return Err(StateError::CorruptState(
-                "stored observation admission generation does not match projection",
+        let view = inspect_node_from(&transaction, source, network_id, device_id, now_ms, policy)?;
+        transaction.commit()?;
+        Ok(view)
+    }
+
+    pub fn list_managed_nodes(
+        &self,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ManagedNodeView>> {
+        if now_ms == 0 || now_ms > i64::MAX as u64 {
+            return Err(StateError::InvalidInput(
+                "inspection timestamp is outside the supported range",
             ));
         }
-        let available_worker_slots = observation
-            .as_ref()
-            .map(|record| record.observation.capacity.available_worker_slots());
-        let readiness = evaluate_readiness(managed_state, observation.as_ref(), now_ms, policy);
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let keys = {
+            let mut statement = transaction.prepare(
+                "SELECT source, network_id, device_id FROM managed_projections
+                 ORDER BY source, network_id, device_id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut nodes = Vec::with_capacity(keys.len());
+        for (source, network_id, device_id) in keys {
+            let projection =
+                inspect_projection_from(&transaction, &source, &network_id, &device_id)?;
+            let record = projection.generated.ok_or(StateError::CorruptState(
+                "listed managed projection disappeared",
+            ))?;
+            let operational = inspect_node_from(
+                &transaction,
+                &source,
+                &network_id,
+                &device_id,
+                now_ms,
+                policy,
+            )?;
+            let document = record.document;
+            let alias = load_validated_alias(
+                &transaction,
+                &source,
+                &network_id,
+                &device_id,
+                if matches!(
+                    operational.managed_state,
+                    ManagedNodeState::Unknown | ManagedNodeState::Removed
+                ) {
+                    None
+                } else {
+                    Some(document.binding_generation.get())
+                },
+            )?;
+            nodes.push(ManagedNodeView {
+                source,
+                network_id,
+                device_id,
+                alias,
+                projection_generation: document.projection_generation,
+                membership_generation: document.membership_generation,
+                binding_generation: document.binding_generation,
+                managed_state: operational.managed_state,
+                generated_operations: document.generated_operations,
+                effective_operations: projection.effective_operations,
+                operator_denied_operations: projection.operator_denied_operations,
+                operational,
+            });
+        }
         transaction.commit()?;
-        Ok(NodeOperationalView {
-            managed_state,
-            admission_generation,
-            observation,
-            available_worker_slots,
-            readiness,
-        })
+        Ok(nodes)
     }
 
     pub fn find_profile_candidates(
@@ -836,6 +1066,9 @@ impl FleetStateStore {
                 require_v2_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_3)?;
                 transaction.pragma_update(None, "user_version", 3)?;
+                require_v3_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_4)?;
+                transaction.pragma_update(None, "user_version", 4)?;
             }
             1 => {
                 require_v1_schema(&transaction)?;
@@ -844,11 +1077,22 @@ impl FleetStateStore {
                 require_v2_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_3)?;
                 transaction.pragma_update(None, "user_version", 3)?;
+                require_v3_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_4)?;
+                transaction.pragma_update(None, "user_version", 4)?;
             }
             2 => {
                 require_v2_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_3)?;
                 transaction.pragma_update(None, "user_version", 3)?;
+                require_v3_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_4)?;
+                transaction.pragma_update(None, "user_version", 4)?;
+            }
+            3 => {
+                require_v3_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_4)?;
+                transaction.pragma_update(None, "user_version", 4)?;
             }
             SCHEMA_VERSION => {}
             _ => return Err(StateError::UnsupportedSchema(version)),
@@ -1011,6 +1255,81 @@ fn load_observation(
         .transpose()
 }
 
+fn inspect_projection_from(
+    connection: &Connection,
+    source: &str,
+    network_id: &str,
+    device_id: &str,
+) -> Result<ProjectionView> {
+    let generated = load_projection(connection, source, network_id, device_id)?;
+    let mut statement = connection.prepare(
+        "SELECT operation FROM operator_projection_denies
+         WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
+         ORDER BY operation",
+    )?;
+    let denied = statement
+        .query_map(params![source, network_id, device_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|value| {
+            let value = value?;
+            FleetOperation::parse(&value).map_err(|_| rusqlite::Error::InvalidQuery)
+        })
+        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+    let effective_operations = generated
+        .as_ref()
+        .filter(|record| record.document.operation == ManagedOperation::Upsert)
+        .map(|record| {
+            record
+                .document
+                .generated_operations
+                .difference(&denied)
+                .copied()
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ProjectionView {
+        generated,
+        effective_operations,
+        operator_denied_operations: denied,
+    })
+}
+
+fn inspect_node_from(
+    connection: &Connection,
+    source: &str,
+    network_id: &str,
+    device_id: &str,
+    now_ms: u64,
+    policy: ReadinessPolicy,
+) -> Result<NodeOperationalView> {
+    let projection = load_projection(connection, source, network_id, device_id)?;
+    let admission_generation = projection
+        .as_ref()
+        .map(|record| record.document.projection_generation.get());
+    let managed_state = managed_state(projection.as_ref());
+    let observation = load_observation(connection, source, network_id, device_id)?;
+    if observation
+        .as_ref()
+        .is_some_and(|record| Some(record.observation.admission_generation) != admission_generation)
+    {
+        return Err(StateError::CorruptState(
+            "stored observation admission generation does not match projection",
+        ));
+    }
+    let available_worker_slots = observation
+        .as_ref()
+        .map(|record| record.observation.capacity.available_worker_slots());
+    let readiness = evaluate_readiness(managed_state, observation.as_ref(), now_ms, policy);
+    Ok(NodeOperationalView {
+        managed_state,
+        admission_generation,
+        observation,
+        available_worker_slots,
+        readiness,
+    })
+}
+
 fn managed_state(record: Option<&ManagedProjectionRecord>) -> ManagedNodeState {
     match record.map(|record| record.document.operation) {
         None => ManagedNodeState::Unknown,
@@ -1118,6 +1437,10 @@ fn require_v2_schema(connection: &Connection) -> Result<()> {
     require_complete_schema(connection, 2, FLEET_STATE_SCHEMA_V2_SQL)
 }
 
+fn require_v3_schema(connection: &Connection) -> Result<()> {
+    require_complete_schema(connection, 3, FLEET_STATE_SCHEMA_V3_SQL)
+}
+
 fn require_ready_schema(connection: &Connection) -> Result<()> {
     require_complete_schema(connection, SCHEMA_VERSION, FLEET_STATE_SCHEMA_SQL)
 }
@@ -1134,15 +1457,25 @@ fn require_complete_schema(
     let tables = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    if tables
-        != [
+    let expected_tables = if expected_version >= 4 {
+        vec![
+            "fleet_state_schema",
+            "managed_node_aliases",
+            "managed_projections",
+            "node_observations",
+            "operator_projection_denies",
+            "run_bindings",
+        ]
+    } else {
+        vec![
             "fleet_state_schema",
             "managed_projections",
             "node_observations",
             "operator_projection_denies",
             "run_bindings",
         ]
-    {
+    };
+    if tables != expected_tables {
         return Err(StateError::CorruptState(
             "fleet state schema has unexpected tables",
         ));
@@ -1175,6 +1508,19 @@ fn require_complete_schema(
             ("document_json", "TEXT", 0),
         ],
     )?;
+    if expected_version >= 4 {
+        require_table_shape(
+            connection,
+            "managed_node_aliases",
+            &[
+                ("source", "TEXT", 1),
+                ("network_id", "TEXT", 2),
+                ("device_id", "TEXT", 3),
+                ("binding_generation", "TEXT", 0),
+                ("alias", "TEXT", 0),
+            ],
+        )?;
+    }
     require_table_shape(
         connection,
         "node_observations",
@@ -1228,6 +1574,7 @@ fn require_table_shape(
 ) -> Result<()> {
     let expected_definition = match table {
         "fleet_state_schema" => FLEET_STATE_SCHEMA_SQL,
+        "managed_node_aliases" => MANAGED_NODE_ALIASES_SQL,
         "managed_projections" => MANAGED_PROJECTIONS_SQL,
         "node_observations" => NODE_OBSERVATIONS_SQL,
         "operator_projection_denies" => OPERATOR_DENIES_SQL,
@@ -1293,6 +1640,74 @@ fn validate_observation(observation: &NodeObservation, received_at_ms: u64) -> R
         ));
     }
     Ok(())
+}
+
+fn validate_alias(alias: &str) -> Result<()> {
+    let character_count = alias.chars().count();
+    if !(1..=128).contains(&character_count)
+        || alias.trim() != alias
+        || alias.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '\u{200b}'
+                        | '\u{200c}'
+                        | '\u{200d}'
+                        | '\u{2060}'
+                        | '\u{202a}'
+                        | '\u{202b}'
+                        | '\u{202c}'
+                        | '\u{202d}'
+                        | '\u{202e}'
+                        | '\u{2066}'
+                        | '\u{2067}'
+                        | '\u{2068}'
+                        | '\u{2069}'
+                        | '\u{feff}'
+                )
+        })
+    {
+        return Err(StateError::InvalidInput(
+            "alias must be bounded visible display text without surrounding whitespace",
+        ));
+    }
+    Ok(())
+}
+
+fn load_validated_alias(
+    connection: &Connection,
+    source: &str,
+    network_id: &str,
+    device_id: &str,
+    expected_binding_generation: Option<u64>,
+) -> Result<Option<String>> {
+    let alias = connection
+        .query_row(
+            "SELECT binding_generation, alias FROM managed_node_aliases
+             WHERE source = ?1 AND network_id = ?2 AND device_id = ?3",
+            params![source, network_id, device_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((binding_generation, alias)) = alias else {
+        return Ok(None);
+    };
+    let expected_binding_generation = expected_binding_generation.ok_or(
+        StateError::CorruptState("managed alias has no active projection"),
+    )?;
+    if binding_generation != expected_binding_generation.to_string() {
+        return Err(StateError::CorruptState(
+            "managed alias binding generation does not match its projection",
+        ));
+    }
+    validate_persisted_alias(&alias)?;
+    Ok(Some(alias))
+}
+
+fn validate_persisted_alias(alias: &str) -> Result<()> {
+    validate_alias(alias).map_err(|_| {
+        StateError::CorruptState("managed alias contains invalid persisted display text")
+    })
 }
 
 fn validate_run_state(state: &RunBindingState) -> Result<()> {

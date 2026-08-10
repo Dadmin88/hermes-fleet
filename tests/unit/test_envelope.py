@@ -43,7 +43,7 @@ def test_envelope_accepts_a_bounded_direct_node_message() -> None:
             "operation": "fleet.message",
             "target": {"name": "vps", "peer_id": "peer-vps"},
             "input": {
-                "text": "Hello from Katana",
+                "text": "Hello from controller-1",
                 "topic": "smoke-test",
                 "correlation_id": "corr-1",
             },
@@ -55,7 +55,7 @@ def test_envelope_accepts_a_bounded_direct_node_message() -> None:
 
     assert envelope.operation == "fleet.message"
     assert envelope.input == {
-        "text": "Hello from Katana",
+        "text": "Hello from controller-1",
         "topic": "smoke-test",
         "correlation_id": "corr-1",
     }

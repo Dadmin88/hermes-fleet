@@ -2,7 +2,7 @@
 
 ## 0.1.0 - 2026-08-05
 
-Hermes Fleet v0.1 is implemented, deployed, and accepted on the real Katana-to-VPS topology.
+Hermes Fleet v0.1 is implemented and accepted on a real controller-to-worker topology.
 
 ### Added
 
@@ -51,10 +51,10 @@ Accepted Keryx SHA: `f4ee645e415600a959ea8062d1143140bd6c2616`, tracked for defa
 
 ### Deployment
 
-- Katana runs `keryxd.service` and `keryx-node.service`.
+- The controller runs `keryxd.service` and `keryx-node.service`.
 - The historical `keryx-task-bridge.service` and `keryx-node-refresh.service` are disabled and inactive.
-- The VPS runs `keryx-relay.service`, `keryxd.service`, `keryx-node.service`, `hermes-fleet-api.service`, and `fleet-node.service`.
-- The VPS Hermes Runs API uses the `admin` profile and binds to loopback.
+- The worker runs `keryx-relay.service`, `keryxd.service`, `keryx-node.service`, `hermes-fleet-api.service`, and `fleet-node.service`.
+- The worker Hermes Runs API uses an operator-selected profile and binds to loopback.
 - Rollback snapshots are recorded in `docs/deployment.md`.
 
 ### Known limits
@@ -62,5 +62,4 @@ Accepted Keryx SHA: `f4ee645e415600a959ea8062d1143140bd6c2616`, tracked for defa
 - Cross-node cancellation is intentionally unavailable.
 - Relay offline mailbox contents do not survive relay restart.
 - Cross-node artifact bytes, fan-out, pub/sub, persistent inboxes, Kanban integration, Android/Termux, public exposure, and multi-tenancy remain deferred.
-- The deployed Tailscale TLS certificate expires on 2026-09-17 and requires renewal plus relay restart.
 - `node_service.py` may call `node.stop()` twice during normal shutdown; this is nonblocking cleanup outside the accepted runtime paths.

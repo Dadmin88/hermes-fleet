@@ -112,14 +112,20 @@ jobs:
       - name: Check patch whitespace
         run: git diff --check
 
+      - name: Check public repository hygiene
+        run: python scripts/check_public_hygiene.py
+
+      - name: Check Desktop runtime plugin syntax
+        run: node --check desktop/plugin.js
+
       - name: Run tests without the Hermes integration smoke
         run: python -m pytest -q --ignore=tests/test_plugin_installation.py
 
       - name: Lint
-        run: ruff check hermes_fleet tests
+        run: ruff check hermes_fleet dashboard scripts tests
 
       - name: Check formatting
-        run: ruff format --check hermes_fleet tests
+        run: ruff format --check hermes_fleet dashboard scripts tests
 
       - name: Build Python package
         run: python -m build
