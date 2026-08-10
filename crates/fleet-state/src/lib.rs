@@ -14,8 +14,9 @@ use std::{
 
 use fleet_domain::{
     ApplyOutcome, FleetOperation, ManagedNodeState, ManagedOperation, ManagedProjectionRecord,
-    NodeObservation, NodeReadiness, ObservationRecord, ProjectionApply, ProjectionDocument,
-    ReadinessPolicy, RecoveryAction, RunBindingState, apply_projection, evaluate_readiness,
+    NodeObservation, NodeReadiness, ObservationRecord, ProfilePresence, ProjectionApply,
+    ProjectionDocument, ReadinessPolicy, RecoveryAction, ResourceObservation, RunBindingState,
+    apply_projection, evaluate_readiness,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -182,6 +183,18 @@ pub struct ProfileNodeCandidate {
     pub profile_version: String,
     pub profile_content_digest: Option<String>,
     pub available_worker_slots: u32,
+    pub readiness: NodeReadiness,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfilePlacementCandidate {
+    pub source: String,
+    pub network_id: String,
+    pub device_id: String,
+    pub admission_generation: u64,
+    pub available_worker_slots: u32,
+    pub existing_profile: Option<ProfilePresence>,
+    pub resources: ResourceObservation,
     pub readiness: NodeReadiness,
 }
 
@@ -589,6 +602,91 @@ impl FleetStateStore {
                 profile_version: profile.version.clone(),
                 profile_content_digest: profile.content_digest.clone(),
                 available_worker_slots: record.observation.capacity.available_worker_slots(),
+                readiness,
+            });
+        }
+        transaction.commit()?;
+        Ok(candidates)
+    }
+
+    pub fn find_profile_placement_candidates(
+        &self,
+        profile_name: &str,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfilePlacementCandidate>> {
+        validate_profile_query(profile_name, None)?;
+        if now_ms == 0 || now_ms > i64::MAX as u64 {
+            return Err(StateError::InvalidInput(
+                "inspection timestamp is outside the supported range",
+            ));
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let keys = {
+            let mut statement = transaction.prepare(
+                "SELECT source, network_id, device_id
+                 FROM managed_projections
+                 ORDER BY source, network_id, device_id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut candidates = Vec::new();
+        for (source, network_id, device_id) in keys {
+            let projection = load_projection(&transaction, &source, &network_id, &device_id)?;
+            let admission_generation = projection
+                .as_ref()
+                .map(|record| record.document.projection_generation.get());
+            let managed_state = managed_state(projection.as_ref());
+            if managed_state != ManagedNodeState::Active {
+                continue;
+            }
+            let Some(admission_generation) = admission_generation else {
+                return Err(StateError::CorruptState(
+                    "active placement identity has no admission generation",
+                ));
+            };
+
+            let observation = load_observation(&transaction, &source, &network_id, &device_id)?;
+            if observation.as_ref().is_some_and(|record| {
+                record.observation.admission_generation != admission_generation
+            }) {
+                return Err(StateError::CorruptState(
+                    "stored observation admission generation does not match projection",
+                ));
+            }
+            let Some(record) = observation else {
+                continue;
+            };
+            let readiness = evaluate_readiness(managed_state, Some(&record), now_ms, policy);
+            if !readiness.scheduler_ready {
+                continue;
+            }
+            let existing_profile = record
+                .observation
+                .profiles
+                .iter()
+                .find(|profile| profile.name == profile_name)
+                .cloned();
+
+            candidates.push(ProfilePlacementCandidate {
+                source,
+                network_id,
+                device_id,
+                admission_generation,
+                available_worker_slots: record.observation.capacity.available_worker_slots(),
+                existing_profile,
+                resources: record.observation.resources.clone(),
                 readiness,
             });
         }
