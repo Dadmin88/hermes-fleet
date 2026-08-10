@@ -483,6 +483,7 @@ console.log(JSON.stringify({
   activity: mod
     .diffFleetOverview({ nodes: [stale] }, { nodes: [base] }, 3)
     .map(item => [item.kind, item.node_id]),
+  staleResource: mod.buildResourceRows(stale.readiness)[0].value,
   resources: mod.buildResourceRows(base.readiness).map(item => [item.key, item.value])
 }))
 """
@@ -534,6 +535,7 @@ console.log(JSON.stringify({
             "alias": "Workstation",
         },
         "activity": [["recovered", "fleet-node-" + "1" * 64]],
+        "staleResource": "Last observed 2.5s ago: 1 / 3 active · 2 free",
         "resources": [
             ["workers", "1 / 3 active · 2 free"],
             ["cpu", "8 logical · 25.75% load"],

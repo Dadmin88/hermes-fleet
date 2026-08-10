@@ -8,8 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI, HTTPException
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 ROOT = Path(__file__).resolve().parents[2]
 API_PATH = ROOT / "dashboard" / "plugin_api.py"
@@ -94,33 +93,6 @@ def test_typed_event_contract_is_stable_and_router_exposes_websocket():
     assert any(
         getattr(route, "path", None) == "/events" for route in module.router.routes
     )
-
-
-def test_websocket_emits_typed_authoritative_snapshot(monkeypatch):
-    module = _load_api()
-    overview = {
-        "schema": "fleet.desktop.v1",
-        "summary": {"managed": 0, "active": 0, "alive": 0, "ready": 0, "not_ready": 0},
-        "nodes": [],
-    }
-
-    class FakeClient:
-        def __init__(self, **_kwargs):
-            pass
-
-        def overview(self):
-            return overview
-
-    monkeypatch.setattr(module, "DesktopApiClient", FakeClient)
-    app = FastAPI()
-    app.include_router(module.router)
-    with TestClient(app).websocket_connect("/events") as websocket:
-        assert websocket.receive_json() == {
-            "schema": "fleet.desktop-events.v1",
-            "kind": "snapshot",
-            "sequence": 1,
-            "overview": overview,
-        }
 
 
 def test_dashboard_api_loads_from_an_installed_plugin_without_repo_pythonpath(

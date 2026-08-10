@@ -165,6 +165,8 @@ class DesktopApiClient:
                 ValueError,
             ) as error:
                 raise RuntimeError("Fleet returned malformed Desktop JSON") from error
+            if connection.recv(1):
+                raise RuntimeError("Fleet returned trailing Desktop frame bytes")
         if (
             type(document) is not dict
             or set(document) != {"schema", "kind", "ok", "result"}

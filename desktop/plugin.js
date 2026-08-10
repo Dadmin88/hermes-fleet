@@ -268,6 +268,14 @@ export function buildResourceRows(readiness) {
   if (resources?.gpu?.vram) {
     rows.push({ key: 'vram', label: 'VRAM', value: byteCapacity(resources.gpu.vram) })
   }
+  if (!readiness.fresh) {
+    const age = formatFleetAge(readiness.observation_age_ms)
+    return rows.map(row =>
+      row.value === 'No evidence'
+        ? row
+        : { ...row, value: `Last observed ${age}: ${row.value}` }
+    )
+  }
   return rows
 }
 
@@ -1055,7 +1063,7 @@ function NodeInspector({ node, ctx, refresh }) {
                       variant: 'outline',
                       onClick: resetAlias,
                       disabled: !node.naming.has_alias || pending,
-                      children: 'Reset to provider name'
+                      children: node.naming.provider_name ? 'Reset to provider name' : 'Clear alias'
                     })
                   ]
                 }),
@@ -1203,7 +1211,7 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
         ]
       }),
       jsxs('div', {
-        className: 'flex min-h-0 flex-1 flex-col gap-3 lg:flex-row',
+        className: 'flex min-h-0 flex-1 flex-col gap-3 overflow-auto lg:flex-row lg:overflow-hidden',
         children: [
           jsx(FleetCanvas, {
             graph: visibleGraph,

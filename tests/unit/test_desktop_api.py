@@ -9,7 +9,11 @@ import pytest
 
 
 def _serve_once(
-    path: Path, response: dict | bytes, captured: list[dict]
+    path: Path,
+    response: dict | bytes,
+    captured: list[dict],
+    *,
+    trailing: bytes = b"",
 ) -> threading.Thread:
     ready = threading.Event()
 
@@ -30,7 +34,9 @@ def _serve_once(
                     if isinstance(response, bytes)
                     else json.dumps(response, separators=(",", ":")).encode()
                 )
-                connection.sendall(struct.pack("!I", len(encoded)) + encoded)
+                connection.sendall(
+                    struct.pack("!I", len(encoded)) + encoded + trailing
+                )
 
     thread = threading.Thread(target=serve)
     thread.start()
@@ -189,6 +195,17 @@ def test_desktop_client_rejects_unknown_backend_fields(tmp_path):
     thread = _serve_once(socket_path, response, [])
 
     with pytest.raises(RuntimeError, match="malformed"):
+        DesktopApiClient(socket_path=socket_path).overview()
+    thread.join(timeout=2)
+
+
+def test_desktop_client_rejects_trailing_frame_bytes(tmp_path):
+    from hermes_fleet.desktop_api import DesktopApiClient
+
+    socket_path = tmp_path / "fleet.sock"
+    thread = _serve_once(socket_path, _response([]), [], trailing=b"JUNK")
+
+    with pytest.raises(RuntimeError, match="trailing Desktop frame bytes"):
         DesktopApiClient(socket_path=socket_path).overview()
     thread.join(timeout=2)
 
