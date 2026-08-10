@@ -248,7 +248,10 @@ def _normalize_profiles(value: object) -> list[dict[str, str]]:
             or not 0 < len(name) <= _MAX_PROFILE_NAME_BYTES
             or name in {".", ".."}
             or any(
-                not (character.isascii() and (character.isalnum() or character in "._-"))
+                not (
+                    character.isascii()
+                    and (character.isalnum() or character in "._-")
+                )
                 for character in name
             )
             or type(version) is not str
