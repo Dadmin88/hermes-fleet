@@ -249,8 +249,7 @@ def _normalize_profiles(value: object) -> list[dict[str, str]]:
             or name in {".", ".."}
             or any(
                 not (
-                    character.isascii()
-                    and (character.isalnum() or character in "._-")
+                    character.isascii() and (character.isalnum() or character in "._-")
                 )
                 for character in name
             )
