@@ -231,9 +231,7 @@ def acquire_agency_snapshot(
                 "Agency checkout revision does not match requested pin"
             )
 
-        catalog_bytes = _run_catalog(
-            checkout, timeout_seconds=catalog_timeout_seconds
-        )
+        catalog_bytes = _run_catalog(checkout, timeout_seconds=catalog_timeout_seconds)
         snapshot = _parse_catalog(catalog_bytes, source=source, checkout_root=checkout)
         yield snapshot
 
@@ -578,8 +576,7 @@ def _safe_token(value: object, maximum: int, label: str) -> str:
         or not 0 < len(value) <= maximum
         or value != value.strip()
         or any(
-            not character.isascii()
-            or not (character.isalnum() or character in "._-")
+            not character.isascii() or not (character.isalnum() or character in "._-")
             for character in value
         )
     ):
