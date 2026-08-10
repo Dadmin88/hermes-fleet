@@ -16,6 +16,7 @@ fn ready_observation() -> NodeObservation {
             active_workers: 1,
             max_workers: 2,
         },
+        profiles: Vec::new(),
         resources: ResourceObservation {
             cpu: Some(CpuObservation {
                 logical_cores: 8,
@@ -129,6 +130,7 @@ fn zero_worker_slots_blocks_readiness_but_missing_gpu_does_not() {
         "resources": {}
     }))
     .unwrap();
+    assert!(deserialized.profiles.is_empty());
     assert!(deserialized.resources.gpu.is_none());
     assert!(deserialized.validate().is_ok());
 
