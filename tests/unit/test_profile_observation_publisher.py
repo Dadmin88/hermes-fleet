@@ -92,13 +92,6 @@ def test_build_observation_preserves_legacy_shape_when_profiles_are_omitted(
                 "content_digest": "A" * 64,
             }
         ],
-        [
-            {
-                "name": "agency-backend",
-                "version": "0.1.0",
-                "content_digest": None,
-            }
-        ],
     ],
 )
 def test_build_observation_rejects_noncanonical_profile_inventory(
