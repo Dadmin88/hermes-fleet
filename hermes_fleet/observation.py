@@ -34,6 +34,7 @@ _READINESS_KEYS = frozenset(
         "reasons",
         "last_observation",
         "capacity",
+        "profiles",
         "resources",
     }
 )
@@ -96,10 +97,14 @@ def normalize_readiness(value: object) -> dict[str, Any]:
 
     last_observation = _normalize_last_observation(value.get("last_observation"))
     capacity = _normalize_capacity(value.get("capacity"))
+    raw_profiles = value.get("profiles")
+    profiles = None if raw_profiles is None else _normalize_profiles(raw_profiles)
     resources = _normalize_resources(value.get("resources"))
     observation_missing = last_observation is None
-    if observation_missing != (capacity is None) or observation_missing != (
-        resources is None
+    if (
+        observation_missing != (capacity is None)
+        or observation_missing != (profiles is None)
+        or observation_missing != (resources is None)
     ):
         raise ValueError("readiness observation fields disagree")
     if last_observation is None and (observation_age_ms is not None or fresh or alive):
@@ -120,6 +125,7 @@ def normalize_readiness(value: object) -> dict[str, Any]:
         "reasons": list(reasons),
         "last_observation": last_observation,
         "capacity": capacity,
+        "profiles": profiles,
         "resources": resources,
     }
 
