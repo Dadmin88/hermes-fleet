@@ -98,6 +98,9 @@ def test_observation_client_returns_bounded_readiness_inspection(tmp_path) -> No
             "max_workers": 1,
             "available_worker_slots": 1,
         },
+        "profiles": [
+            {"name": "agency-backend-engineer", "version": "0.1.0"}
+        ],
         "resources": {
             "cpu": None,
             "ram": None,
@@ -127,6 +130,83 @@ def test_observation_client_returns_bounded_readiness_inspection(tmp_path) -> No
     assert captured[0]["kind"] == "inspect_observation"
 
 
+def test_readiness_normalizer_distinguishes_unknown_from_observed_empty_profiles() -> None:
+    from hermes_fleet.observation import normalize_readiness
+
+    missing = normalize_readiness(
+        {
+            "managed_state": "active",
+            "admission_generation": 7,
+            "alive": False,
+            "fresh": False,
+            "scheduler_ready": False,
+            "observation_age_ms": None,
+            "reasons": ["observation_missing"],
+            "last_observation": None,
+            "capacity": None,
+            "profiles": None,
+            "resources": None,
+        }
+    )
+    assert missing["profiles"] is None
+
+    observed = normalize_readiness(
+        {
+            "managed_state": "active",
+            "admission_generation": 7,
+            "alive": True,
+            "fresh": True,
+            "scheduler_ready": True,
+            "observation_age_ms": 0,
+            "reasons": [],
+            "last_observation": {
+                "admission_generation": 7,
+                "observed_at_ms": 1_000,
+                "received_at_ms": 1_001,
+                "network": "reachable",
+                "keryx": "available",
+                "hermes": "available",
+                "worker": "available",
+            },
+            "capacity": {
+                "active_workers": 0,
+                "max_workers": 1,
+                "available_worker_slots": 1,
+            },
+            "profiles": [],
+            "resources": {
+                "cpu": None,
+                "ram": None,
+                "swap": None,
+                "disk": None,
+                "gpu": None,
+            },
+        }
+    )
+    assert observed["profiles"] == []
+
+
+def test_readiness_normalizer_rejects_profile_presence_without_observation() -> None:
+    from hermes_fleet.observation import normalize_readiness
+
+    with pytest.raises(ValueError, match="observation fields disagree"):
+        normalize_readiness(
+            {
+                "managed_state": "active",
+                "admission_generation": 7,
+                "alive": False,
+                "fresh": False,
+                "scheduler_ready": False,
+                "observation_age_ms": None,
+                "reasons": ["observation_missing"],
+                "last_observation": None,
+                "capacity": None,
+                "profiles": [],
+                "resources": None,
+            }
+        )
+
+
 def test_readiness_normalizer_rejects_unknown_nested_fields() -> None:
     from hermes_fleet.observation import normalize_readiness
 
@@ -139,6 +219,7 @@ def test_readiness_normalizer_rejects_unknown_nested_fields() -> None:
         "reasons": ["node_unknown"],
         "last_observation": None,
         "capacity": None,
+        "profiles": None,
         "resources": None,
         "extra": "not-owned",
     }
