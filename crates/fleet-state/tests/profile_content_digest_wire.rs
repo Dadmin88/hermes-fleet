@@ -58,13 +58,7 @@ fn exact_profile_digest_survives_persistence_and_restart() {
         }));
         assert!(sample.validate().is_ok());
         store
-            .record_observation(
-                "nodescale",
-                "network-1",
-                "device-1",
-                sample,
-                1_100,
-            )
+            .record_observation("nodescale", "network-1", "device-1", sample, 1_100)
             .unwrap();
     }
 
@@ -99,13 +93,7 @@ fn digestless_profile_presence_remains_canonical_after_restart() {
         let serialized = serde_json::to_value(&sample).unwrap();
         assert!(serialized["profiles"][0].get("content_digest").is_none());
         store
-            .record_observation(
-                "nodescale",
-                "network-1",
-                "device-1",
-                sample,
-                1_100,
-            )
+            .record_observation("nodescale", "network-1", "device-1", sample, 1_100)
             .unwrap();
     }
 
