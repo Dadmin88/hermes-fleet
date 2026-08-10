@@ -128,7 +128,7 @@ def test_observation_client_returns_bounded_readiness_inspection(tmp_path) -> No
     assert captured[0]["kind"] == "inspect_observation"
 
 
-def test_readiness_normalizer_distinguishes_unknown_from_observed_empty_profiles() -> None:
+def test_readiness_profiles_distinguish_unknown_from_observed_empty() -> None:
     from hermes_fleet.observation import normalize_readiness
 
     missing = normalize_readiness(
