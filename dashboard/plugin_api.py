@@ -25,6 +25,9 @@ if str(_PLUGIN_ROOT) not in sys.path:
 
 get_fleet_dir = importlib.import_module("hermes_fleet.config").get_fleet_dir
 DesktopApiClient = importlib.import_module("hermes_fleet.desktop_api").DesktopApiClient
+NodescaleObservationClient = importlib.import_module(
+    "hermes_fleet.nodescale_observations"
+).NodescaleObservationClient
 
 router = APIRouter()
 
@@ -94,6 +97,131 @@ def _socket_path() -> Path:
     return get_fleet_dir() / "managed-projection.sock"
 
 
+def _observation_config() -> tuple[Path, str] | None:
+    socket_value = os.environ.get("NODESCALE_OBSERVATION_SOCKET")
+    network_id = os.environ.get("NODESCALE_OBSERVATION_NETWORK_ID")
+    if socket_value is not None or network_id is not None:
+        if not socket_value or not network_id:
+            raise ValueError("incomplete Nodescale observation configuration")
+        return Path(socket_value).expanduser(), network_id
+
+    config_path = get_fleet_dir() / "nodescale-observations.json"
+    try:
+        metadata = config_path.lstat()
+    except FileNotFoundError:
+        return None
+    if config_path.is_symlink() or not config_path.is_file() or metadata.st_size > 4096:
+        raise ValueError("invalid Nodescale observation configuration")
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid Nodescale observation configuration") from exc
+    if type(payload) is not dict or set(payload) != {
+        "schema",
+        "socket_path",
+        "network_id",
+    }:
+        raise ValueError("invalid Nodescale observation configuration")
+    socket_value = payload.get("socket_path")
+    network_id = payload.get("network_id")
+    if (
+        payload.get("schema") != "fleet.nodescale-observations.v1"
+        or type(socket_value) is not str
+        or not socket_value
+        or len(socket_value) > 1024
+        or not Path(socket_value).is_absolute()
+        or type(network_id) is not str
+        or not network_id
+        or len(network_id) > 256
+    ):
+        raise ValueError("invalid Nodescale observation configuration")
+    return Path(socket_value), network_id
+
+
+def _compose_overview(
+    managed: dict[str, Any], observed: dict[str, Any] | None, *, observation_state: str
+) -> dict[str, Any]:
+    if (
+        type(managed) is not dict
+        or managed.get("schema") != "fleet.desktop.v1"
+        or set(managed) != {"schema", "summary", "nodes"}
+        or type(managed.get("summary")) is not dict
+        or type(managed.get("nodes")) is not list
+    ):
+        raise RuntimeError("invalid managed Fleet Desktop overview")
+    if observation_state == "available":
+        if (
+            type(observed) is not dict
+            or set(observed)
+            != {
+                "schema",
+                "network_id",
+                "reconciliation",
+                "observations",
+                "truncated",
+            }
+            or observed.get("schema") != "nodescale.observations.v1"
+            or type(observed.get("observations")) is not list
+            or type(observed.get("truncated")) is not bool
+        ):
+            raise RuntimeError("invalid Nodescale observation overview")
+        observed_nodes = observed["observations"]
+        observation_status = {
+            "state": "available",
+            "network_id": observed["network_id"],
+            "reconciliation": observed["reconciliation"],
+            "truncated": observed["truncated"],
+        }
+    else:
+        observed_nodes = []
+        observation_status = {
+            "state": observation_state,
+            "network_id": observed.get("network_id") if observed else None,
+            "reconciliation": None,
+            "truncated": False,
+        }
+    return {
+        "schema": "fleet.desktop.v2",
+        "summary": {
+            **managed["summary"],
+            "observed_unmanaged": len(observed_nodes),
+        },
+        "nodes": managed["nodes"],
+        "observed_nodes": observed_nodes,
+        "observations": observation_status,
+    }
+
+
+async def _overview_document() -> dict[str, Any]:
+    managed = await asyncio.to_thread(
+        DesktopApiClient(socket_path=_socket_path()).overview
+    )
+    try:
+        observation_config = _observation_config()
+    except ValueError:
+        return _compose_overview(
+            managed,
+            {"network_id": os.environ.get("NODESCALE_OBSERVATION_NETWORK_ID")},
+            observation_state="unavailable",
+        )
+    if observation_config is None:
+        return _compose_overview(managed, None, observation_state="disabled")
+    socket_path, network_id = observation_config
+    try:
+        observed = await asyncio.to_thread(
+            NodescaleObservationClient(
+                socket_path=socket_path, network_id=network_id
+            ).overview
+        )
+    except Exception:
+        return _compose_overview(
+            managed,
+            {"network_id": network_id},
+            observation_state="unavailable",
+        )
+    return _compose_overview(managed, observed, observation_state="available")
+
+
 def _websocket_rejection_code(websocket: WebSocket) -> int | None:
     try:
         module = importlib.import_module("hermes_cli.web_server")
@@ -124,9 +252,7 @@ async def events(websocket: WebSocket) -> None:
     try:
         while True:
             try:
-                current = await asyncio.to_thread(
-                    DesktopApiClient(socket_path=_socket_path()).overview
-                )
+                current = await _overview_document()
             except Exception:
                 if not unavailable:
                     sequence += 1
@@ -164,11 +290,9 @@ async def events(websocket: WebSocket) -> None:
 
 @router.get("/overview")
 async def overview() -> dict[str, Any]:
-    """Return current Fleet Desktop V1 state or a bounded unavailable response."""
+    """Return managed Fleet authority plus distinct observed provider evidence."""
     try:
-        return await asyncio.to_thread(
-            DesktopApiClient(socket_path=_socket_path()).overview
-        )
+        return await _overview_document()
     except Exception as error:
         raise HTTPException(
             status_code=503, detail="Fleet Desktop state is unavailable."
