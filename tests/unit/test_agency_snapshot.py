@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -90,7 +89,9 @@ def _write_profile(repo: Path) -> None:
     (references / "checklist.md").write_text("reference\n", encoding="utf-8")
 
 
-def _repo(tmp_path: Path, *, catalog: dict[str, object] | None = None) -> tuple[Path, str]:
+def _repo(
+    tmp_path: Path, *, catalog: dict[str, object] | None = None
+) -> tuple[Path, str]:
     if shutil.which("git") is None:
         pytest.skip("git is required for Agency snapshot tests")
     repo = tmp_path / "agency"
@@ -114,7 +115,9 @@ def _commit(repo: Path, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def test_snapshot_checks_out_exact_revision_and_resolves_verified_package(tmp_path) -> None:
+def test_snapshot_checks_out_exact_revision_and_resolves_verified_package(
+    tmp_path,
+) -> None:
     repo, revision = _repo(tmp_path)
     (repo / "profiles" / "agency-example" / "SOUL.md").write_text(
         "changed on main\n", encoding="utf-8"
@@ -134,14 +137,23 @@ def test_snapshot_checks_out_exact_revision_and_resolves_verified_package(tmp_pa
         assert package.content_digest == DIGEST
         assert package.distribution_path == "profiles/agency-example"
         assert package.local_path.is_dir()
-        assert (package.local_path / "SOUL.md").read_text(encoding="utf-8") == "identity\n"
+        assert (
+            package.local_path.joinpath("SOUL.md").read_text(encoding="utf-8")
+            == "identity\n"
+        )
 
 
 def test_source_requires_full_exact_lowercase_git_object_id(tmp_path) -> None:
     repo, revision = _repo(tmp_path)
     assert len(revision) == 40
 
-    for invalid in ["main", "deadbeef", revision[:39], revision.upper(), "g" * 40]:
+    for invalid in [
+        "main",
+        "deadbeef",
+        revision[:39],
+        revision.upper(),
+        "g" * 40,
+    ]:
         with pytest.raises(AgencySnapshotError, match="exact full git object ID"):
             AgencySource(repository=str(repo), revision=invalid)
 
@@ -205,7 +217,10 @@ def test_selected_profile_digest_must_match_checkout_bytes(tmp_path) -> None:
     repo, revision = _repo(tmp_path, catalog=_catalog(digest=OTHER_DIGEST))
 
     with acquire_agency_snapshot(AgencySource(str(repo), revision)) as snapshot:
-        with pytest.raises(AgencySnapshotError, match="content does not match catalog"):
+        with pytest.raises(
+            AgencySnapshotError,
+            match="content does not match catalog",
+        ):
             snapshot.resolve_profile("agency-example")
 
 
@@ -221,7 +236,10 @@ def test_selected_profile_manifest_identity_must_match_catalog(tmp_path) -> None
     revision = _commit(repo, "manifest drift")
 
     with acquire_agency_snapshot(AgencySource(str(repo), revision)) as snapshot:
-        with pytest.raises(AgencySnapshotError, match="identity does not match catalog"):
+        with pytest.raises(
+            AgencySnapshotError,
+            match="identity does not match catalog",
+        ):
             snapshot.resolve_profile("agency-example")
 
 
@@ -238,7 +256,9 @@ def test_symlinked_distribution_path_fails_closed(tmp_path) -> None:
             snapshot.resolve_profile("agency-example")
 
 
-def test_unknown_profile_does_not_fall_back_to_another_profession(tmp_path) -> None:
+def test_unknown_profile_does_not_fall_back_to_another_profession(
+    tmp_path,
+) -> None:
     repo, revision = _repo(tmp_path)
 
     with acquire_agency_snapshot(AgencySource(str(repo), revision)) as snapshot:
