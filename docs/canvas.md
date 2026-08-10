@@ -149,7 +149,7 @@ The bounded port kinds are:
 - `success`;
 - `error`.
 
-A connection is accepted only when both endpoint nodes and port IDs exist and their kinds are compatible. Supported compatibility includes:
+A connection is accepted only when both endpoint nodes and port IDs exist, the input handle is not already occupied, and their kinds are compatible. Supported compatibility includes:
 
 - equal kinds;
 - event/success/error output into control input;
@@ -194,17 +194,19 @@ The observed Inspector may show only provider evidence:
 
 It exposes no alias controls, readiness ladder, reservations, scheduling, operations, or execution actions.
 
-## Workflow Mode foundation
+## Workflow Mode editor
 
-Workflow Mode reuses the same Canvas engine and shell. It currently provides an editor foundation only:
+Workflow Mode reuses the same Canvas engine and shell. It provides an editor-only graph authoring experience:
 
 - topology/workflow mode switch;
 - searchable categorized node palette;
 - click-to-add node creation at a deterministic computed position;
 - generic descriptor-driven nodes;
 - typed ports;
-- connection document model and edge renderer;
-- selection and delete;
+- pointer drag-to-connect with a provisional Bézier edge and typed target feedback;
+- keyboard connection authoring from an output port to compatible input ports;
+- validated connection document model and directional edge renderer;
+- node and connection selection, context actions, and deletion;
 - duplicate;
 - copy/paste model;
 - context-menu actions;
@@ -218,13 +220,23 @@ Every node admitted to a workflow document carries `runtime: unavailable`; the p
 
 Workflow documents, clipboard packets, configuration objects, connections, and exact-machine targets are normalized through exact bounded schemas. Unknown execution-, binding-, reservation-, or authority-looking fields are rejected. Observed targets preserve the complete provider kind/instance/node/network/observation identity tuple; managed targets preserve the managed source/network/device tuple.
 
+### Connection authoring
+
+Only Workflow Mode accepts operator-authored edges. An output handle starts connection mode. The Canvas draws a provisional directional curve, emphasizes compatible input handles, recedes incompatible handles, and commits only after the production typed-port validator accepts the endpoint pair. Empty drops and Escape cancel without mutation; incompatible drops fail visibly and do not enter history or serialized state.
+
+Keyboard users focus an output handle and press Enter or Space. Compatible input handles become focusable; Tab/Shift+Tab or arrow keys move among them, Enter or Space commits, and Escape cancels. Status changes are announced through the editor's polite live region.
+
+Committed connections are selectable without opening the Inspector. Tab reaches the first or selected connection, arrow keys rove among connections, and accessible names include both endpoint port labels. Pointer selection, keyboard focus, Delete/Backspace, the toolbar, and the host context menu operate on connection entities. Connection create/delete and node deletion with incident edges are single bounded history mutations. Copy/paste and duplicate preserve internal connections only when every endpoint is in the copied selection; they allocate new node and connection IDs and never point an internal copied edge back to an original node.
+
+Connections use static smooth routes with restrained semantic styling. There are no execution pulses or runtime animation. At most 64 connection hints appear in the minimap; larger graphs retain node and viewport clarity without edge spaghetti.
+
 Current truthful limitations:
 
 - workflow documents are local in-memory editor state;
 - no durable workflow backend exists;
 - no workflow execution engine exists;
-- pointer-drag connection creation is not yet exposed;
 - multiselect and box-select geometry have pure model foundations but are not yet a complete pointer interaction;
+- edge-of-viewport auto-pan during connection drag is deferred; core connection gestures remain bounded and stable without it;
 - contributed descriptors are accepted by the frontend registry factory but not yet loaded from a durable host extension point.
 
 ## Create Workflow from Topology
@@ -286,9 +298,9 @@ Motion is restrained and state-triggered. No constant glow or pulse is used. Red
 
 ## Accessibility
 
-The Canvas exposes a labelled spatial region with button semantics for nodes, deterministic node order, a distinct visible roving-focus state, keyboard directional navigation, Enter/Space selection without automatically opening the Inspector, an explicit **Inspect selection** action, Escape-to-close without clearing selection, and named zoom/fit controls. Inspector drawers are non-modal overlays so the graph remains visible. Host primitives provide keyboard and screen-reader behavior for search, segmented mode switching, scrolling, and context menus.
+The Canvas exposes a labelled spatial region with button semantics for nodes and connections, deterministic node order, a distinct visible roving-focus state, keyboard directional navigation, Enter/Space selection without automatically opening the Inspector, keyboard-labelled typed connection handles, an explicit **Inspect selection** action, Escape-to-close without clearing selection, and named zoom/fit controls. Inspector drawers are non-modal overlays so the graph remains visible. Host primitives provide keyboard and screen-reader behavior for search, segmented mode switching, scrolling, and context menus.
 
-Pointer targets must remain usable at zoomed presentation sizes. Future multiselect and connection gestures must preserve keyboard equivalents before they are considered complete.
+Pointer targets remain enlarged independently from their restrained visible dots. Connection authoring has a keyboard equivalent and does not rely on animation. Future multiselect gestures must preserve keyboard equivalents before they are considered complete.
 
 ## Validation obligations
 
@@ -302,4 +314,5 @@ A release candidate must prove:
 6. exact-byte atomic deployment and hash equality;
 7. live `fleet.desktop.v2` proof against current real Tailscale observations;
 8. zero duplicates, zero managed authority leakage, and topology `edges: []`;
-9. visual QA in the existing Hermes Desktop with nothing selected by default, selection that leaves the drawer closed, and one explicitly opened observed-only Inspector.
+9. visual QA in the existing Hermes Desktop with nothing selected by default, selection that leaves the drawer closed, and one explicitly opened observed-only Inspector;
+10. live Workflow proof of pointer and keyboard connection creation, invalid-drop rejection, connection selection/deletion, undo/redo, and static theme-compatible rendering.

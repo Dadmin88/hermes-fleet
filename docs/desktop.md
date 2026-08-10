@@ -79,7 +79,7 @@ Fleet Desktop renders:
 - **Managed nodes:** real Fleet nodes with current readiness and worker capacity;
 - **Observed nodes:** distinct dashed cards marked **Observed · unmanaged**, with provider identity and observation evidence only.
 
-No fake nodes or scheduler metrics are seeded. Observed nodes have no rename, workflow, run, reservation, scheduler, or readiness controls. Relationship edges remain absent because neither API supplies provenance-bearing relationship evidence.
+No fake nodes or scheduler metrics are seeded. Observed nodes have no rename, run, reservation, scheduler, readiness, or other authority-mutating controls. A selected observation may be copied into local Workflow Mode as an editor-only exact-machine target; that transition preserves `authority: observed`, remains runtime-unavailable, and grants no Fleet control or execution capability. Relationship edges remain absent because neither API supplies provenance-bearing relationship evidence.
 
 ## Troubleshooting
 

@@ -104,7 +104,12 @@ def test_graph_first_canvas_opens_evidence_in_an_explicit_overlay_drawer() -> No
         re.DOTALL,
     )
     assert len(select_callbacks) == 2
-    assert all("setInspectorOpen" not in callback for callback in select_callbacks)
+    assert all(
+        "setInspectorOpen(true)" not in callback for callback in select_callbacks
+    )
+    assert all(
+        "if (!id) setInspectorOpen(false)" in callback for callback in select_callbacks
+    )
     assert "Workflow node limit reached (256)." in source
     assert "title: 'Topology unavailable'" in source
     assert "fleet-workflow-surface" in source
@@ -298,8 +303,43 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
         "export function nodesInsideSelection",
     ):
         assert symbol in source
-    assert "Editor foundation · execution unavailable" in source
+    assert "Editor only · execution unavailable" in source
     assert "mode === 'workflow'" in source
+
+    for interaction_contract in (
+        "function WorkflowPortHandle",
+        "function WorkflowNodePorts",
+        "function ProvisionalWorkflowEdge",
+        "function workflowPortAriaLabel",
+        "data-connection-state",
+        "data-connection-compatible",
+        "selectedEdgeId",
+        "onConnectionCommit",
+        "function focusConnectionTarget",
+        "function applyConnectionMove",
+        "connectionMoveFrameRef",
+        "canvasMoveFrameRef",
+        "function cancelActiveCanvasGesture",
+        "onLostPointerCapture: cancelPointer",
+        "active.captureElement.releasePointerCapture",
+        "data-fleet-edge",
+        "sourcePortLabel",
+        "interactiveTarget",
+        "event.type === 'lostpointercapture'",
+        "Connection cancelled.",
+        "Delete selected connection",
+        "fleet-workflow-edge",
+        "fleet-provisional-edge",
+        "markerEnd",
+        "Connect ${node.label} ${port.label}",
+    ):
+        assert interaction_contract in source
+
+    graph_node_block = source[
+        source.index("function GraphNode") : source.index("function WorkflowNodePorts")
+    ]
+    assert "WorkflowPortHandle" not in graph_node_block
+    assert "onContextMenu" in graph_node_block
 
     script = r"""
 import fs from 'node:fs'
@@ -358,10 +398,72 @@ workflow = mod.addWorkflowNode(workflow, {
 workflow = mod.addWorkflowNode(workflow, {
   id: 'delay-1', type: 'delay', position: { x: 310, y: 20 }
 })
+const workflowWithoutConnection = workflow
+const compatibility = mod.workflowConnectionCompatibility(workflow, {
+  source: 'trigger-1', sourcePort: 'control',
+  target: 'delay-1', targetPort: 'control'
+})
+const malformedCompatibility = mod.workflowConnectionCompatibility(
+  { nodes: {}, connections: [] }, {}
+)
+const malformedMemberCompatibility = mod.workflowConnectionCompatibility(
+  { nodes: [null], connections: [null] }, {}
+)
 workflow = mod.connectWorkflowNodes(workflow, {
   id: 'connection-1', source: 'trigger-1', sourcePort: 'control',
   target: 'delay-1', targetPort: 'control'
 })
+const duplicateCompatibility = mod.workflowConnectionCompatibility(workflow, {
+  source: 'trigger-1', sourcePort: 'control',
+  target: 'delay-1', targetPort: 'control'
+})
+const workflowWithSecondSource = mod.addWorkflowNode(workflow, {
+  id: 'trigger-2', type: 'manual-trigger', position: { x: 0, y: 220 }
+})
+const occupiedCompatibility = mod.workflowConnectionCompatibility(
+  workflowWithSecondSource,
+  {
+    source: 'trigger-2', sourcePort: 'control',
+    target: 'delay-1', targetPort: 'control'
+  }
+)
+const occupiedConnectionRejected = rejects(() => mod.connectWorkflowNodes(
+  workflowWithSecondSource,
+  {
+    id: 'connection-occupied', source: 'trigger-2', sourcePort: 'control',
+    target: 'delay-1', targetPort: 'control'
+  }
+))
+const duplicateConnectionRejected = rejects(() => mod.connectWorkflowNodes(workflow, {
+  id: 'connection-2', source: 'trigger-1', sourcePort: 'control',
+  target: 'delay-1', targetPort: 'control'
+}))
+const invalidConnectionRejected = rejects(() => mod.connectWorkflowNodes(
+  workflowWithoutConnection,
+  {
+    id: 'connection-invalid', source: 'trigger-1', sourcePort: 'control',
+    target: 'delay-1', targetPort: 'missing'
+  }
+))
+const connectionDeleted = mod.deleteWorkflowConnection(workflow, 'connection-1')
+let connectionHistory = mod.createWorkflowHistory(workflowWithoutConnection)
+connectionHistory = mod.applyWorkflowEdit(connectionHistory, workflow)
+const connectionUndone = mod.undoWorkflow(connectionHistory)
+const connectionRedone = mod.redoWorkflow(connectionUndone)
+const deletionHistory = mod.applyWorkflowEdit(connectionRedone, connectionDeleted)
+const deletionUndone = mod.undoWorkflow(deletionHistory)
+const draftStarted = mod.workflowConnectionDraftReducer(null, {
+  type: 'start', source: 'trigger-1', sourcePort: 'control',
+  point: { x: 230, y: 78 }, keyboard: false
+})
+const draftMoved = mod.workflowConnectionDraftReducer(draftStarted, {
+  type: 'move', point: { x: 300, y: 78 },
+  target: { nodeId: 'delay-1', portId: 'control', state: 'valid' }
+})
+const draftCancelled = mod.workflowConnectionDraftReducer(
+  draftMoved,
+  { type: 'cancel' }
+)
 const selection = mod.updateFleetSelection([], 'trigger-1', { toggle: false })
 const copied = mod.copyWorkflowSelection(workflow, selection)
 const pasted = mod.pasteWorkflowClipboard(workflow, copied, {
@@ -372,6 +474,14 @@ const duplicated = mod.duplicateWorkflowSelection(workflow, selection, {
 })
 const deleted = mod.deleteWorkflowSelection(workflow, selection)
 const parsed = mod.deserializeWorkflow(mod.serializeWorkflow(pasted))
+const duplicateEdgePacket = JSON.parse(mod.serializeWorkflow(workflow))
+duplicateEdgePacket.connections.push({
+  ...duplicateEdgePacket.connections[0],
+  id: 'connection-duplicate'
+})
+const duplicateSerializedEdgeRejected = rejects(() =>
+  mod.deserializeWorkflow(JSON.stringify(duplicateEdgePacket))
+)
 let history = mod.createWorkflowHistory(workflow)
 history = mod.applyWorkflowEdit(history, duplicated)
 history = mod.undoWorkflow(history)
@@ -390,6 +500,17 @@ const observedSource = {
   }
 }
 const topology = mod.createWorkflowFromTopology('from-topology', [observedSource])
+let connectedTarget = mod.addWorkflowNode(topology, {
+  id: 'send-message-1', type: 'send-message', position: { x: 320, y: 20 }
+})
+connectedTarget = mod.connectWorkflowNodes(connectedTarget, {
+  id: 'machine-connection-1',
+  source: topology.nodes[0].id, sourcePort: 'machine',
+  target: 'send-message-1', targetPort: 'machine'
+})
+const connectedTargetRoundTrip = mod.deserializeWorkflow(
+  mod.serializeWorkflow(connectedTarget)
+)
 const appended = mod.appendTopologyTargetsToWorkflow(workflow, [observedSource])
 const appendedAgain = mod.appendTopologyTargetsToWorkflow(appended, [observedSource])
 let appendHistory = mod.createWorkflowHistory(workflow)
@@ -466,14 +587,32 @@ console.log(JSON.stringify({
   ids,
   descriptor: mod.FLEET_NODE_TYPES['manual-trigger'],
   connection: workflow.connections[0],
+  compatibility,
+  malformedCompatibility,
+  malformedMemberCompatibility,
+  duplicateCompatibility,
+  occupiedCompatibility,
+  occupiedConnectionRejected,
+  duplicateConnectionRejected,
+  invalidConnectionRejected,
+  connectionDeletedCount: connectionDeleted.connections.length,
+  connectionUndoRedoCounts: [
+    connectionUndone.present.connections.length,
+    connectionRedone.present.connections.length,
+    deletionUndone.present.connections.length
+  ],
+  draftLifecycle: [draftStarted.status, draftMoved.status, draftCancelled],
   selection,
   pastedCounts: [pasted.nodes.length, pasted.connections.length],
   duplicatedCounts: [duplicated.nodes.length, duplicated.connections.length],
   deletedCounts: [deleted.nodes.length, deleted.connections.length],
   parsedSchema: parsed.schema,
+  duplicateSerializedEdgeRejected,
   historyPresent: history.present.nodes.length,
   historyPast: history.past.length,
   topology,
+  connectedTargetAuthority: connectedTargetRoundTrip.nodes[0].target.authority,
+  connectedTargetExecution: connectedTargetRoundTrip.metadata.executionAvailable,
   providerInstance: topology.nodes[0].target.provider_instance_id,
   machineWorkflowRejected: rejects(() => mod.addWorkflowNode(
     mod.createEmptyWorkflow('bad-machine'),
@@ -484,6 +623,11 @@ console.log(JSON.stringify({
   longPrefixUnique:
     new Set(longPrefixPaste.nodes.map(node => node.id)).size ===
       longPrefixPaste.nodes.length,
+  longPrefixConnectionCount: longPrefixPaste.connections.length,
+  longPrefixConnectionRemapped: longPrefixPaste.connections.slice(1).every(edge =>
+    !['trigger-1', 'delay-1'].includes(edge.source) &&
+    !['trigger-1', 'delay-1'].includes(edge.target)
+  ),
   invalidContributionRejected:
     !mod.createFleetNodeRegistry([invalidContribution]).has('bad-contribution'),
   extraContributionRejected:
@@ -573,20 +717,48 @@ console.log(JSON.stringify({
     assert loaded["descriptor"]["runtime"] == "unavailable"
     assert loaded["descriptor"]["outputs"][0]["kind"] == "control"
     assert loaded["connection"]["kind"] == "control"
+    assert loaded["compatibility"] == {"valid": True, "kind": "control"}
+    assert loaded["malformedCompatibility"] == {
+        "valid": False,
+        "reason": "invalid connection request",
+    }
+    assert loaded["malformedMemberCompatibility"] == {
+        "valid": False,
+        "reason": "invalid connection endpoints",
+    }
+    assert loaded["duplicateCompatibility"] == {
+        "valid": False,
+        "reason": "duplicate workflow connection",
+    }
+    assert loaded["occupiedCompatibility"] == {
+        "valid": False,
+        "reason": "workflow input already connected",
+    }
+    assert loaded["occupiedConnectionRejected"] is True
+    assert loaded["duplicateConnectionRejected"] is True
+    assert loaded["invalidConnectionRejected"] is True
+    assert loaded["connectionDeletedCount"] == 0
+    assert loaded["connectionUndoRedoCounts"] == [0, 1, 1]
+    assert loaded["draftLifecycle"] == ["pending", "valid", None]
     assert loaded["selection"] == ["trigger-1"]
     assert loaded["pastedCounts"] == [3, 1]
     assert loaded["duplicatedCounts"] == [3, 1]
     assert loaded["deletedCounts"] == [1, 0]
     assert loaded["parsedSchema"] == "fleet.workflow-editor.v1"
+    assert loaded["duplicateSerializedEdgeRejected"] is True
     assert loaded["historyPresent"] == 3
     assert loaded["historyPast"] == 1
     assert loaded["topology"]["nodes"][0]["type"] == "exact-machine"
     assert loaded["topology"]["nodes"][0]["target"]["authority"] == "observed"
+    assert loaded["connectedTargetAuthority"] == "observed"
+    assert loaded["connectedTargetExecution"] is False
     assert loaded["providerInstance"] == "instance-1"
     assert loaded["machineWorkflowRejected"] is True
     assert loaded["hiddenPayloadRejected"] is True
     assert loaded["malformedClipboardRejected"] is True
     assert loaded["longPrefixUnique"] is True
+    assert loaded["longPrefixConnectionCount"] == 2
+    assert loaded["longPrefixConnectionRemapped"] is True
     assert loaded["invalidContributionRejected"] is True
     assert loaded["extraContributionRejected"] is True
     assert loaded["invertedBoundsRejected"] is True

@@ -541,6 +541,98 @@ function workflowConnectionKind(sourcePort, targetPort) {
   return null
 }
 
+export function workflowConnectionCompatibility(workflow, input) {
+  if (
+    !isPlainRecord(workflow) ||
+    !Array.isArray(workflow.nodes) ||
+    !Array.isArray(workflow.connections) ||
+    !isPlainRecord(input)
+  ) {
+    return { valid: false, reason: 'invalid connection request' }
+  }
+  const sourceNode = workflow.nodes.find(
+    node => isPlainRecord(node) && node.id === input.source
+  )
+  const targetNode = workflow.nodes.find(
+    node => isPlainRecord(node) && node.id === input.target
+  )
+  if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) {
+    return { valid: false, reason: 'invalid connection endpoints' }
+  }
+  const sourceDescriptor = getFleetNodeType(sourceNode.type)
+  const targetDescriptor = getFleetNodeType(targetNode.type)
+  const sourcePort = sourceDescriptor?.outputs.find(port => port.id === input.sourcePort)
+  const targetPort = targetDescriptor?.inputs.find(port => port.id === input.targetPort)
+  const kind = sourcePort && targetPort
+    ? workflowConnectionKind(sourcePort, targetPort)
+    : null
+  if (!kind) return { valid: false, reason: 'incompatible workflow ports' }
+  if (workflow.connections.some(edge =>
+    isPlainRecord(edge) &&
+    edge.source === input.source &&
+    edge.sourcePort === input.sourcePort &&
+    edge.target === input.target &&
+    edge.targetPort === input.targetPort
+  )) return { valid: false, reason: 'duplicate workflow connection' }
+  if (workflow.connections.some(edge =>
+    isPlainRecord(edge) &&
+    edge.target === input.target && edge.targetPort === input.targetPort
+  )) return { valid: false, reason: 'workflow input already connected' }
+  return { valid: true, kind }
+}
+
+function validConnectionPoint(value) {
+  return isPlainRecord(value) && Number.isFinite(value.x) && Number.isFinite(value.y)
+}
+
+export function workflowConnectionDraftReducer(state, action) {
+  if (!isPlainRecord(action)) throw new Error('invalid connection draft action')
+  if (action.type === 'cancel') return null
+  if (action.type === 'start') {
+    if (
+      !validWorkflowId(action.source) ||
+      !validWorkflowId(action.sourcePort) ||
+      !validConnectionPoint(action.point) ||
+      typeof action.keyboard !== 'boolean'
+    ) throw new Error('invalid connection draft')
+    return {
+      source: action.source,
+      sourcePort: action.sourcePort,
+      point: { x: action.point.x, y: action.point.y },
+      target: null,
+      keyboard: action.keyboard,
+      status: 'pending'
+    }
+  }
+  if (action.type === 'move' && state) {
+    if (!validConnectionPoint(action.point)) throw new Error('invalid connection draft point')
+    const target = action.target == null ? null : action.target
+    if (
+      target != null && (
+        !isPlainRecord(target) ||
+        !validWorkflowId(target.nodeId) ||
+        !validWorkflowId(target.portId) ||
+        !['valid', 'invalid'].includes(target.state) ||
+        (target.reason != null && typeof target.reason !== 'string')
+      )
+    ) throw new Error('invalid connection draft target')
+    return {
+      ...state,
+      point: { x: action.point.x, y: action.point.y },
+      target: target
+        ? {
+            nodeId: target.nodeId,
+            portId: target.portId,
+            state: target.state,
+            reason: target.reason ?? null
+          }
+        : null,
+      status: target?.state ?? 'pending'
+    }
+  }
+  throw new Error('invalid connection draft transition')
+}
+
 export function connectWorkflowNodes(workflow, input) {
   if (workflow.connections.length >= WORKFLOW_LIMIT_COUNT) {
     throw new Error('workflow connection limit reached')
@@ -554,32 +646,38 @@ export function connectWorkflowNodes(workflow, input) {
   ) {
     throw new Error('invalid workflow connection')
   }
-  const sourceNode = workflow.nodes.find(node => node.id === input.source)
-  const targetNode = workflow.nodes.find(node => node.id === input.target)
-  if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) {
-    throw new Error('invalid workflow connection endpoints')
-  }
-  const sourceDescriptor = getFleetNodeType(sourceNode.type)
-  const targetDescriptor = getFleetNodeType(targetNode.type)
-  const sourcePort = sourceDescriptor.outputs.find(port => port.id === input.sourcePort)
-  const targetPort = targetDescriptor.inputs.find(port => port.id === input.targetPort)
-  const kind = sourcePort && targetPort
-    ? workflowConnectionKind(sourcePort, targetPort)
-    : null
-  if (!kind) throw new Error('incompatible workflow ports')
-  if (input.kind !== undefined && input.kind !== kind) {
+  const compatibility = workflowConnectionCompatibility(workflow, input)
+  if (!compatibility.valid) throw new Error(compatibility.reason)
+  if (workflow.connections.some(edge =>
+    edge.source === input.source &&
+    edge.sourcePort === input.sourcePort &&
+    edge.target === input.target &&
+    edge.targetPort === input.targetPort
+  )) throw new Error('duplicate workflow connection')
+  if (input.kind !== undefined && input.kind !== compatibility.kind) {
     throw new Error('invalid workflow connection kind')
   }
   return {
     ...workflow,
     connections: [...workflow.connections, {
       id: input.id,
-      source: sourceNode.id,
-      sourcePort: sourcePort.id,
-      target: targetNode.id,
-      targetPort: targetPort.id,
-      kind
+      source: input.source,
+      sourcePort: input.sourcePort,
+      target: input.target,
+      targetPort: input.targetPort,
+      kind: compatibility.kind
     }]
+  }
+}
+
+export function deleteWorkflowConnection(workflow, connectionId) {
+  if (!validWorkflowId(connectionId)) throw new Error('invalid workflow connection id')
+  if (!workflow.connections.some(edge => edge.id === connectionId)) {
+    throw new Error('workflow connection not found')
+  }
+  return {
+    ...workflow,
+    connections: workflow.connections.filter(edge => edge.id !== connectionId)
   }
 }
 
@@ -1012,6 +1110,103 @@ const FLEET_CANVAS_STYLES = `
   background: var(--fleet-port-result);
 }
 .fleet-node-shell[data-show-ports='true'] .fleet-node-port { opacity: 1; }
+.fleet-port-handle {
+  color: var(--fleet-line-strong);
+  cursor: crosshair;
+  opacity: 0.42;
+  transition: color 140ms ease, opacity 140ms ease, transform 140ms ease;
+}
+.fleet-port-handle:focus { outline: none; }
+.fleet-port-handle .fleet-port-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+.fleet-port-handle .fleet-port-dot {
+  fill: currentColor;
+  stroke: var(--ui-bg-editor);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.fleet-port-handle:hover,
+.fleet-workflow-node-ports[data-hovered='true'] .fleet-port-handle,
+.fleet-workflow-node-ports[data-focused='true'] .fleet-port-handle,
+.fleet-workflow-node-ports[data-selected='true'] .fleet-port-handle { opacity: 0.82; }
+.fleet-port-handle[data-direction='input'] { cursor: default; }
+.fleet-port-handle[data-port-kind='control'] { color: var(--fleet-port-control); }
+.fleet-port-handle[data-port-kind='data'] { color: var(--fleet-port-data); }
+.fleet-port-handle[data-port-kind='machine-target'] { color: var(--fleet-port-machine); }
+.fleet-port-handle[data-port-kind='event'] { color: var(--fleet-port-event); }
+.fleet-port-handle[data-port-kind='result'] { color: var(--fleet-port-result); }
+.fleet-port-handle[data-port-kind='success'] { color: var(--ui-green); }
+.fleet-port-handle[data-port-kind='error'] { color: var(--ui-red); }
+.fleet-port-handle[data-connection-state='active'],
+.fleet-port-handle[data-connection-state='compatible'],
+.fleet-port-handle:focus-visible {
+  opacity: 1;
+}
+.fleet-port-handle[data-connection-state='active'] .fleet-port-dot,
+.fleet-port-handle[data-connection-state='compatible'] .fleet-port-dot,
+.fleet-port-handle:focus-visible .fleet-port-dot {
+  stroke: var(--ui-text-primary);
+  stroke-width: 3;
+}
+.fleet-port-handle[data-connection-state='compatible'] .fleet-port-hit {
+  fill: color-mix(in srgb, currentColor 12%, transparent);
+}
+.fleet-port-handle[data-connection-state='compatible'] { cursor: pointer; }
+.fleet-port-handle[data-connection-state='incompatible'] {
+  cursor: not-allowed;
+  opacity: 0.14;
+  filter: saturate(0.35);
+}
+.fleet-workflow-edge {
+  fill: none;
+  stroke: var(--ui-text-secondary);
+  stroke-linecap: round;
+  stroke-width: 2;
+  opacity: 0.66;
+  pointer-events: none;
+  transition: stroke 140ms ease, opacity 140ms ease, stroke-width 140ms ease;
+}
+.fleet-workflow-edge-group:hover .fleet-workflow-edge,
+.fleet-workflow-edge-group[data-selected='true'] .fleet-workflow-edge {
+  stroke: var(--ui-accent);
+  stroke-width: 2.6;
+  opacity: 1;
+}
+.fleet-workflow-edge-group:focus-visible .fleet-workflow-edge {
+  stroke: var(--ui-accent);
+  stroke-width: 3.2;
+  stroke-dasharray: 5 3;
+  opacity: 1;
+}
+.fleet-workflow-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-linecap: round;
+  stroke-width: 16;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.fleet-workflow-edge-group:focus { outline: none; }
+.fleet-provisional-edge {
+  fill: none;
+  stroke: var(--ui-text-secondary);
+  stroke-dasharray: 7 5;
+  stroke-linecap: round;
+  stroke-width: 2.4;
+  opacity: 0.82;
+  pointer-events: none;
+}
+.fleet-provisional-edge[data-connection-state='valid'] {
+  stroke: var(--ui-accent);
+  opacity: 1;
+}
+.fleet-provisional-edge[data-connection-state='invalid'] {
+  stroke: var(--ui-text-tertiary, var(--ui-text-secondary));
+  stroke-dasharray: 3 6;
+  opacity: 0.48;
+}
 .fleet-group-region {
   fill: var(--ui-bg-sidebar, var(--ui-bg-editor, var(--background)));
   fill-opacity: 0.72;
@@ -1791,24 +1986,135 @@ function GraphGroups({ groups }) {
   })
 }
 
-function GraphEdges({ edges, nodeById }) {
+function workflowPortPoint(node, direction, portId) {
+  const ports = direction === 'output' ? node?.nodeType?.outputs : node?.nodeType?.inputs
+  const index = ports?.findIndex(port => port.id === portId) ?? -1
+  if (!node || index < 0) return null
+  return {
+    x: direction === 'output' ? node.x + node.width : node.x,
+    y: node.y + ((index + 1) / (ports.length + 1)) * node.height
+  }
+}
+
+function workflowEdgePath(source, target) {
+  if (!source || !target) return ''
+  const distance = Math.abs(target.x - source.x)
+  const bend = Math.max(52, Math.min(260, distance * 0.52))
+  return `M ${source.x} ${source.y} C ${source.x + bend} ${source.y}, ${target.x - bend} ${target.y}, ${target.x} ${target.y}`
+}
+
+function WorkflowEdgeDefinitions() {
+  return jsx('defs', {
+    children: jsx('marker', {
+      id: 'fleet-edge-arrow',
+      markerWidth: 8,
+      markerHeight: 8,
+      refX: 7,
+      refY: 4,
+      orient: 'auto',
+      markerUnits: 'strokeWidth',
+      children: jsx('path', {
+        d: 'M 0 0 L 8 4 L 0 8 z',
+        fill: 'context-stroke'
+      })
+    })
+  })
+}
+
+function ProvisionalWorkflowEdge({ draft, nodeById }) {
+  if (!draft) return null
+  const source = workflowPortPoint(nodeById.get(draft.source), 'output', draft.sourcePort)
+  const target = draft.target
+    ? workflowPortPoint(nodeById.get(draft.target.nodeId), 'input', draft.target.portId)
+    : draft.point
+  if (!source || !target) return null
+  return jsx('path', {
+    className: 'fleet-provisional-edge',
+    'data-connection-state': draft.status,
+    d: workflowEdgePath(source, target),
+    markerEnd: 'url(#fleet-edge-arrow)',
+    vectorEffect: 'non-scaling-stroke',
+    'aria-hidden': true
+  })
+}
+
+function GraphEdges({
+  edges,
+  nodeById,
+  selectedEdgeId = null,
+  onSelectEdge = null,
+  onDeleteEdge = null
+}) {
   return jsx('g', {
-    'aria-hidden': true,
-    children: edges.map(edge => {
-      const source = nodeById.get(edge.source)
-      const target = nodeById.get(edge.target)
+    children: edges.map((edge, index) => {
+      const sourceNode = nodeById.get(edge.source)
+      const targetNode = nodeById.get(edge.target)
+      const source = workflowPortPoint(sourceNode, 'output', edge.sourcePort)
+      const target = workflowPortPoint(targetNode, 'input', edge.targetPort)
       if (!source || !target) return null
-      const sourceX = source.x + source.width
-      const sourceY = source.y + source.height / 2
-      const targetX = target.x
-      const targetY = target.y + target.height / 2
-      const bend = Math.max(40, Math.abs(targetX - sourceX) / 2)
-      return jsx('path', {
-        d: `M ${sourceX} ${sourceY} C ${sourceX + bend} ${sourceY}, ${targetX - bend} ${targetY}, ${targetX} ${targetY}`,
-        fill: 'none',
-        stroke: 'var(--ui-stroke-secondary)',
-        strokeWidth: 2,
-        vectorEffect: 'non-scaling-stroke'
+      const path = workflowEdgePath(source, target)
+      const selected = selectedEdgeId === edge.id
+      const sourcePortLabel = sourceNode.nodeType?.outputs.find(
+        port => port.id === edge.sourcePort
+      )?.label ?? edge.sourcePort
+      const targetPortLabel = targetNode.nodeType?.inputs.find(
+        port => port.id === edge.targetPort
+      )?.label ?? edge.targetPort
+      const edgeLabel = `Connection from ${sourceNode.label} ${sourcePortLabel} output to ${targetNode.label} ${targetPortLabel} input`
+      return jsxs('g', {
+        className: 'fleet-workflow-edge-group',
+        role: onSelectEdge ? 'button' : undefined,
+        tabIndex: onSelectEdge && (selected || (!selectedEdgeId && index === 0)) ? 0 : -1,
+        'aria-pressed': onSelectEdge ? selected : undefined,
+        'aria-label': onSelectEdge ? edgeLabel : undefined,
+        'data-fleet-edge': edge.id,
+        'data-selected': selected,
+        onFocus: onSelectEdge ? () => onSelectEdge(edge.id) : undefined,
+        onClick: onSelectEdge
+          ? event => {
+              event.stopPropagation()
+              onSelectEdge(edge.id)
+              event.currentTarget.focus({ preventScroll: true })
+            }
+          : undefined,
+        onContextMenu: onSelectEdge
+          ? event => {
+              onSelectEdge(edge.id)
+            }
+          : undefined,
+        onPointerDown: event => event.stopPropagation(),
+        onKeyDown: onDeleteEdge
+          ? event => {
+              if (['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(event.key)) {
+                event.preventDefault()
+                event.stopPropagation()
+                const peers = [...event.currentTarget.ownerSVGElement.querySelectorAll('[data-fleet-edge]')]
+                const current = peers.indexOf(event.currentTarget)
+                const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1
+                peers[(current + delta + peers.length) % peers.length]?.focus({ preventScroll: true })
+                return
+              }
+              if (event.key === 'Delete' || event.key === 'Backspace') {
+                event.preventDefault()
+                event.stopPropagation()
+                onDeleteEdge(edge.id)
+              }
+            }
+          : undefined,
+        children: [
+          jsx('title', { children: edgeLabel }),
+          jsx('path', {
+            className: 'fleet-workflow-edge-hit',
+            d: path,
+            vectorEffect: 'non-scaling-stroke'
+          }),
+          jsx('path', {
+            className: 'fleet-workflow-edge',
+            d: path,
+            markerEnd: 'url(#fleet-edge-arrow)',
+            vectorEffect: 'non-scaling-stroke'
+          })
+        ]
       }, edge.id)
     })
   })
@@ -1816,6 +2122,7 @@ function GraphEdges({ edges, nodeById }) {
 
 function FleetMiniMap({ graph, viewport, size, inspectorOpen = false }) {
   if (!graph.nodes.length) return null
+  const minimapNodeById = new Map(graph.nodes.map(node => [node.id, node]))
   const regions = graph.groups.length ? graph.groups : graph.nodes
   const left = Math.min(...regions.map(region => region.x))
   const top = Math.min(...regions.map(region => region.y))
@@ -1859,6 +2166,26 @@ function FleetMiniMap({ graph, viewport, size, inspectorOpen = false }) {
             strokeWidth: 2
           }, group.id)
         )
+      }),
+      jsx('g', {
+        'aria-hidden': true,
+        children: graph.edges.length <= 64
+          ? graph.edges.map(edge => {
+              const source = minimapNodeById.get(edge.source)
+              const target = minimapNodeById.get(edge.target)
+              if (!source || !target) return null
+              return jsx('line', {
+                x1: source.x + source.width / 2,
+                y1: source.y + source.height / 2,
+                x2: target.x + target.width / 2,
+                y2: target.y + target.height / 2,
+                stroke: 'var(--ui-text-secondary)',
+                strokeOpacity: 0.2,
+                strokeWidth: 3,
+                vectorEffect: 'non-scaling-stroke'
+              }, edge.id)
+            })
+          : null
       }),
       jsx('g', {
         children: graph.nodes.map(node =>
@@ -2059,14 +2386,14 @@ function WorkflowCanvasNode({ node, selected, hovered }) {
     body: descriptor.inputs.length || descriptor.outputs.length
       ? `${descriptor.inputs.length} input · ${descriptor.outputs.length} output`
       : 'Configuration node',
-    inputPorts: descriptor.inputs,
-    outputPorts: descriptor.outputs,
+    inputPorts: [],
+    outputPorts: [],
     footer: 'Execution unavailable',
     selected,
     hovered,
     executionState: 'idle',
     disabled: true,
-    showPorts: true
+    showPorts: false
   })
 }
 
@@ -2074,6 +2401,123 @@ function CanvasNodeRenderer({ node, selected, hovered }) {
   return node.source.kind === 'workflow'
     ? jsx(WorkflowCanvasNode, { node, selected, hovered })
     : jsx(MachineCanvasNode, { node, selected, hovered })
+}
+
+function workflowPortAriaLabel(node, port, direction, sourceLabel = null) {
+  if (direction === 'output') return `Connect ${node.label} ${port.label} output`
+  return sourceLabel
+    ? `Connect ${sourceLabel} to ${node.label} ${port.label} input`
+    : `${node.label} ${port.label} input`
+}
+
+function WorkflowPortHandle({
+  node,
+  port,
+  direction,
+  index,
+  total,
+  draft,
+  compatibility,
+  sourceLabel,
+  onStart,
+  onMove,
+  onEnd,
+  onCancel,
+  onCommit,
+  onTargetFocus
+}) {
+  const x = direction === 'output' ? node.width : 0
+  const y = ((index + 1) / (total + 1)) * node.height
+  const active = direction === 'output' && draft?.source === node.id && draft.sourcePort === port.id
+  const connectionState = active
+    ? 'active'
+    : draft && direction === 'input'
+      ? compatibility?.valid ? 'compatible' : 'incompatible'
+      : 'idle'
+  const keyboardTarget = Boolean(draft?.keyboard && direction === 'input' && compatibility?.valid)
+
+  function focusCompatibleSibling(event, offset) {
+    const peers = [...event.currentTarget.ownerSVGElement.querySelectorAll(
+      "[data-connection-compatible='true']"
+    )]
+    const current = peers.indexOf(event.currentTarget)
+    if (current < 0 || !peers.length) return
+    peers[(current + offset + peers.length) % peers.length].focus({ preventScroll: true })
+  }
+
+  function onKeyDown(event) {
+    if (event.key === 'Escape' && draft) {
+      event.preventDefault()
+      event.stopPropagation()
+      onCancel('Connection cancelled.')
+    } else if ((event.key === 'Enter' || event.key === ' ') && direction === 'output') {
+      event.preventDefault()
+      event.stopPropagation()
+      onStart(event, node, port, { x: node.x + x, y: node.y + y }, true)
+    } else if ((event.key === 'Enter' || event.key === ' ') && keyboardTarget) {
+      event.preventDefault()
+      event.stopPropagation()
+      onCommit(node.id, port.id)
+    } else if (keyboardTarget && ['ArrowRight', 'ArrowDown'].includes(event.key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      focusCompatibleSibling(event, 1)
+    } else if (keyboardTarget && ['ArrowLeft', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      focusCompatibleSibling(event, -1)
+    } else if (keyboardTarget && event.key === 'Tab') {
+      event.preventDefault()
+      event.stopPropagation()
+      focusCompatibleSibling(event, event.shiftKey ? -1 : 1)
+    }
+  }
+
+  return jsxs('g', {
+    className: 'fleet-port-handle',
+    transform: `translate(${x} ${y})`,
+    role: direction === 'output' || keyboardTarget ? 'button' : 'img',
+    tabIndex: direction === 'output' ? (draft ? -1 : 0) : keyboardTarget ? 0 : -1,
+    'aria-label': workflowPortAriaLabel(node, port, direction, sourceLabel),
+    'data-fleet-port': port.id,
+    'data-direction': direction,
+    'data-port-kind': port.kind,
+    'data-port-id': port.id,
+    'data-connection-state': connectionState,
+    'data-connection-compatible': keyboardTarget,
+    onClick: event => event.stopPropagation(),
+    onFocus: keyboardTarget ? () => onTargetFocus(node.id, port.id) : undefined,
+    onKeyDown,
+    onPointerDown: direction === 'output'
+      ? event => {
+          if (event.button !== 0) return
+          event.preventDefault()
+          event.stopPropagation()
+          event.currentTarget.focus({ preventScroll: true })
+          onStart(event, node, port, { x: node.x + x, y: node.y + y }, false)
+        }
+      : event => event.stopPropagation(),
+    onPointerMove: event => {
+      event.stopPropagation()
+      onMove(event)
+    },
+    onPointerUp: event => {
+      event.stopPropagation()
+      onEnd(event)
+    },
+    onPointerCancel: event => {
+      event.stopPropagation()
+      onCancel('Connection cancelled.')
+    },
+    onLostPointerCapture: event => {
+      event.stopPropagation()
+      onEnd(event)
+    },
+    children: [
+      jsx('circle', { className: 'fleet-port-hit', r: 15 }),
+      jsx('circle', { className: 'fleet-port-dot', r: active ? 6 : 5 })
+    ]
+  }, `${node.id}:${direction}:${port.id}`)
 }
 
 function GraphNode({
@@ -2141,12 +2585,18 @@ function GraphNode({
     'aria-pressed': selected,
     'aria-label': `${node.label}, ${node.status.label}, ${detailLabel}, ${identityLabel} ${node.id}`,
     'data-fleet-node': node.id,
+    'data-selected': selected,
     'data-focused': focused,
     className: `fleet-graph-node${animated ? ' fleet-node-enter' : ''}`,
     onFocus: () => onRovingFocus(node.id),
     onClick: event => {
       event.stopPropagation()
       event.currentTarget.focus({ preventScroll: true })
+      onSelect(node.id)
+    },
+    onContextMenu: event => {
+      event.currentTarget.focus({ preventScroll: true })
+      onRovingFocus(node.id)
       onSelect(node.id)
     },
     onDoubleClick: event => {
@@ -2160,10 +2610,22 @@ function GraphNode({
       event.currentTarget.focus({ preventScroll: true })
       onPointerDown(event, node)
     },
-    onPointerMove,
-    onPointerUp: onPointerEnd,
-    onPointerCancel,
-    onLostPointerCapture: onPointerEnd,
+    onPointerMove: event => {
+      event.stopPropagation()
+      onPointerMove(event)
+    },
+    onPointerUp: event => {
+      event.stopPropagation()
+      onPointerEnd(event)
+    },
+    onPointerCancel: event => {
+      event.stopPropagation()
+      onPointerCancel(event)
+    },
+    onLostPointerCapture: event => {
+      event.stopPropagation()
+      onPointerCancel(event)
+    },
     style: { cursor: 'grab', outline: 'none' },
     children: [
       jsx('title', {
@@ -2186,6 +2648,68 @@ function GraphNode({
   })
 }
 
+function WorkflowNodePorts({
+  node,
+  selected,
+  focused,
+  hovered,
+  draft,
+  compatibility,
+  sourceLabel,
+  onStart,
+  onMove,
+  onEnd,
+  onCancel,
+  onCommit,
+  onTargetFocus
+}) {
+  return jsx('g', {
+    className: 'fleet-workflow-node-ports',
+    transform: `translate(${node.x} ${node.y})`,
+    'data-selected': selected,
+    'data-focused': focused,
+    'data-hovered': hovered,
+    children: [
+      ...node.nodeType.inputs.map((port, index) =>
+        jsx(WorkflowPortHandle, {
+          node,
+          port,
+          direction: 'input',
+          index,
+          total: node.nodeType.inputs.length,
+          draft,
+          compatibility: draft ? compatibility(node.id, port.id) : null,
+          sourceLabel,
+          onStart,
+          onMove,
+          onEnd,
+          onCancel,
+          onCommit,
+          onTargetFocus
+        }, `input:${port.id}`)
+      ),
+      ...node.nodeType.outputs.map((port, index) =>
+        jsx(WorkflowPortHandle, {
+          node,
+          port,
+          direction: 'output',
+          index,
+          total: node.nodeType.outputs.length,
+          draft,
+          compatibility: null,
+          sourceLabel,
+          onStart,
+          onMove,
+          onEnd,
+          onCancel,
+          onCommit,
+          onTargetFocus
+        }, `output:${port.id}`)
+      )
+    ]
+  }, `ports:${node.id}`)
+}
+
 function FleetCanvas({
   graph,
   positions,
@@ -2194,6 +2718,10 @@ function FleetCanvas({
   selectedId,
   setSelectedId,
   animatedIds,
+  connectionAuthoring = null,
+  selectedEdgeId = null,
+  setSelectedEdgeId = null,
+  onDeleteEdge = null,
   inspectorOpen = false,
   canvasLabel = 'Fleet topology canvas. Arrow keys pan the canvas or move between focused nodes. Shift plus arrow moves a node. Plus and minus zoom; zero fits all.',
   emptyMessage = 'No machines match this view.'
@@ -2205,10 +2733,246 @@ function FleetCanvas({
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 })
   const [hoveredId, setHoveredId] = useState(null)
   const [rovingId, setRovingId] = useState(null)
+  const [connectionDraft, setConnectionDraft] = useState(null)
+  const connectionDraftRef = useRef(null)
+  const connectionMoveFrameRef = useRef(null)
+  const connectionMoveSampleRef = useRef(null)
+  const canvasMoveFrameRef = useRef(null)
+  const canvasMoveSampleRef = useRef(null)
+  connectionDraftRef.current = connectionDraft
   const nodeById = useMemo(
     () => new Map(graph.nodes.map(node => [node.id, node])),
     [graph.nodes]
   )
+  const connectionSourceLabel = connectionDraft
+    ? nodeById.get(connectionDraft.source)?.label ?? connectionDraft.source
+    : null
+
+  function setDraft(next) {
+    connectionDraftRef.current = next
+    setConnectionDraft(next)
+  }
+
+  function clientToWorld(clientX, clientY) {
+    const bounds = rootRef.current?.getBoundingClientRect()
+    if (!bounds) return { x: 0, y: 0 }
+    return {
+      x: (clientX - bounds.left - viewport.x) / viewport.scale,
+      y: (clientY - bounds.top - viewport.y) / viewport.scale
+    }
+  }
+
+  function compatibilityForTarget(nodeId, portId, draft = connectionDraftRef.current) {
+    if (!draft || !connectionAuthoring) return { valid: false, reason: 'not authoring' }
+    return connectionAuthoring.compatibility({
+      source: draft.source,
+      sourcePort: draft.sourcePort,
+      target: nodeId,
+      targetPort: portId
+    })
+  }
+
+  function closestInputTarget(point, draft) {
+    let closest = null
+    const hitRadius = 22 / viewport.scale
+    for (const node of graph.nodes) {
+      for (const port of node.nodeType?.inputs ?? []) {
+        const targetPoint = workflowPortPoint(node, 'input', port.id)
+        if (!targetPoint) continue
+        const distance = Math.hypot(targetPoint.x - point.x, targetPoint.y - point.y)
+        if (distance > hitRadius || (closest && distance >= closest.distance)) continue
+        const compatibility = compatibilityForTarget(node.id, port.id, draft)
+        closest = {
+          nodeId: node.id,
+          portId: port.id,
+          state: compatibility.valid ? 'valid' : 'invalid',
+          reason: compatibility.valid ? null : compatibility.reason,
+          distance
+        }
+      }
+    }
+    return closest && {
+      nodeId: closest.nodeId,
+      portId: closest.portId,
+      state: closest.state,
+      reason: closest.reason
+    }
+  }
+
+  function cancelConnection(message = null) {
+    const active = pointerRef.current
+    pointerRef.current = null
+    if (connectionMoveFrameRef.current != null) {
+      cancelAnimationFrame(connectionMoveFrameRef.current)
+      connectionMoveFrameRef.current = null
+    }
+    connectionMoveSampleRef.current = null
+    if (
+      active?.kind === 'connection' &&
+      active.captureElement?.hasPointerCapture?.(active.pointerId)
+    ) active.captureElement.releasePointerCapture(active.pointerId)
+    setDraft(workflowConnectionDraftReducer(connectionDraftRef.current, { type: 'cancel' }))
+    if (message) connectionAuthoring?.onNotice(message)
+  }
+
+  function commitConnection(targetNodeId, targetPortId) {
+    const draft = connectionDraftRef.current
+    if (!draft || !connectionAuthoring) return false
+    const compatibility = compatibilityForTarget(targetNodeId, targetPortId, draft)
+    if (!compatibility.valid) {
+      cancelConnection(compatibility.reason ?? 'Connection rejected.')
+      return false
+    }
+    const committed = connectionAuthoring.onConnectionCommit({
+      source: draft.source,
+      sourcePort: draft.sourcePort,
+      target: targetNodeId,
+      targetPort: targetPortId,
+      kind: compatibility.kind
+    })
+    cancelConnection()
+    return committed !== false
+  }
+
+  function focusConnectionTarget(targetNodeId, targetPortId) {
+    const draft = connectionDraftRef.current
+    const targetNode = nodeById.get(targetNodeId)
+    const point = workflowPortPoint(targetNode, 'input', targetPortId)
+    if (!draft?.keyboard || !point) return
+    const compatibility = compatibilityForTarget(targetNodeId, targetPortId, draft)
+    if (!compatibility.valid) return
+    setDraft(workflowConnectionDraftReducer(draft, {
+      type: 'move',
+      point,
+      target: { nodeId: targetNodeId, portId: targetPortId, state: 'valid' }
+    }))
+  }
+
+  function beginConnection(event, node, port, point, keyboard) {
+    if (!connectionAuthoring || port.direction !== 'output') return
+    const draft = workflowConnectionDraftReducer(null, {
+      type: 'start',
+      source: node.id,
+      sourcePort: port.id,
+      point,
+      keyboard
+    })
+    setDraft(draft)
+    setSelectedEdgeId?.(null)
+    if (!keyboard) {
+      event.currentTarget.setPointerCapture(event.pointerId)
+      pointerRef.current = {
+        kind: 'connection',
+        pointerId: event.pointerId,
+        captureElement: event.currentTarget
+      }
+      connectionAuthoring.onNotice(`Connecting ${node.label} ${port.label} output.`)
+      return
+    }
+    connectionAuthoring.onNotice(`Choose a compatible input for ${node.label} ${port.label}.`)
+    requestAnimationFrame(() => {
+      const target = rootRef.current?.querySelector("[data-connection-compatible='true']")
+      if (target) target.focus({ preventScroll: true })
+      else cancelConnection('No compatible inputs are available.')
+    })
+  }
+
+  function applyConnectionMove(sample) {
+    const active = pointerRef.current
+    const draft = connectionDraftRef.current
+    if (!draft || active?.kind !== 'connection' || active.pointerId !== sample.pointerId) {
+      return false
+    }
+    const point = clientToWorld(sample.clientX, sample.clientY)
+    const target = closestInputTarget(point, draft)
+    setDraft(workflowConnectionDraftReducer(draft, { type: 'move', point, target }))
+    return true
+  }
+
+  function moveConnection(event) {
+    const active = pointerRef.current
+    if (active?.kind !== 'connection' || active.pointerId !== event.pointerId) return false
+    connectionMoveSampleRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY
+    }
+    if (connectionMoveFrameRef.current == null) {
+      connectionMoveFrameRef.current = requestAnimationFrame(() => {
+        connectionMoveFrameRef.current = null
+        const sample = connectionMoveSampleRef.current
+        connectionMoveSampleRef.current = null
+        if (sample) applyConnectionMove(sample)
+      })
+    }
+    return true
+  }
+
+  function endConnection(event) {
+    const active = pointerRef.current
+    const currentDraft = connectionDraftRef.current
+    if (!currentDraft || active?.kind !== 'connection' || active.pointerId !== event.pointerId) return false
+    if (event.type === 'lostpointercapture') {
+      cancelConnection('Connection cancelled.')
+      return true
+    }
+    if (connectionMoveFrameRef.current != null) {
+      cancelAnimationFrame(connectionMoveFrameRef.current)
+      connectionMoveFrameRef.current = null
+    }
+    connectionMoveSampleRef.current = null
+    applyConnectionMove({
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY
+    })
+    const draft = connectionDraftRef.current
+    pointerRef.current = null
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (draft.target?.state === 'valid') {
+      commitConnection(draft.target.nodeId, draft.target.portId)
+    } else if (draft.target?.state === 'invalid') {
+      cancelConnection(draft.target.reason ?? 'Those port types are not compatible.')
+    } else {
+      cancelConnection('Connection cancelled.')
+    }
+    return true
+  }
+
+  useEffect(() => {
+    const draft = connectionDraftRef.current
+    if (!draft) return
+    const sourceNode = nodeById.get(draft.source)
+    const sourcePortExists = sourceNode?.nodeType?.outputs.some(
+      port => port.id === draft.sourcePort
+    )
+    const targetNode = draft.target ? nodeById.get(draft.target.nodeId) : null
+    const targetExists = !draft.target || targetNode?.nodeType?.inputs.some(
+      port => port.id === draft.target.portId
+    )
+    if (!sourcePortExists || !targetExists) {
+      cancelConnection('Connection cancelled because the graph changed.')
+    }
+  }, [connectionAuthoring, nodeById])
+
+  useEffect(() => () => {
+    if (connectionMoveFrameRef.current != null) {
+      cancelAnimationFrame(connectionMoveFrameRef.current)
+      connectionMoveFrameRef.current = null
+    }
+    if (canvasMoveFrameRef.current != null) {
+      cancelAnimationFrame(canvasMoveFrameRef.current)
+      canvasMoveFrameRef.current = null
+    }
+    const active = pointerRef.current
+    pointerRef.current = null
+    if (
+      active?.kind === 'connection' &&
+      active.captureElement?.hasPointerCapture?.(active.pointerId)
+    ) active.captureElement.releasePointerCapture(active.pointerId)
+  }, [])
 
   useEffect(() => {
     if (rovingId && !nodeById.has(rovingId)) setRovingId(null)
@@ -2279,10 +3043,15 @@ function FleetCanvas({
 
   function beginPan(event) {
     if (event.button !== 0) return
+    if (event.target === event.currentTarget) {
+      setSelectedId(null)
+      setSelectedEdgeId?.(null)
+    }
     event.currentTarget.setPointerCapture(event.pointerId)
     pointerRef.current = {
       kind: 'pan',
       pointerId: event.pointerId,
+      captureElement: event.currentTarget,
       clientX: event.clientX,
       clientY: event.clientY,
       viewport
@@ -2298,6 +3067,7 @@ function FleetCanvas({
     pointerRef.current = {
       kind: 'node',
       pointerId: event.pointerId,
+      captureElement: event.currentTarget,
       id: node.id,
       clientX: event.clientX,
       clientY: event.clientY,
@@ -2307,11 +3077,11 @@ function FleetCanvas({
     }
   }
 
-  function movePointer(event) {
+  function applyCanvasMove(sample) {
     const active = pointerRef.current
-    if (!active || active.pointerId !== event.pointerId) return
-    const dx = event.clientX - active.clientX
-    const dy = event.clientY - active.clientY
+    if (!active || active.pointerId !== sample.pointerId || active.kind === 'connection') return false
+    const dx = sample.clientX - active.clientX
+    const dy = sample.clientY - active.clientY
     if (active.kind === 'pan') {
       setViewport({
         ...active.viewport,
@@ -2319,33 +3089,86 @@ function FleetCanvas({
         y: active.viewport.y + dy
       })
     } else {
-      const next = setFleetPosition(positions, active.id, {
+      const next = setFleetPosition(active.originalPositions, active.id, {
         x: active.x + dx / viewport.scale,
         y: active.y + dy / viewport.scale
       })
       active.positions = next
       setPositions(next)
     }
+    return true
+  }
+
+  function movePointer(event) {
+    const active = pointerRef.current
+    if (!active || active.pointerId !== event.pointerId) return
+    if (active.kind === 'connection') {
+      moveConnection(event)
+      return
+    }
+    canvasMoveSampleRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY
+    }
+    if (canvasMoveFrameRef.current == null) {
+      canvasMoveFrameRef.current = requestAnimationFrame(() => {
+        canvasMoveFrameRef.current = null
+        const sample = canvasMoveSampleRef.current
+        canvasMoveSampleRef.current = null
+        if (sample) applyCanvasMove(sample)
+      })
+    }
   }
 
   function endPointer(event) {
     const active = pointerRef.current
     if (!active || active.pointerId !== event.pointerId) return
+    if (active.kind === 'connection') {
+      endConnection(event)
+      return
+    }
+    if (canvasMoveFrameRef.current != null) {
+      cancelAnimationFrame(canvasMoveFrameRef.current)
+      canvasMoveFrameRef.current = null
+    }
+    canvasMoveSampleRef.current = null
+    applyCanvasMove({
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY
+    })
+    pointerRef.current = null
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
-    pointerRef.current = null
     if (active.kind === 'node' && active.positions) commitPositions(active.positions)
+  }
+
+  function cancelActiveCanvasGesture() {
+    const active = pointerRef.current
+    if (!active) return
+    if (active.kind === 'connection') {
+      cancelConnection('Connection cancelled.')
+      return
+    }
+    if (canvasMoveFrameRef.current != null) {
+      cancelAnimationFrame(canvasMoveFrameRef.current)
+      canvasMoveFrameRef.current = null
+    }
+    canvasMoveSampleRef.current = null
+    pointerRef.current = null
+    if (active.captureElement?.hasPointerCapture?.(active.pointerId)) {
+      active.captureElement.releasePointerCapture(active.pointerId)
+    }
+    if (active.kind === 'node') setPositions(active.originalPositions)
+    else if (active.kind === 'pan') setViewport(active.viewport)
   }
 
   function cancelPointer(event) {
     const active = pointerRef.current
     if (!active || active.pointerId !== event.pointerId) return
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    pointerRef.current = null
-    if (active.kind === 'node') setPositions(active.originalPositions)
+    cancelActiveCanvasGesture()
   }
 
   function onWheel(event) {
@@ -2360,11 +3183,14 @@ function FleetCanvas({
   }
 
   function onCanvasKeyDown(event) {
+    if (event.key === 'Escape' && connectionDraftRef.current) {
+      event.preventDefault()
+      cancelConnection('Connection cancelled.')
+      return
+    }
     if (event.key === 'Escape' && pointerRef.current) {
       event.preventDefault()
-      const active = pointerRef.current
-      pointerRef.current = null
-      if (active.kind === 'node') setPositions(active.originalPositions)
+      cancelActiveCanvasGesture()
       return
     }
     if (event.target !== event.currentTarget) return
@@ -2450,17 +3276,39 @@ function FleetCanvas({
         'aria-label': canvasLabel,
         style: { touchAction: 'none' },
         onPointerDown: beginPan,
+        onContextMenu: event => {
+          const interactiveTarget = event.target.closest?.(
+            '[data-fleet-node], [data-fleet-edge]'
+          )
+          if (!interactiveTarget) {
+            setSelectedId(null)
+            setSelectedEdgeId?.(null)
+          }
+        },
         onPointerMove: movePointer,
         onPointerUp: endPointer,
         onPointerCancel: cancelPointer,
-        onLostPointerCapture: endPointer,
+        onLostPointerCapture: cancelPointer,
         onWheel,
         onKeyDown: onCanvasKeyDown,
         children: jsx('g', {
           transform: `translate(${viewport.x} ${viewport.y}) scale(${viewport.scale})`,
           children: [
+            jsx(WorkflowEdgeDefinitions, {}),
             jsx(GraphGroups, { groups: graph.groups }),
-            jsx(GraphEdges, { edges: graph.edges, nodeById }),
+            jsx(GraphEdges, {
+              edges: graph.edges,
+              nodeById,
+              selectedEdgeId,
+              onSelectEdge: setSelectedEdgeId
+                ? id => {
+                    setSelectedId(null)
+                    setSelectedEdgeId(id)
+                  }
+                : null,
+              onDeleteEdge
+            }),
+            jsx(ProvisionalWorkflowEdge, { draft: connectionDraft, nodeById }),
             jsx('g', {
               children: graph.nodes.map(node =>
                 jsx(GraphNode, {
@@ -2469,7 +3317,10 @@ function FleetCanvas({
                   focused: rovingId === node.id,
                   hovered: hoveredId === node.id,
                   animated: animatedIds.has(node.id),
-                  onSelect: setSelectedId,
+                  onSelect: id => {
+                    setSelectedId(id)
+                    setSelectedEdgeId?.(null)
+                  },
                   onRovingFocus: setRovingId,
                   onCenter: centerNode,
                   onHover: setHoveredId,
@@ -2480,7 +3331,30 @@ function FleetCanvas({
                   onPointerCancel: cancelPointer
                 }, node.id)
               )
-            })
+            }),
+            connectionAuthoring
+              ? jsx('g', {
+                  children: graph.nodes
+                    .filter(node => node.source.kind === 'workflow')
+                    .map(node =>
+                      jsx(WorkflowNodePorts, {
+                        node,
+                        selected: selectedId === node.id,
+                        focused: rovingId === node.id,
+                        hovered: hoveredId === node.id,
+                        draft: connectionDraft,
+                        compatibility: compatibilityForTarget,
+                        sourceLabel: connectionSourceLabel,
+                        onStart: beginConnection,
+                        onMove: movePointer,
+                        onEnd: endPointer,
+                        onCancel: cancelConnection,
+                        onCommit: commitConnection,
+                        onTargetFocus: focusConnectionTarget
+                      }, `ports:${node.id}`)
+                    )
+                })
+              : null
           ]
         })
       }),
@@ -3268,6 +4142,7 @@ function WorkflowInspectorDrawer({ node, onClose }) {
 function WorkflowModePanel({ history, setHistory }) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
+  const [selectedEdgeId, setSelectedEdgeId] = useState(null)
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [editorNotice, setEditorNotice] = useState(null)
   const [positions, setPositions] = useState(() => Object.fromEntries(
@@ -3275,6 +4150,7 @@ function WorkflowModePanel({ history, setHistory }) {
   ))
   const clipboardRef = useRef(null)
   const counterRef = useRef(history.present.nodes.length + 1)
+  const connectionCounterRef = useRef(history.present.connections.length + 1)
   const workflow = history.present
   const graph = useMemo(
     () => buildWorkflowGraph(workflow, positions),
@@ -3288,6 +4164,8 @@ function WorkflowModePanel({ history, setHistory }) {
   }, [selectedId])
   const selectNode = useCallback(id => {
     setSelectedId(id)
+    setSelectedEdgeId(null)
+    if (!id) setInspectorOpen(false)
     setEditorNotice(null)
   }, [])
 
@@ -3299,10 +4177,64 @@ function WorkflowModePanel({ history, setHistory }) {
       setSelectedId(null)
       setInspectorOpen(false)
     }
-  }, [history.present, selectedId])
+    if (selectedEdgeId && !history.present.connections.some(edge => edge.id === selectedEdgeId)) {
+      setSelectedEdgeId(null)
+    }
+  }, [history.present, selectedEdgeId, selectedId])
 
   const applyEdit = useCallback(next => {
     setHistory(current => applyWorkflowEdit(current, next))
+  }, [setHistory])
+
+  const createConnection = useCallback(input => {
+    if (workflow.connections.length >= WORKFLOW_LIMIT_COUNT) {
+      setEditorNotice('Workflow connection limit reached (256).')
+      return false
+    }
+    const ids = new Set(workflow.connections.map(edge => edge.id))
+    const id = allocateWorkflowId(
+      `connection-${Date.now().toString(36)}-${connectionCounterRef.current++}`,
+      ids
+    )
+    try {
+      const next = connectWorkflowNodes(workflow, { ...input, id })
+      applyEdit(next)
+      setSelectedId(null)
+      setSelectedEdgeId(id)
+      const source = workflow.nodes.find(node => node.id === input.source)?.title ?? input.source
+      const target = workflow.nodes.find(node => node.id === input.target)?.title ?? input.target
+      setEditorNotice(`Connected ${source} to ${target}.`)
+      return true
+    } catch (error) {
+      setEditorNotice(error instanceof Error ? error.message : 'Unable to create connection.')
+      return false
+    }
+  }, [applyEdit, workflow])
+
+  const deleteConnection = useCallback(connectionId => {
+    try {
+      applyEdit(deleteWorkflowConnection(workflow, connectionId))
+      setSelectedEdgeId(null)
+      setEditorNotice('Connection deleted.')
+    } catch (error) {
+      setEditorNotice(error instanceof Error ? error.message : 'Unable to delete connection.')
+    }
+  }, [applyEdit, workflow])
+
+  const connectionAuthoring = useMemo(() => ({
+    compatibility: input => workflowConnectionCompatibility(workflow, input),
+    onConnectionCommit: createConnection,
+    onNotice: setEditorNotice
+  }), [createConnection, workflow])
+
+  const undoEdit = useCallback(() => {
+    setHistory(current => undoWorkflow(current))
+    setEditorNotice('Undo applied.')
+  }, [setHistory])
+
+  const redoEdit = useCallback(() => {
+    setHistory(current => redoWorkflow(current))
+    setEditorNotice('Redo applied.')
   }, [setHistory])
 
   const addNode = useCallback(type => {
@@ -3339,11 +4271,16 @@ function WorkflowModePanel({ history, setHistory }) {
   }, [applyEdit, workflow])
 
   const deleteSelected = useCallback(() => {
+    if (selectedEdgeId) {
+      deleteConnection(selectedEdgeId)
+      return
+    }
     if (!selectedId) return
     applyEdit(deleteWorkflowSelection(workflow, [selectedId]))
     setSelectedId(null)
     setInspectorOpen(false)
-  }, [applyEdit, selectedId, workflow])
+    setEditorNotice('Node and its connections deleted.')
+  }, [applyEdit, deleteConnection, selectedEdgeId, selectedId, workflow])
 
   const duplicateSelected = useCallback(() => {
     if (!selectedId) return
@@ -3398,7 +4335,8 @@ function WorkflowModePanel({ history, setHistory }) {
       paste()
     } else if (mod && event.key.toLowerCase() === 'z') {
       event.preventDefault()
-      setHistory(current => event.shiftKey ? redoWorkflow(current) : undoWorkflow(current))
+      if (event.shiftKey) redoEdit()
+      else undoEdit()
     }
   }
 
@@ -3414,6 +4352,10 @@ function WorkflowModePanel({ history, setHistory }) {
         selectedId,
         setSelectedId: selectNode,
         animatedIds: new Set(),
+        connectionAuthoring,
+        selectedEdgeId,
+        setSelectedEdgeId,
+        onDeleteEdge: deleteConnection,
         inspectorOpen: Boolean(selectedNode && inspectorOpen),
         canvasLabel: 'Workflow editor canvas. Arrow keys pan the canvas or move between focused nodes. Shift plus arrow moves a node. Plus and minus zoom; zero fits all.',
         emptyMessage: 'Add a node from the palette to begin.'
@@ -3435,14 +4377,14 @@ function WorkflowModePanel({ history, setHistory }) {
         children: [
           jsx(Button, {
             type: 'button', size: 'sm', variant: 'ghost',
-            onClick: () => setHistory(current => undoWorkflow(current)),
+            onClick: undoEdit,
             disabled: !history.past.length,
             title: 'Undo (Ctrl+Z)',
             children: jsx(Codicon, { name: 'discard', size: '0.8rem' })
           }),
           jsx(Button, {
             type: 'button', size: 'sm', variant: 'ghost',
-            onClick: () => setHistory(current => redoWorkflow(current)),
+            onClick: redoEdit,
             disabled: !history.future.length,
             title: 'Redo (Ctrl+Shift+Z)',
             children: jsx(Codicon, { name: 'redo', size: '0.8rem' })
@@ -3456,8 +4398,8 @@ function WorkflowModePanel({ history, setHistory }) {
           jsx(Button, {
             type: 'button', size: 'sm', variant: 'ghost',
             onClick: deleteSelected,
-            disabled: !selectedId,
-            children: 'Delete'
+            disabled: !selectedId && !selectedEdgeId,
+            children: selectedEdgeId ? 'Delete connection' : 'Delete'
           }),
           jsx(Button, {
             type: 'button', size: 'sm', variant: 'outline',
@@ -3474,7 +4416,7 @@ function WorkflowModePanel({ history, setHistory }) {
               })
             : jsx('span', {
                 className: 'ml-auto text-[0.6875rem] text-muted-foreground',
-                children: `${workflow.nodes.length} editor node${workflow.nodes.length === 1 ? '' : 's'} · execution unavailable`
+                children: `${workflow.nodes.length} node${workflow.nodes.length === 1 ? '' : 's'} · ${workflow.connections.length} connection${workflow.connections.length === 1 ? '' : 's'} · execution unavailable`
               })
         ]
       }),
@@ -3502,7 +4444,12 @@ function WorkflowModePanel({ history, setHistory }) {
                   jsx(ContextMenuItem, {
                     onSelect: deleteSelected,
                     disabled: !selectedId,
-                    children: 'Delete selected'
+                    children: 'Delete selected node'
+                  }),
+                  jsx(ContextMenuItem, {
+                    onSelect: () => selectedEdgeId && deleteConnection(selectedEdgeId),
+                    disabled: !selectedEdgeId,
+                    children: 'Delete selected connection'
                   })
                 ]
               })
@@ -3512,7 +4459,7 @@ function WorkflowModePanel({ history, setHistory }) {
       }),
       jsx('div', {
         className: 'px-4 pb-1 text-[0.6875rem] text-muted-foreground',
-        children: 'Editor foundation only · typed connections serialize but no workflow execution runtime is present'
+        children: 'Editor only · typed connections serialize locally · no workflow execution runtime is present'
       })
     ]
   })
@@ -3583,6 +4530,7 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
   }, [selectedId])
   const selectNode = useCallback(id => {
     setSelectedId(id)
+    if (!id) setInspectorOpen(false)
   }, [])
   const createFromSelection = useCallback(() => {
     if (!selectedNode) return
@@ -3709,7 +4657,7 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
             className: 'text-[0.6875rem] text-muted-foreground',
             children: mode === 'topology'
               ? 'Live provider topology'
-              : 'Editor foundation · execution unavailable'
+              : 'Editor only · execution unavailable'
           }),
           null
         ]
