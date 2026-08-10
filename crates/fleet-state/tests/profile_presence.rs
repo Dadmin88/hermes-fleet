@@ -404,7 +404,7 @@ fn candidates_survive_store_restart_without_a_new_registry() {
             ready_observation(1_000, 0, profile_name, "0.1.0"),
             1_100,
         );
-        assert_eq!(store.schema_version().unwrap(), 3);
+        assert_eq!(store.schema_version().unwrap(), 4);
     }
 
     let restarted = FleetStateStore::open(&path).unwrap();
@@ -413,7 +413,7 @@ fn candidates_survive_store_restart_without_a_new_registry() {
         .unwrap();
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].device_id, "device-1");
-    assert_eq!(restarted.schema_version().unwrap(), 3);
+    assert_eq!(restarted.schema_version().unwrap(), 4);
 }
 
 #[test]
