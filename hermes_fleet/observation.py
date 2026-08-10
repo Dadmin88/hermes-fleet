@@ -20,6 +20,9 @@ _SCHEMA = "fleet.node-observation.v1"
 _MAX_FRAME_BYTES = 32_768
 _U32_MAX = (1 << 32) - 1
 _U64_MAX = (1 << 64) - 1
+_MAX_PROFILE_COUNT = 256
+_MAX_PROFILE_NAME_BYTES = 128
+_MAX_PROFILE_VERSION_BYTES = 128
 _READINESS_KEYS = frozenset(
     {
         "managed_state",
@@ -230,6 +233,40 @@ def _normalize_gpu(value: object) -> dict[str, Any] | None:
     return {"present": present, "vram": vram}
 
 
+def _normalize_profiles(value: object) -> list[dict[str, str]]:
+    if type(value) is not list or len(value) > _MAX_PROFILE_COUNT:
+        raise ValueError("profile inventory is invalid")
+    normalized: list[dict[str, str]] = []
+    previous_name: str | None = None
+    for item in value:
+        if type(item) is not dict or set(item) != {"name", "version"}:
+            raise ValueError("profile presence fields are invalid")
+        name = item["name"]
+        version = item["version"]
+        if (
+            type(name) is not str
+            or not 0 < len(name) <= _MAX_PROFILE_NAME_BYTES
+            or name in {".", ".."}
+            or any(
+                not (character.isascii() and (character.isalnum() or character in "._-"))
+                for character in name
+            )
+            or type(version) is not str
+            or not 0 < len(version) <= _MAX_PROFILE_VERSION_BYTES
+            or any(
+                not character.isascii()
+                or character.isspace()
+                or not 32 < ord(character) < 127
+                for character in version
+            )
+            or (previous_name is not None and name <= previous_name)
+        ):
+            raise ValueError("profile presence identity is invalid")
+        normalized.append({"name": name, "version": version})
+        previous_name = name
+    return normalized
+
+
 def _bounded_int(value: object, *, minimum: int, maximum: int) -> int:
     if (
         isinstance(value, bool)
@@ -362,6 +399,7 @@ def build_observation(
     network_reachable: bool,
     keryx_available: bool,
     worker_available: bool,
+    profiles: object | None = None,
 ) -> dict[str, Any]:
     """Build the narrow scheduling sample owned by the Fleet worker."""
     if (
@@ -393,7 +431,7 @@ def build_observation(
             for field in ("run_submission", "run_status", "run_stop")
         )
     )
-    return {
+    sample = {
         "admission_generation": admission_generation,
         "observed_at_ms": timestamp,
         "network": "reachable" if network_reachable else "unreachable",
@@ -406,6 +444,9 @@ def build_observation(
         },
         "resources": linux_resources(),
     }
+    if profiles is not None:
+        sample["profiles"] = _normalize_profiles(profiles)
+    return sample
 
 
 def linux_resources() -> dict[str, Any]:
