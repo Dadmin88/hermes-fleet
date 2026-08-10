@@ -62,8 +62,8 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in source
     assert "id: 'fleet.open'" in source
     assert "STATUSBAR_AREAS.right" in source
-    assert "role: 'tree'" in source
-    assert "role: 'treeitem'" in source
+    assert "role: 'region'" in source
+    assert "role: 'button'" in source
     assert "node.source.kind === 'workflow'" in source
     assert "? 'Observed identity'" in source
     assert ": 'Stable identity'" in source
@@ -72,7 +72,7 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "edges: []" in source
     assert "onPointerCancel" in source
     assert "Loader" in source
-    assert "EmptyState" in source
+    assert "emptyMessage = 'No machines match this view.'" in source
     assert "ErrorState" in source
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|\brgb\(", source)
     assert "var(--color-" not in source
@@ -87,10 +87,17 @@ def test_graph_first_canvas_opens_evidence_in_an_explicit_overlay_drawer() -> No
     assert "const [selectedId, setSelectedId] = useState(null)" in source
     assert "function FleetInspectorDrawer" in source
     assert "'aria-label': 'Fleet inspector drawer'" in source
-    assert "const closeInspector = useCallback(() => setSelectedId(null), [])" in source
+    assert (
+        "const closeInspector = useCallback(() => setInspectorOpen(false), [])"
+        in source
+    )
     assert "onClose: closeInspector" in source
     assert "className: 'h-full min-h-0 w-full shrink-0 overflow-auto" in source
     assert "canvasNodes.find(node => node.stable_id === selectedId) ?? null" in source
+    assert "selectedNode && inspectorOpen" in source
+    assert "Workflow node limit reached (256)." in source
+    assert "appendTopologyTargetsToWorkflow(current.present" in source
+    assert "title: 'Your Fleet is empty'" not in source
     assert (
         "canvasNodes.find(node => node.stable_id === selectedId) ?? canvasNodes[0]"
         not in source
@@ -356,8 +363,9 @@ let history = mod.createWorkflowHistory(workflow)
 history = mod.applyWorkflowEdit(history, duplicated)
 history = mod.undoWorkflow(history)
 history = mod.redoWorkflow(history)
-const topology = mod.createWorkflowFromTopology('from-topology', [{
-  stable_id: 'observed-node-a', kind: 'observed', node_type: 'machine',
+const observedSource = {
+  stable_id: 'observed-node-' + 'a'.repeat(64),
+  kind: 'observed', node_type: 'machine',
   naming: { display_name: 'katana', technical_name: 'katana.example.ts.net' },
   provider: {
     kind: 'tailscale', label: 'Tailscale', node_id: 'node-1',
@@ -367,7 +375,29 @@ const topology = mod.createWorkflowFromTopology('from-topology', [{
     observed_id: 'sha256:' + 'a'.repeat(64),
     addresses: ['provider-address-1']
   }
-}])
+}
+const topology = mod.createWorkflowFromTopology('from-topology', [observedSource])
+const appended = mod.appendTopologyTargetsToWorkflow(workflow, [observedSource])
+const appendedAgain = mod.appendTopologyTargetsToWorkflow(appended, [observedSource])
+let appendHistory = mod.createWorkflowHistory(workflow)
+appendHistory = mod.applyWorkflowEdit(appendHistory, appended)
+appendHistory = mod.undoWorkflow(appendHistory)
+const duplicateMemberJson = mod.serializeWorkflow(workflow).replace(
+  '"schema":"fleet.workflow-editor.v1"',
+  '"schema":"fleet.workflow-editor.v1","schema":"fleet.workflow-editor.v1"'
+)
+const contradictoryTarget = JSON.parse(mod.serializeWorkflow(topology))
+contradictoryTarget.nodes[0].target.stable_id = 'observed-node-' + 'b'.repeat(64)
+let httpA = mod.createEmptyWorkflow('http-canonical')
+httpA = mod.addWorkflowNode(httpA, {
+  id: 'http-1', type: 'http', position: { x: 0, y: 0 },
+  configuration: { url: 'https://example.invalid', method: 'POST' }
+})
+let httpB = mod.createEmptyWorkflow('http-canonical')
+httpB = mod.addWorkflowNode(httpB, {
+  id: 'http-1', type: 'http', position: { x: 0, y: 0 },
+  configuration: { method: 'POST', url: 'https://example.invalid' }
+})
 const hiddenPayload = JSON.parse(mod.serializeWorkflow(workflow))
 hiddenPayload.nodes[0].configuration = { execution: { run: 'x' } }
 hiddenPayload.nodes[0].target = {
@@ -387,6 +417,23 @@ const invalidContribution = {
   id: 'bad-contribution', label: 'Bad', category: 'data', icon: 'json',
   inputs: [{ id: 42, direction: 'output', kind: 'data', label: null }],
   outputs: [], configurationSchema: 'not-a-schema'
+}
+const contributionBase = {
+  id: 'plugin-data', label: 'Plugin Data', category: 'data', icon: 'json',
+  inputs: [], outputs: [],
+  configurationSchema: {
+    type: 'object', properties: {}, additionalProperties: false
+  }
+}
+const contributionWithExtra = { ...contributionBase, extra: true }
+const contributionWithInvertedBounds = {
+  ...contributionBase,
+  id: 'plugin-bounds',
+  configurationSchema: {
+    type: 'object',
+    properties: { amount: { type: 'number', minimum: 10, maximum: 0 } },
+    additionalProperties: false
+  }
 }
 const boxed = mod.nodesInsideSelection([
   { id: 'a', x: 0, y: 0, width: 100, height: 80 },
@@ -416,6 +463,23 @@ console.log(JSON.stringify({
       longPrefixPaste.nodes.length,
   invalidContributionRejected:
     !mod.createFleetNodeRegistry([invalidContribution]).has('bad-contribution'),
+  extraContributionRejected:
+    !mod.createFleetNodeRegistry([contributionWithExtra]).has('plugin-data'),
+  invertedBoundsRejected:
+    !mod.createFleetNodeRegistry([contributionWithInvertedBounds]).has('plugin-bounds'),
+  nonArrayContributionsRejected: rejects(() => mod.createFleetNodeRegistry({})),
+  appendedCounts: [appended.nodes.length, appended.connections.length],
+  appendDedupeCount: appendedAgain.nodes.length,
+  appendUndoCount: appendHistory.present.nodes.length,
+  duplicateMemberRejected: rejects(() => mod.deserializeWorkflow(duplicateMemberJson)),
+  contradictoryTargetRejected: rejects(() =>
+    mod.deserializeWorkflow(contradictoryTarget)
+  ),
+  configurationCanonical:
+    mod.serializeWorkflow(httpA) === mod.serializeWorkflow(httpB),
+  invalidHistoryRejected: rejects(() =>
+    mod.createWorkflowHistory({ ...workflow, execution: { run: 'x' } })
+  ),
   boxed
 }))
 """
@@ -496,6 +560,16 @@ console.log(JSON.stringify({
     assert loaded["malformedClipboardRejected"] is True
     assert loaded["longPrefixUnique"] is True
     assert loaded["invalidContributionRejected"] is True
+    assert loaded["extraContributionRejected"] is True
+    assert loaded["invertedBoundsRejected"] is True
+    assert loaded["nonArrayContributionsRejected"] is True
+    assert loaded["appendedCounts"] == [3, 1]
+    assert loaded["appendDedupeCount"] == 3
+    assert loaded["appendUndoCount"] == 2
+    assert loaded["duplicateMemberRejected"] is True
+    assert loaded["contradictoryTargetRejected"] is True
+    assert loaded["configurationCanonical"] is True
+    assert loaded["invalidHistoryRejected"] is True
     assert "execution" not in loaded["topology"]
     assert loaded["boxed"] == ["a"]
 

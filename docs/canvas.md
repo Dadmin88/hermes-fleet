@@ -13,7 +13,7 @@ This document describes the current frontend contract. It does not authorize a w
 
 ## Non-negotiable truth boundary
 
-The authoritative topology payload is `fleet.desktop.v1` or `fleet.desktop.v2` from `GET /overview`.
+`GET /overview` returns the composed `fleet.desktop.v2` document. `fleet.desktop.v1` is the managed-control upstream input that the dashboard backend validates before composing v2.
 
 `fleet.desktop.v2` contains independent collections:
 
@@ -50,7 +50,7 @@ Provider SaaS API
 
 The graph never reads Nodescale SQLite in normal operation. REST is authoritative. Authenticated WebSocket messages are invalidation signals only, and the 15-second REST fallback remains enabled.
 
-The provider-neutral contract accepts Tailscale and Headscale observations; `fake` remains available only to bounded automated fixtures. Current real product acceptance uses Tailscale. Device names and inventory count are never hardcoded. A six-device result is runtime acceptance evidence, not a UI contract.
+The strict provider-neutral client accepts `fake`, Headscale, and Tailscale observation kinds. Product/runtime acceptance for this milestone uses real Tailscale observations; fake records must not be used for operator-facing acceptance. Device names and inventory count are never hardcoded. A six-device result is runtime acceptance evidence, not a UI contract.
 
 ## Shared graph projection
 

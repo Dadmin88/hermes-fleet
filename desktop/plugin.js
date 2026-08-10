@@ -6,7 +6,6 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-  EmptyState,
   ErrorState,
   Loader,
   PALETTE_AREA,
@@ -60,14 +59,25 @@ const FLEET_PORT_KINDS = Object.freeze([
 ])
 
 function isPlainRecord(value) {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
 }
+
+const CONFIGURATION_PROPERTY_LIMIT = 32
+const CONFIGURATION_ENUM_LIMIT = 32
+const CONFIGURATION_STRING_LIMIT = 4096
 
 function configurationSchema(properties = {}) {
   return Object.freeze({
     type: 'object',
     properties: Object.freeze(Object.fromEntries(
-      Object.entries(properties).map(([key, schema]) => [key, Object.freeze({ ...schema })])
+      Object.entries(properties)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, schema]) => [key, Object.freeze({
+          ...schema,
+          ...(schema.enum ? { enum: Object.freeze([...schema.enum]) } : {})
+        })])
     )),
     additionalProperties: false
   })
@@ -81,7 +91,8 @@ function validConfigurationSchema(schema) {
     schema.type !== 'object' ||
     schema.additionalProperties !== false ||
     !isPlainRecord(schema.properties) ||
-    Object.keys(schema).some(key => !['type', 'properties', 'additionalProperties'].includes(key))
+    Object.keys(schema).some(key => !['type', 'properties', 'additionalProperties'].includes(key)) ||
+    Object.keys(schema.properties).length > CONFIGURATION_PROPERTY_LIMIT
   ) return false
   return Object.entries(schema.properties).every(([key, property]) =>
     /^[a-z][a-z0-9_]{0,63}$/.test(key) &&
@@ -90,11 +101,18 @@ function validConfigurationSchema(schema) {
     Object.keys(property).every(name => ['type', 'enum', 'minimum', 'maximum'].includes(name)) &&
     (property.enum === undefined || (
       Array.isArray(property.enum) &&
-      property.enum.length > 0 &&
-      property.enum.every(value => typeof value === property.type)
+      property.enum.length > 0 && property.enum.length <= CONFIGURATION_ENUM_LIMIT &&
+      property.enum.every(value =>
+        typeof value === property.type &&
+        (typeof value !== 'string' || value.length <= CONFIGURATION_STRING_LIMIT)
+      )
     )) &&
     (property.minimum === undefined || (property.type === 'number' && Number.isFinite(property.minimum))) &&
-    (property.maximum === undefined || (property.type === 'number' && Number.isFinite(property.maximum)))
+    (property.maximum === undefined || (property.type === 'number' && Number.isFinite(property.maximum))) &&
+    (
+      property.minimum === undefined || property.maximum === undefined ||
+      property.minimum <= property.maximum
+    )
   )
 }
 
@@ -107,7 +125,7 @@ function normalizeWorkflowConfiguration(descriptor, value) {
   const configuration = value ?? {}
   if (!isPlainRecord(configuration)) throw new Error('invalid workflow configuration')
   const properties = descriptor.configurationSchema.properties
-  const keys = Object.keys(configuration)
+  const keys = Object.keys(configuration).sort()
   if (keys.some(key => !(key in properties))) throw new Error('invalid workflow configuration')
   const normalized = {}
   for (const key of keys) {
@@ -116,6 +134,7 @@ function normalizeWorkflowConfiguration(descriptor, value) {
     if (
       typeof candidate !== field.type ||
       (field.type === 'number' && !Number.isFinite(candidate)) ||
+      (field.type === 'string' && candidate.length > CONFIGURATION_STRING_LIMIT) ||
       (field.enum && !field.enum.includes(candidate)) ||
       (field.minimum !== undefined && candidate < field.minimum) ||
       (field.maximum !== undefined && candidate > field.maximum)
@@ -345,7 +364,13 @@ function validContributionPorts(inputs, outputs) {
 }
 
 export function createFleetNodeRegistry(contributions = [], options = {}) {
+  if (!Array.isArray(contributions) || contributions.length > 64) {
+    throw new Error('invalid node contributions')
+  }
   const registry = new Map(Object.entries(FLEET_NODE_TYPES))
+  const contributionKeys = new Set([
+    'id', 'label', 'category', 'icon', 'inputs', 'outputs', 'configurationSchema'
+  ])
   const iconValidator = typeof options.iconValidator === 'function'
     ? options.iconValidator
     : value => /^[a-z][a-z0-9-]{0,63}$/.test(value)
@@ -357,6 +382,7 @@ export function createFleetNodeRegistry(contributions = [], options = {}) {
     )
     if (
       !isPlainRecord(contribution) ||
+      Object.keys(contribution).some(key => !contributionKeys.has(key)) ||
       typeof contribution.id !== 'string' ||
       !/^[a-z][a-z0-9-]{1,63}$/.test(contribution.id) ||
       registry.has(contribution.id) ||
@@ -433,7 +459,8 @@ function normalizeWorkflowTarget(value) {
       !validTargetText(value.provider_instance_id) ||
       !validTargetText(value.provider_node_id) ||
       !validTargetText(value.network_id) ||
-      !/^sha256:[0-9a-f]{64}$/.test(value.observed_id)
+      !/^sha256:[0-9a-f]{64}$/.test(value.observed_id) ||
+      value.stable_id !== `observed-node-${value.observed_id.slice(7)}`
     ) throw new Error('invalid workflow target')
     return Object.fromEntries(keys.map(key => [key, value[key]]))
   }
@@ -677,7 +704,35 @@ export function serializeWorkflow(workflow) {
   return JSON.stringify(deserializeWorkflow(workflow))
 }
 
+function assertUniqueJsonMembers(value) {
+  const stack = []
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]
+    if (character === '{') stack.push(new Set())
+    else if (character === '[') stack.push(null)
+    else if (character === '}' || character === ']') stack.pop()
+    else if (character === '"') {
+      const start = index
+      index += 1
+      while (index < value.length) {
+        if (value[index] === '\\') index += 2
+        else if (value[index] === '"') break
+        else index += 1
+      }
+      let cursor = index + 1
+      while (/\s/.test(value[cursor] ?? '')) cursor += 1
+      const keys = stack.at(-1)
+      if (keys && value[cursor] === ':') {
+        const key = JSON.parse(value.slice(start, index + 1))
+        if (keys.has(key)) throw new Error('duplicate workflow document member')
+        keys.add(key)
+      }
+    }
+  }
+}
+
 export function deserializeWorkflow(value) {
+  if (typeof value === 'string') assertUniqueJsonMembers(value)
   const parsed = typeof value === 'string' ? JSON.parse(value) : cloneJson(value)
   if (
     !hasExactKeys(parsed, ['schema', 'id', 'name', 'nodes', 'connections', 'metadata']) ||
@@ -698,72 +753,120 @@ export function deserializeWorkflow(value) {
   return workflow
 }
 
+function normalizeWorkflowHistory(history) {
+  if (
+    !hasExactKeys(history, ['past', 'present', 'future']) ||
+    !Array.isArray(history.past) ||
+    !Array.isArray(history.future) ||
+    history.past.length > 64 ||
+    history.future.length > 64
+  ) throw new Error('invalid workflow history')
+  return {
+    past: history.past.map(deserializeWorkflow),
+    present: deserializeWorkflow(history.present),
+    future: history.future.map(deserializeWorkflow)
+  }
+}
+
 export function createWorkflowHistory(workflow) {
-  return { past: [], present: cloneJson(workflow), future: [] }
+  return { past: [], present: deserializeWorkflow(workflow), future: [] }
 }
 
 export function applyWorkflowEdit(history, workflow) {
+  const current = normalizeWorkflowHistory(history)
+  const present = deserializeWorkflow(workflow)
   return {
-    past: [...history.past, history.present].slice(-64),
-    present: cloneJson(workflow),
+    past: [...current.past, current.present].slice(-64),
+    present,
     future: []
   }
 }
 
 export function undoWorkflow(history) {
-  if (!history.past.length) return history
-  const present = history.past.at(-1)
+  const current = normalizeWorkflowHistory(history)
+  if (!current.past.length) return current
+  const present = current.past.at(-1)
   return {
-    past: history.past.slice(0, -1),
+    past: current.past.slice(0, -1),
     present,
-    future: [history.present, ...history.future].slice(0, 64)
+    future: [current.present, ...current.future].slice(0, 64)
   }
 }
 
 export function redoWorkflow(history) {
-  if (!history.future.length) return history
+  const current = normalizeWorkflowHistory(history)
+  if (!current.future.length) return current
   return {
-    past: [...history.past, history.present].slice(-64),
-    present: history.future[0],
-    future: history.future.slice(1)
+    past: [...current.past, current.present].slice(-64),
+    present: current.future[0],
+    future: current.future.slice(1)
   }
 }
 
-export function createWorkflowFromTopology(id, selectedNodes) {
-  let workflow = createEmptyWorkflow(id)
-  workflow = { ...workflow, name: 'Workflow from Fleet selection' }
-  selectedNodes.slice(0, WORKFLOW_LIMIT_COUNT).forEach((node, index) => {
-    const observed = node.kind === 'observed'
-    const target = observed
-      ? {
-          stable_id: node.stable_id,
-          authority: 'observed',
-          provider: node.provider.kind,
-          provider_instance_id: node.provider.instance_id,
-          provider_node_id: node.provider.node_id,
-          network_id: node.provider.network_id,
-          observed_id: node.observation.observed_id
-        }
-      : {
-          stable_id: node.stable_id,
-          authority: 'managed',
-          source: node.identity.source,
-          network_id: node.identity.network_id,
-          device_id: node.identity.device_id
-        }
-    workflow = addWorkflowNode(workflow, {
-      id: `target-${index + 1}`,
+function workflowTargetFromTopology(node) {
+  if (!isPlainRecord(node)) throw new Error('invalid topology target')
+  return node.kind === 'observed'
+    ? {
+        stable_id: node.stable_id,
+        authority: 'observed',
+        provider: node.provider.kind,
+        provider_instance_id: node.provider.instance_id,
+        provider_node_id: node.provider.node_id,
+        network_id: node.provider.network_id,
+        observed_id: node.observation.observed_id
+      }
+    : {
+        stable_id: node.stable_id,
+        authority: 'managed',
+        source: node.identity.source,
+        network_id: node.identity.network_id,
+        device_id: node.identity.device_id
+      }
+}
+
+export function appendTopologyTargetsToWorkflow(workflow, selectedNodes) {
+  if (!Array.isArray(selectedNodes) || selectedNodes.length > WORKFLOW_LIMIT_COUNT) {
+    throw new Error('invalid topology selection')
+  }
+  let next = deserializeWorkflow(workflow)
+  const existingTargets = new Set(
+    next.nodes.map(node => node.target?.stable_id).filter(Boolean)
+  )
+  const additions = selectedNodes.filter(node => !existingTargets.has(node.stable_id))
+  if (!additions.length) return workflow
+  if (next.nodes.length + additions.length > WORKFLOW_LIMIT_COUNT) {
+    throw new Error('workflow node limit reached')
+  }
+  const usedIds = new Set(next.nodes.map(node => node.id))
+  for (const node of additions) {
+    const target = workflowTargetFromTopology(node)
+    const index = next.nodes.length
+    next = addWorkflowNode(next, {
+      id: allocateWorkflowId(`target-${index + 1}`, usedIds),
       type: 'exact-machine',
       title: node.naming.display_name,
-      position: { x: index * NODE_STEP_X, y: 0 },
+      position: {
+        x: (index % 3) * NODE_STEP_X,
+        y: Math.floor(index / 3) * NODE_STEP_Y
+      },
       target
     })
-  })
-  return workflow
+    existingTargets.add(target.stable_id)
+  }
+  return next
+}
+
+export function createWorkflowFromTopology(id, selectedNodes) {
+  const workflow = {
+    ...createEmptyWorkflow(id),
+    name: 'Workflow from Fleet selection'
+  }
+  return appendTopologyTargetsToWorkflow(workflow, selectedNodes)
 }
 
 const FLEET_CANVAS_STYLES = `
 .fleet-canvas-root {
+  container: fleet-canvas / inline-size;
   --fleet-surface: color-mix(in srgb, var(--ui-bg-editor) 88%, var(--ui-text-primary) 12%);
   --fleet-surface-raised: color-mix(in srgb, var(--ui-bg-editor) 78%, var(--ui-text-primary) 22%);
   --fleet-surface-soft: color-mix(in srgb, var(--ui-bg-sidebar) 78%, var(--ui-bg-editor) 22%);
@@ -927,6 +1030,30 @@ const FLEET_CANVAS_STYLES = `
   background-color: var(--ui-bg-editor, var(--background));
   box-shadow: -18px 0 44px color-mix(in srgb, var(--ui-bg-editor) 64%, transparent);
   width: min(25rem, 56%);
+}
+@container fleet-canvas (max-width: 37.5rem) {
+  .fleet-inspector-drawer { width: min(20rem, 54%); }
+  .fleet-minimap[data-inspector-open='true'] {
+    right: calc(min(20rem, 54%) + 1rem);
+    width: 7rem;
+    height: 7rem;
+  }
+  .fleet-workflow-palette {
+    width: 10rem;
+    flex-basis: 10rem;
+  }
+}
+@container fleet-canvas (max-width: 25rem) {
+  .fleet-inspector-drawer { width: min(17rem, 60%); }
+  .fleet-minimap[data-inspector-open='true'] {
+    right: calc(min(17rem, 60%) + 1rem);
+    width: 5rem;
+    height: 5rem;
+  }
+  .fleet-workflow-palette {
+    width: 8rem;
+    flex-basis: 8rem;
+  }
 }
 @keyframes fleet-drawer-in {
   from { opacity: 0; transform: translateX(18px); }
@@ -1934,7 +2061,8 @@ function GraphNode({
   onMove,
   onPointerDown,
   onPointerMove,
-  onPointerEnd
+  onPointerEnd,
+  onPointerCancel
 }) {
   const detailLabel = node.detail
   const identityLabel = node.source.kind === 'workflow'
@@ -1950,7 +2078,6 @@ function GraphNode({
     const target = absolute
       ? peers[offset < 0 ? peers.length - 1 : 0]
       : peers[(current + offset + peers.length) % peers.length]
-    onSelect(target.dataset.fleetNode)
     target.focus()
   }
 
@@ -1981,14 +2108,15 @@ function GraphNode({
 
   return jsxs('g', {
     transform: `translate(${node.x} ${node.y})`,
-    role: 'treeitem',
+    role: 'button',
     tabIndex: selected ? 0 : -1,
-    'aria-selected': selected,
+    'aria-pressed': selected,
     'aria-label': `${node.label}, ${node.status.label}, ${detailLabel}, ${identityLabel} ${node.id}`,
     'data-fleet-node': node.id,
     className: animated ? 'fleet-node-enter' : undefined,
     onClick: event => {
       event.stopPropagation()
+      event.currentTarget.focus({ preventScroll: true })
       onSelect(node.id)
     },
     onDoubleClick: event => {
@@ -1998,10 +2126,13 @@ function GraphNode({
     onMouseEnter: () => onHover(node.id),
     onMouseLeave: () => onHover(null),
     onKeyDown,
-    onPointerDown: event => onPointerDown(event, node),
+    onPointerDown: event => {
+      event.currentTarget.focus({ preventScroll: true })
+      onPointerDown(event, node)
+    },
     onPointerMove,
     onPointerUp: onPointerEnd,
-    onPointerCancel: onPointerEnd,
+    onPointerCancel,
     onLostPointerCapture: onPointerEnd,
     style: { cursor: 'grab', outline: 'none' },
     children: [
@@ -2135,7 +2266,8 @@ function FleetCanvas({
       clientX: event.clientX,
       clientY: event.clientY,
       x: node.x,
-      y: node.y
+      y: node.y,
+      originalPositions: positions
     }
   }
 
@@ -2170,6 +2302,16 @@ function FleetCanvas({
     if (active.kind === 'node' && active.positions) commitPositions(active.positions)
   }
 
+  function cancelPointer(event) {
+    const active = pointerRef.current
+    if (!active || active.pointerId !== event.pointerId) return
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    pointerRef.current = null
+    if (active.kind === 'node') setPositions(active.originalPositions)
+  }
+
   function onWheel(event) {
     event.preventDefault()
     const bounds = event.currentTarget.getBoundingClientRect()
@@ -2182,6 +2324,13 @@ function FleetCanvas({
   }
 
   function onCanvasKeyDown(event) {
+    if (event.key === 'Escape' && pointerRef.current) {
+      event.preventDefault()
+      const active = pointerRef.current
+      pointerRef.current = null
+      if (active.kind === 'node') setPositions(active.originalPositions)
+      return
+    }
     if (event.target !== event.currentTarget) return
     const movement = {
       ArrowLeft: [40, 0],
@@ -2205,6 +2354,9 @@ function FleetCanvas({
     } else if (event.key === '0') {
       event.preventDefault()
       fitAll()
+    } else if ((event.key === 'Enter' || event.key === ' ') && graph.nodes.length) {
+      event.preventDefault()
+      rootRef.current?.querySelector('[data-fleet-node]')?.focus({ preventScroll: true })
     }
   }
 
@@ -2257,14 +2409,14 @@ function FleetCanvas({
       jsx('svg', {
         ref: rootRef,
         className: 'fleet-canvas-grid h-full min-h-80 w-full select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        role: 'tree',
-        tabIndex: 0,
+        role: 'region',
+        tabIndex: selectedId ? -1 : 0,
         'aria-label': canvasLabel,
         style: { touchAction: 'none' },
         onPointerDown: beginPan,
         onPointerMove: movePointer,
         onPointerUp: endPointer,
-        onPointerCancel: endPointer,
+        onPointerCancel: cancelPointer,
         onLostPointerCapture: endPointer,
         onWheel,
         onKeyDown: onCanvasKeyDown,
@@ -2286,7 +2438,8 @@ function FleetCanvas({
                   onMove: moveNodeByKeyboard,
                   onPointerDown: beginNodeDrag,
                   onPointerMove: movePointer,
-                  onPointerEnd: endPointer
+                  onPointerEnd: endPointer,
+                  onPointerCancel: cancelPointer
                 }, node.id)
               )
             })
@@ -2773,7 +2926,6 @@ function FleetInspectorDrawer({ node, ctx, refresh, onClose }) {
   const observed = node.kind === 'observed'
   return jsxs('section', {
     className: 'fleet-inspector-drawer absolute inset-y-3 right-3 z-20 flex min-h-0 flex-col overflow-hidden rounded-2xl',
-    style: { width: 'min(25rem, calc(100% - 1.5rem))' },
     role: 'dialog',
     'aria-modal': false,
     'aria-label': 'Fleet inspector drawer',
@@ -2858,7 +3010,7 @@ const CATEGORY_LABELS = Object.freeze({
   'human-approval': 'Human'
 })
 
-function WorkflowPalette({ query, onQuery, onAdd }) {
+function WorkflowPalette({ query, onQuery, onAdd, atLimit }) {
   const descriptors = [...createFleetNodeRegistry().values()]
     .filter(descriptor => descriptor.id !== 'machine')
     .filter(descriptor => {
@@ -2911,9 +3063,13 @@ function WorkflowPalette({ query, onQuery, onAdd }) {
                   children: items.map(descriptor =>
                     jsxs('button', {
                       type: 'button',
-                      className: 'group flex min-h-10 items-center gap-2 rounded-lg px-2 text-left text-xs text-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      disabled: atLimit,
+                      'aria-disabled': atLimit,
+                      className: 'group flex min-h-10 items-center gap-2 rounded-lg px-2 text-left text-xs text-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
                       onClick: () => onAdd(descriptor.id),
-                      title: `Add ${descriptor.label} editor node`,
+                      title: atLimit
+                        ? 'Workflow node limit reached (256)'
+                        : `Add ${descriptor.label} editor node`,
                       children: [
                         jsx('span', {
                           className: 'fleet-node-icon !h-7 !w-7 shrink-0 !rounded-md',
@@ -3074,6 +3230,8 @@ function WorkflowInspectorDrawer({ node, onClose }) {
 function WorkflowModePanel({ history, setHistory }) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [editorNotice, setEditorNotice] = useState(null)
   const [positions, setPositions] = useState(() => Object.fromEntries(
     history.present.nodes.map(node => [node.id, node.position])
   ))
@@ -3085,7 +3243,13 @@ function WorkflowModePanel({ history, setHistory }) {
     [positions, workflow]
   )
   const selectedNode = workflow.nodes.find(node => node.id === selectedId) ?? null
-  const closeInspector = useCallback(() => setSelectedId(null), [])
+  const atLimit = workflow.nodes.length >= WORKFLOW_LIMIT_COUNT
+  const closeInspector = useCallback(() => setInspectorOpen(false), [])
+  const selectNode = useCallback(id => {
+    setSelectedId(id)
+    setInspectorOpen(Boolean(id))
+    setEditorNotice(null)
+  }, [])
 
   useEffect(() => {
     setPositions(Object.fromEntries(
@@ -3093,6 +3257,7 @@ function WorkflowModePanel({ history, setHistory }) {
     ))
     if (selectedId && !history.present.nodes.some(node => node.id === selectedId)) {
       setSelectedId(null)
+      setInspectorOpen(false)
     }
   }, [history.present, selectedId])
 
@@ -3101,17 +3266,25 @@ function WorkflowModePanel({ history, setHistory }) {
   }, [setHistory])
 
   const addNode = useCallback(type => {
+    if (atLimit) {
+      setEditorNotice('Workflow node limit reached (256).')
+      return
+    }
     const index = workflow.nodes.length
     const id = `${type}-${Date.now().toString(36)}-${counterRef.current++}`
     const position = {
       x: 64 + (index % 3) * NODE_STEP_X,
       y: 64 + Math.floor(index / 3) * NODE_STEP_Y
     }
-    const next = addWorkflowNode(workflow, { id, type, position })
-    setPositions(current => ({ ...current, [id]: position }))
-    applyEdit(next)
-    setSelectedId(id)
-  }, [applyEdit, workflow])
+    try {
+      const next = addWorkflowNode(workflow, { id, type, position })
+      setPositions(current => ({ ...current, [id]: position }))
+      applyEdit(next)
+      selectNode(id)
+    } catch (error) {
+      setEditorNotice(error instanceof Error ? error.message : 'Unable to add workflow node.')
+    }
+  }, [applyEdit, atLimit, selectNode, workflow])
 
   const commitPositions = useCallback(value => {
     const clean = sanitizeFleetPositions(value)
@@ -3129,15 +3302,24 @@ function WorkflowModePanel({ history, setHistory }) {
     if (!selectedId) return
     applyEdit(deleteWorkflowSelection(workflow, [selectedId]))
     setSelectedId(null)
+    setInspectorOpen(false)
   }, [applyEdit, selectedId, workflow])
 
   const duplicateSelected = useCallback(() => {
     if (!selectedId) return
+    if (atLimit) {
+      setEditorNotice('Workflow node limit reached (256).')
+      return
+    }
     const prefix = `copy-${Date.now().toString(36)}`
-    const next = duplicateWorkflowSelection(workflow, [selectedId], { idPrefix: prefix })
-    applyEdit(next)
-    setSelectedId(next.nodes.at(-1)?.id ?? null)
-  }, [applyEdit, selectedId, workflow])
+    try {
+      const next = duplicateWorkflowSelection(workflow, [selectedId], { idPrefix: prefix })
+      applyEdit(next)
+      selectNode(next.nodes.at(-1)?.id ?? null)
+    } catch (error) {
+      setEditorNotice(error instanceof Error ? error.message : 'Unable to duplicate workflow node.')
+    }
+  }, [applyEdit, atLimit, selectNode, selectedId, workflow])
 
   const copySelected = useCallback(() => {
     if (selectedId) clipboardRef.current = copyWorkflowSelection(workflow, [selectedId])
@@ -3145,11 +3327,19 @@ function WorkflowModePanel({ history, setHistory }) {
 
   const paste = useCallback(() => {
     if (!clipboardRef.current) return
+    if (atLimit) {
+      setEditorNotice('Workflow node limit reached (256).')
+      return
+    }
     const prefix = `paste-${Date.now().toString(36)}`
-    const next = pasteWorkflowClipboard(workflow, clipboardRef.current, { idPrefix: prefix })
-    applyEdit(next)
-    setSelectedId(next.nodes.at(-1)?.id ?? null)
-  }, [applyEdit, workflow])
+    try {
+      const next = pasteWorkflowClipboard(workflow, clipboardRef.current, { idPrefix: prefix })
+      applyEdit(next)
+      selectNode(next.nodes.at(-1)?.id ?? null)
+    } catch (error) {
+      setEditorNotice(error instanceof Error ? error.message : 'Unable to paste workflow nodes.')
+    }
+  }, [applyEdit, atLimit, selectNode, workflow])
 
   function onKeyDown(event) {
     if (event.target.closest?.('input, textarea, [contenteditable=true]')) return
@@ -3182,13 +3372,13 @@ function WorkflowModePanel({ history, setHistory }) {
         setPositions,
         commitPositions,
         selectedId,
-        setSelectedId,
+        setSelectedId: selectNode,
         animatedIds: new Set(),
-        inspectorOpen: Boolean(selectedNode),
+        inspectorOpen: Boolean(selectedNode && inspectorOpen),
         canvasLabel: 'Workflow editor canvas. Arrow keys pan the canvas or move between focused nodes. Shift plus arrow moves a node. Plus and minus zoom; zero fits all.',
         emptyMessage: 'Add a node from the palette to begin.'
       }),
-      selectedNode
+      selectedNode && inspectorOpen
         ? jsx(WorkflowInspectorDrawer, {
             node: selectedNode,
             onClose: closeInspector
@@ -3220,7 +3410,7 @@ function WorkflowModePanel({ history, setHistory }) {
           jsx(Button, {
             type: 'button', size: 'sm', variant: 'ghost',
             onClick: duplicateSelected,
-            disabled: !selectedId,
+            disabled: !selectedId || atLimit,
             children: 'Duplicate'
           }),
           jsx(Button, {
@@ -3229,16 +3419,23 @@ function WorkflowModePanel({ history, setHistory }) {
             disabled: !selectedId,
             children: 'Delete'
           }),
-          jsx('span', {
-            className: 'ml-auto text-[0.6875rem] text-muted-foreground',
-            children: `${workflow.nodes.length} editor node${workflow.nodes.length === 1 ? '' : 's'} · execution unavailable`
-          })
+          editorNotice
+            ? jsx('span', {
+                className: 'ml-auto text-[0.6875rem] text-muted-foreground',
+                role: 'status',
+                'aria-live': 'polite',
+                children: editorNotice
+              })
+            : jsx('span', {
+                className: 'ml-auto text-[0.6875rem] text-muted-foreground',
+                children: `${workflow.nodes.length} editor node${workflow.nodes.length === 1 ? '' : 's'} · execution unavailable`
+              })
         ]
       }),
       jsxs('div', {
         className: 'mx-4 flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border/60',
         children: [
-          jsx(WorkflowPalette, { query, onQuery: setQuery, onAdd: addNode }),
+          jsx(WorkflowPalette, { query, onQuery: setQuery, onAdd: addNode, atLimit }),
           jsx(ContextMenu, {
             children: [
               jsx(ContextMenuTrigger, { asChild: true, children: canvas }),
@@ -3247,12 +3444,13 @@ function WorkflowModePanel({ history, setHistory }) {
                 children: [
                   jsx(ContextMenuItem, {
                     onSelect: () => addNode('manual-trigger'),
+                    disabled: atLimit,
                     children: 'Add manual trigger'
                   }),
                   jsx(ContextMenuSeparator, {}),
                   jsx(ContextMenuItem, {
                     onSelect: duplicateSelected,
-                    disabled: !selectedId,
+                    disabled: !selectedId || atLimit,
                     children: 'Duplicate selected'
                   }),
                   jsx(ContextMenuItem, {
@@ -3289,6 +3487,7 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
     [overview.nodes, overview.observed_nodes]
   )
   const [selectedId, setSelectedId] = useState(null)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
   const positionsRef = useRef(positions)
   positionsRef.current = positions
 
@@ -3314,20 +3513,29 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
   useEffect(() => {
     if (selectedId && !graph.nodes.some(node => node.id === selectedId)) {
       setSelectedId(null)
+      setInspectorOpen(false)
     } else if (
       selectedId &&
       visibleGraph.nodes.length &&
       !visibleGraph.nodes.some(node => node.id === selectedId)
     ) {
       setSelectedId(null)
+      setInspectorOpen(false)
     }
   }, [graph.nodes, selectedId, visibleGraph.nodes])
 
-  const closeInspector = useCallback(() => setSelectedId(null), [])
+  const closeInspector = useCallback(() => setInspectorOpen(false), [])
+  const selectNode = useCallback(id => {
+    setSelectedId(id)
+    setInspectorOpen(Boolean(id))
+  }, [])
   const createFromSelection = useCallback(() => {
     if (!selectedNode) return
-    const workflow = createWorkflowFromTopology('selection-workflow', [selectedNode])
-    setWorkflowHistory(createWorkflowHistory(workflow))
+    setWorkflowHistory(current => {
+      const workflow = appendTopologyTargetsToWorkflow(current.present, [selectedNode])
+      if (workflow === current.present) return current
+      return applyWorkflowEdit(current, workflow)
+    })
     setMode('workflow')
   }, [selectedNode])
 
@@ -3361,6 +3569,10 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
                 variant: 'outline',
                 className: 'ml-auto',
                 onClick: createFromSelection,
+                disabled: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT,
+                title: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT
+                  ? 'Workflow node limit reached (256)'
+                  : 'Create or update the local workflow from this machine',
                 children: 'Create workflow from selection'
               })
             : null
@@ -3375,11 +3587,11 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
             setPositions,
             commitPositions,
             selectedId,
-            setSelectedId,
+            setSelectedId: selectNode,
             animatedIds,
-            inspectorOpen: Boolean(selectedNode)
+            inspectorOpen: Boolean(selectedNode && inspectorOpen)
           }),
-          selectedNode
+          selectedNode && inspectorOpen
             ? jsx(FleetInspectorDrawer, {
                 node: selectedNode,
                 ctx,
@@ -3529,24 +3741,6 @@ function FleetPage({ ctx }) {
   }
 
   const overview = query.data
-  if (!buildFleetCanvasNodes(overview).length) {
-    return jsxs('main', {
-      className: 'flex h-full min-h-64 flex-col',
-      children: [
-        jsx('header', {
-          className: 'flex justify-end border-b border-border px-5 py-3',
-          children: jsx(ConnectionChip, { state: events.connection })
-        }),
-        jsx('div', {
-          className: 'grid flex-1 place-items-center p-6',
-          children: jsx(EmptyState, {
-            title: 'Your Fleet is empty',
-            description: 'Managed nodes will appear here as they join Fleet.'
-          })
-        })
-      ]
-    })
-  }
 
   return jsxs('main', {
     className: 'flex h-full min-h-0 flex-col overflow-hidden bg-background',
