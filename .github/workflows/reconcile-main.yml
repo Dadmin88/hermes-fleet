@@ -97,6 +97,9 @@ jobs:
             exit 1
           }
 
+          echo "--- resolved fleet-state region ---"
+          nl -ba crates/fleet-state/src/lib.rs | sed -n '190,260p'
+
           cargo fmt --all
           node --check desktop/plugin.js
           python3 -m compileall -q hermes_fleet
