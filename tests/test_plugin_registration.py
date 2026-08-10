@@ -73,10 +73,10 @@ def test_plugin_registers_bounded_async_fleet_surfaces() -> None:
         "fleet_get_node",
         "fleet_get_health",
         "fleet_send_message",
-        "fleet_run",
         "fleet_get_task",
         "fleet_cancel_task",
     }
+    assert "fleet_run" not in {tool["name"] for tool in context.tools}
     assert all(tool["toolset"] == "fleet" for tool in context.tools)
     assert all(tool["is_async"] is True for tool in context.tools)
     assert all(callable(tool["handler"]) for tool in context.tools)

@@ -310,7 +310,6 @@ TOOL_DEFINITIONS = (
     (FLEET_GET_NODE_SCHEMA, fleet_get_node),
     (FLEET_GET_HEALTH_SCHEMA, fleet_get_health),
     (FLEET_SEND_MESSAGE_SCHEMA, fleet_send_message),
-    (FLEET_RUN_SCHEMA, fleet_run),
     (FLEET_GET_TASK_SCHEMA, fleet_get_task),
     (FLEET_CANCEL_TASK_SCHEMA, fleet_cancel_task),
 )
