@@ -70,26 +70,39 @@ function validFleetEvent(value) {
 
 function useFleetEvents(ctx) {
   const [connection, setConnection] = useState('polling')
-  const [activity, setActivity] = useState([])
   useEffect(() =>
     ctx.socket('/events', event => {
       if (!validFleetEvent(event)) return
       if (event.kind === 'unavailable') {
         setConnection('reconnecting')
+        void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
         return
       }
       setConnection('live')
-      if (event.kind === 'heartbeat') return
-      if (!event.overview || event.overview.schema !== 'fleet.desktop.v1') return
-      const previous = queryClient.getQueryData(QUERY_KEY)
-      const changes = diffFleetOverview(previous, event.overview, event.sequence)
-      if (changes.length) {
-        setActivity(items => [...changes, ...items].slice(0, 64))
+      if (event.kind !== 'heartbeat') {
+        void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
       }
-      queryClient.setQueryData(QUERY_KEY, event.overview)
     }),
   [ctx])
-  return { connection, activity, clearActivity: () => setActivity([]) }
+  return { connection }
+}
+
+function useFleetActivity(overview) {
+  const [activity, setActivity] = useState([])
+  const previousRef = useRef(null)
+  const sequenceRef = useRef(0)
+  useEffect(() => {
+    if (!overview || overview.schema !== 'fleet.desktop.v1') return
+    const previous = previousRef.current
+    previousRef.current = overview
+    if (!previous) return
+    sequenceRef.current += 1
+    const changes = diffFleetOverview(previous, overview, sequenceRef.current)
+    if (changes.length) {
+      setActivity(items => [...changes, ...items].slice(0, 64))
+    }
+  }, [overview])
+  return { activity, clearActivity: () => setActivity([]) }
 }
 
 function compareIds(left, right) {
@@ -799,7 +812,7 @@ function FleetCanvas({ graph, positions, setPositions, commitPositions, selected
       }),
       jsx('svg', {
         ref: rootRef,
-        className: 'h-full min-h-80 w-full select-none',
+        className: 'h-full min-h-80 w-full select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         role: 'tree',
         tabIndex: 0,
         'aria-label': 'Fleet topology canvas. Arrow keys pan the canvas or move between focused nodes. Shift plus arrow moves a node. Plus and minus zoom; zero fits all.',
@@ -952,7 +965,12 @@ function NodeInspector({ node, ctx, refresh }) {
         body: aliasClearMutationBody(node)
       })
       await reconcile()
-      setMutation({ state: 'success', message: 'Provider name restored.' })
+      setMutation({
+        state: 'success',
+        message: node.naming.provider_name
+          ? 'Provider name restored.'
+          : 'Alias cleared; stable device ID is now displayed.'
+      })
     } catch {
       try {
         await reconcile()
@@ -1307,6 +1325,7 @@ function FleetPage({ ctx }) {
     refetchInterval: 15_000,
     retry: 1
   })
+  const activityState = useFleetActivity(query.data)
 
   if (query.isPending) {
     return jsx('main', {
@@ -1373,7 +1392,7 @@ function FleetPage({ ctx }) {
             ]
           }),
           jsxs('div', {
-            className: 'flex items-start gap-4',
+            className: 'flex min-w-0 flex-wrap items-start justify-end gap-4',
             children: [
               jsx(SummaryItem, { label: 'Managed', value: overview.summary.managed }),
               jsx(SummaryItem, { label: 'Alive', value: overview.summary.alive }),
@@ -1386,14 +1405,14 @@ function FleetPage({ ctx }) {
                 variant: activityOpen ? 'secondary' : 'outline',
                 'aria-expanded': activityOpen,
                 onClick: () => setActivityOpen(value => !value),
-                children: `Activity (${events.activity.length})`
+                children: `Activity (${activityState.activity.length})`
               })
             ]
           })
         ]
       }),
-      activityOpen ? jsx(ActivityDrawer, { activity: events.activity, onClear: events.clearActivity }) : null,
-      jsx(FleetCanvasWorkspace, { overview, ctx, refresh: query.refetch, activity: events.activity })
+      activityOpen ? jsx(ActivityDrawer, { activity: activityState.activity, onClear: activityState.clearActivity }) : null,
+      jsx(FleetCanvasWorkspace, { overview, ctx, refresh: query.refetch, activity: activityState.activity })
     ]
   })
 }

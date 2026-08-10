@@ -44,7 +44,9 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "Copy stable identity" in source
     assert "fleet.desktop-events.v1" in source
     assert "ctx.socket('/events'" in source
-    assert "queryClient.setQueryData(QUERY_KEY" in source
+    assert "queryClient.invalidateQueries({ queryKey: QUERY_KEY })" in source
+    assert "focus-visible:ring-2" in source
+    assert "flex min-w-0 flex-wrap" in source
     assert "motion-safe:animate-pulse" in source
     assert "id: 'fleet.open'" in source
     assert "STATUSBAR_AREAS.right" in source
@@ -84,7 +86,8 @@ const sdkUrl = dataUrl(`
   export const host = { navigate: () => undefined, notify: () => undefined }
   export const queryClient = {
     getQueryData: () => undefined,
-    setQueryData: () => undefined
+    setQueryData: () => undefined,
+    invalidateQueries: () => Promise.resolve()
   }
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
@@ -218,7 +221,8 @@ const sdkUrl = dataUrl(`
   export const host = { navigate: () => undefined, notify: () => undefined }
   export const queryClient = {
     getQueryData: () => undefined,
-    setQueryData: () => undefined
+    setQueryData: () => undefined,
+    invalidateQueries: () => Promise.resolve()
   }
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
@@ -390,7 +394,8 @@ const sdkUrl = dataUrl(`
   export const host = { navigate: () => undefined, notify: () => undefined }
   export const queryClient = {
     getQueryData: () => undefined,
-    setQueryData: () => undefined
+    setQueryData: () => undefined,
+    invalidateQueries: () => Promise.resolve()
   }
   export const useQuery = () => { throw new Error('render was not expected') }
 `)

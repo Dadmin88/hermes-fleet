@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -75,12 +76,10 @@ def test_overview_route_returns_service_unavailable_without_leaking_details(
 
 def test_typed_event_contract_is_stable_and_router_exposes_websocket():
     module = _load_api()
-    overview = {"schema": "fleet.desktop.v1", "summary": {"managed": 0}, "nodes": []}
-    assert module.build_event("snapshot", 1, overview) == {
+    assert module.build_event("snapshot", 1) == {
         "schema": "fleet.desktop-events.v1",
         "kind": "snapshot",
         "sequence": 1,
-        "overview": overview,
     }
     assert module.build_event("unavailable", 2) == {
         "schema": "fleet.desktop-events.v1",
@@ -90,9 +89,31 @@ def test_typed_event_contract_is_stable_and_router_exposes_websocket():
     assert module._overview_digest({"b": 2, "a": 1}) == module._overview_digest(
         {"a": 1, "b": 2}
     )
+    assert module._overview_digest(
+        {"nodes": [{"readiness": {"observation_age_ms": 1, "fresh": True}}]}
+    ) == module._overview_digest(
+        {"nodes": [{"readiness": {"observation_age_ms": 999, "fresh": True}}]}
+    )
     assert any(
         getattr(route, "path", None) == "/events" for route in module.router.routes
     )
+
+
+def test_websocket_authorization_delegates_to_hermes_canonical_gate(monkeypatch):
+    module = _load_api()
+    websocket = object()
+    canonical = types.SimpleNamespace(
+        _ws_auth_ok=lambda value: value is websocket,
+        _ws_request_is_allowed=lambda value: value is websocket,
+    )
+    monkeypatch.setattr(module.importlib, "import_module", lambda _name: canonical)
+    assert module._websocket_rejection_code(websocket) is None
+
+    canonical._ws_auth_ok = lambda _value: False
+    assert module._websocket_rejection_code(websocket) == 4401
+    canonical._ws_auth_ok = lambda _value: True
+    canonical._ws_request_is_allowed = lambda _value: False
+    assert module._websocket_rejection_code(websocket) == 4403
 
 
 def test_dashboard_api_loads_from_an_installed_plugin_without_repo_pythonpath(

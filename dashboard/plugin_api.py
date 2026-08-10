@@ -54,15 +54,24 @@ def _expected_stable_id(request: AliasClearRequest) -> str:
 
 
 def _overview_digest(overview: dict[str, Any]) -> str:
+    def stable(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: stable(item)
+                for key, item in value.items()
+                if key != "observation_age_ms"
+            }
+        if isinstance(value, list):
+            return [stable(item) for item in value]
+        return value
+
     canonical = json.dumps(
-        overview, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        stable(overview), sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
 
-def build_event(
-    kind: str, sequence: int, overview: dict[str, Any] | None = None
-) -> dict[str, Any]:
+def build_event(kind: str, sequence: int) -> dict[str, Any]:
     if kind not in {
         "snapshot",
         "overview_changed",
@@ -71,14 +80,11 @@ def build_event(
         "heartbeat",
     }:
         raise ValueError("unsupported Fleet event kind")
-    event: dict[str, Any] = {
+    return {
         "schema": "fleet.desktop-events.v1",
         "kind": kind,
         "sequence": sequence,
     }
-    if overview is not None:
-        event["overview"] = overview
-    return event
 
 
 def _socket_path() -> Path:
@@ -88,9 +94,27 @@ def _socket_path() -> Path:
     return get_fleet_dir() / "managed-projection.sock"
 
 
+def _websocket_rejection_code(websocket: WebSocket) -> int | None:
+    try:
+        module = importlib.import_module("hermes_cli.web_server")
+        auth_ok = getattr(module, "_ws_auth_ok")
+        request_is_allowed = getattr(module, "_ws_request_is_allowed")
+    except (ImportError, AttributeError):
+        return 1011
+    if not auth_ok(websocket):
+        return 4401
+    if not request_is_allowed(websocket):
+        return 4403
+    return None
+
+
 @router.websocket("/events")
 async def events(websocket: WebSocket) -> None:
-    """Stream changes derived only from validated Fleet overview snapshots."""
+    """Signal changes derived only from validated Fleet overview snapshots."""
+    rejection_code = _websocket_rejection_code(websocket)
+    if rejection_code is not None:
+        await websocket.close(code=rejection_code)
+        return
     await websocket.accept()
     previous_digest: str | None = None
     unavailable = False
@@ -129,13 +153,7 @@ async def events(websocket: WebSocket) -> None:
                 unchanged_cycles = 0
             if kind is not None:
                 sequence += 1
-                await websocket.send_json(
-                    build_event(
-                        kind,
-                        sequence,
-                        None if kind == "heartbeat" else current,
-                    )
-                )
+                await websocket.send_json(build_event(kind, sequence))
             previous_digest = digest
             unavailable = False
             retry_seconds = 1.0

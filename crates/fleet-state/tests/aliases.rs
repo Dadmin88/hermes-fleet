@@ -1,5 +1,6 @@
 use fleet_domain::{ApplyOutcome, ProjectionDocument, canonical_projection_hash};
 use fleet_state::{AliasClearOutcome, AliasSetOutcome, FleetStateStore, StateError};
+use rusqlite::{Connection, params};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -195,5 +196,35 @@ fn binding_change_and_remove_fence_aliases() {
     assert!(matches!(
         store.set_node_alias("nodescale", "network-1", "node-a", 2, "Forbidden"),
         Err(StateError::InvalidTransition(_))
+    ));
+}
+
+#[test]
+fn corrupt_persisted_aliases_fail_closed_on_read() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("fleet.sqlite3");
+    let store = FleetStateStore::open(&path).unwrap();
+    store
+        .apply_projection(projection("node-a", 1, 1, 1, "upsert"))
+        .unwrap();
+    store
+        .set_node_alias("nodescale", "network-1", "node-a", 1, "Workstation")
+        .unwrap();
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE managed_node_aliases SET alias = ?1
+             WHERE source = ?2 AND network_id = ?3 AND device_id = ?4",
+            params!["bad\nname", "nodescale", "network-1", "node-a"],
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = FleetStateStore::open(&path).unwrap();
+    assert!(matches!(
+        reopened.inspect_node_alias("nodescale", "network-1", "node-a"),
+        Err(StateError::CorruptState(_))
     ));
 }

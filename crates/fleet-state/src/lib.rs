@@ -349,7 +349,7 @@ impl FleetStateStore {
             .ok_or(StateError::CorruptState(
                 "managed alias identity has no projection",
             ))?;
-        connection
+        let alias = connection
             .query_row(
                 "SELECT alias FROM managed_node_aliases
                  WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
@@ -357,8 +357,11 @@ impl FleetStateStore {
                 params![source, network_id, device_id, binding_generation],
                 |row| row.get(0),
             )
-            .optional()
-            .map_err(StateError::from)
+            .optional()?;
+        if let Some(value) = alias.as_deref() {
+            validate_persisted_alias(value)?;
+        }
+        Ok(alias)
     }
 
     pub fn set_node_alias(
@@ -675,6 +678,9 @@ impl FleetStateStore {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
+            if let Some(value) = alias.as_deref() {
+                validate_persisted_alias(value)?;
+            }
             nodes.push(ManagedNodeView {
                 source,
                 network_id,
@@ -1436,6 +1442,12 @@ fn validate_alias(alias: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_persisted_alias(alias: &str) -> Result<()> {
+    validate_alias(alias).map_err(|_| {
+        StateError::CorruptState("managed alias contains invalid persisted display text")
+    })
 }
 
 fn validate_run_state(state: &RunBindingState) -> Result<()> {
