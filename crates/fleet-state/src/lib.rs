@@ -80,6 +80,7 @@ const MAX_OBSERVATION_FUTURE_SKEW_MS: u64 = 5_000;
 const MAX_RESULT_CHARS: usize = 65_536;
 const MAX_PROFILE_NAME_BYTES: usize = 128;
 const MAX_PROFILE_VERSION_BYTES: usize = 128;
+const PROFILE_CONTENT_DIGEST_BYTES: usize = 64;
 
 #[derive(Debug)]
 pub enum StateError {
@@ -179,6 +180,7 @@ pub struct ProfileNodeCandidate {
     pub network_id: String,
     pub device_id: String,
     pub profile_version: String,
+    pub profile_content_digest: Option<String>,
     pub available_worker_slots: u32,
     pub readiness: NodeReadiness,
 }
@@ -482,6 +484,41 @@ impl FleetStateStore {
         now_ms: u64,
         policy: ReadinessPolicy,
     ) -> Result<Vec<ProfileNodeCandidate>> {
+        self.find_profile_candidates_matching(
+            profile_name,
+            required_version,
+            None,
+            now_ms,
+            policy,
+        )
+    }
+
+    pub fn find_exact_profile_candidates(
+        &self,
+        profile_name: &str,
+        required_version: Option<&str>,
+        required_content_digest: &str,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfileNodeCandidate>> {
+        validate_profile_content_digest(required_content_digest)?;
+        self.find_profile_candidates_matching(
+            profile_name,
+            required_version,
+            Some(required_content_digest),
+            now_ms,
+            policy,
+        )
+    }
+
+    fn find_profile_candidates_matching(
+        &self,
+        profile_name: &str,
+        required_version: Option<&str>,
+        required_content_digest: Option<&str>,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfileNodeCandidate>> {
         validate_profile_query(profile_name, required_version)?;
         if now_ms == 0 || now_ms > i64::MAX as u64 {
             return Err(StateError::InvalidInput(
@@ -545,12 +582,18 @@ impl FleetStateStore {
             if required_version.is_some_and(|version| profile.version != version) {
                 continue;
             }
+            if required_content_digest
+                .is_some_and(|digest| profile.content_digest.as_deref() != Some(digest))
+            {
+                continue;
+            }
 
             candidates.push(ProfileNodeCandidate {
                 source,
                 network_id,
                 device_id,
                 profile_version: profile.version.clone(),
+                profile_content_digest: profile.content_digest.clone(),
                 available_worker_slots: record.observation.capacity.available_worker_slots(),
                 readiness,
             });
@@ -1257,6 +1300,19 @@ fn validate_profile_query(profile_name: &str, required_version: Option<&str>) ->
     if !valid_name || !valid_version {
         return Err(StateError::InvalidInput(
             "profile query is not bounded canonical text",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_profile_content_digest(value: &str) -> Result<()> {
+    if value.len() != PROFILE_CONTENT_DIGEST_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(StateError::InvalidInput(
+            "profile content digest must be lowercase SHA-256 hexadecimal",
         ));
     }
     Ok(())
