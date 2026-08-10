@@ -28,8 +28,8 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "ROUTES_AREA" in source
     assert "SIDEBAR_NAV_AREA" in source
     assert "path: '/fleet'" in source
-    assert "data: { path: '/fleet' }" in source
-    assert "render: () => jsx(FleetPage, { ctx })" in source
+    assert "data: { path: section.path }" in source
+    assert "render: () => jsx(FleetRoute, { ctx, sectionId: section.id })" in source
     assert "codicon: 'server-process'" in source
     assert "ctx.rest('/overview')" in source
     assert "refetchInterval: 15_000" in source
@@ -60,7 +60,10 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "flex min-w-0 flex-wrap" in source
     assert ".fleet-node-enter" in source
     assert "@media (prefers-reduced-motion: reduce)" in source
-    assert "id: 'fleet.open'" in source
+    assert (
+        "section.id === 'overview' ? 'fleet.open' : `fleet.open.${section.id}`"
+        in source
+    )
     assert "STATUSBAR_AREAS.right" in source
     assert "role: 'region'" in source
     assert "role: 'button'" in source
@@ -305,7 +308,7 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
     ):
         assert symbol in source
     assert "Editor only · execution unavailable" in source
-    assert "mode === 'workflow'" in source
+    assert "surface === 'workflows'" in source
 
     for interaction_contract in (
         "function WorkflowPortHandle",
@@ -909,54 +912,85 @@ console.log(JSON.stringify({ id: plugin.id, contributions: serializable }))
     )
     assert completed.returncode == 0, completed.stderr
     loaded = json.loads(completed.stdout)
-    assert loaded == {
-        "id": "hermes-fleet",
-        "contributions": [
-            {
-                "id": "page",
-                "area": "app.routes",
-                "data": {"path": "/fleet"},
-                "hasRender": True,
-            },
-            {
-                "id": "nav",
-                "area": "app.sidebar.nav",
-                "order": 55,
-                "data": {
-                    "codicon": "server-process",
-                    "label": "Fleet",
-                    "path": "/fleet",
-                },
-                "hasRender": False,
-            },
-            {
-                "id": "status",
-                "area": "status:right",
-                "order": 55,
-                "hasRender": True,
-            },
-            {
-                "id": "open-command",
-                "area": "palette",
-                "data": {
-                    "id": "fleet.open",
-                    "label": "Fleet: Open Canvas",
-                    "keywords": ["fleet", "nodes", "readiness", "canvas"],
-                },
-                "hasRender": False,
-            },
-            {
-                "id": "refresh-command",
-                "area": "palette",
-                "data": {
-                    "id": "fleet.refresh",
-                    "label": "Fleet: Refresh Overview",
-                    "keywords": ["fleet", "refresh", "reconnect"],
-                },
-                "hasRender": False,
-            },
-        ],
+    assert loaded["id"] == "hermes-fleet"
+    contributions = loaded["contributions"]
+
+    sections = [
+        ("overview", "/fleet"),
+        ("network", "/fleet/network"),
+        ("members", "/fleet/members"),
+        ("invitations", "/fleet/invitations"),
+        ("profiles", "/fleet/profiles"),
+        ("workflows", "/fleet/workflows"),
+        ("activity", "/fleet/activity"),
+        ("settings", "/fleet/settings"),
+    ]
+    assert contributions[:8] == [
+        {
+            "id": f"page:{section_id}",
+            "area": "app.routes",
+            "data": {"path": path},
+            "hasRender": True,
+        }
+        for section_id, path in sections
+    ]
+    assert contributions[8] == {
+        "id": "nav",
+        "area": "app.sidebar.nav",
+        "order": 55,
+        "data": {
+            "codicon": "server-process",
+            "label": "Fleet",
+            "path": "/fleet",
+        },
+        "hasRender": False,
     }
+    assert contributions[9] == {
+        "id": "status",
+        "area": "status:right",
+        "order": 55,
+        "hasRender": True,
+    }
+
+    open_commands = contributions[10:18]
+    assert [entry["id"] for entry in open_commands] == [
+        f"open-{section_id}-command" for section_id, _path in sections
+    ]
+    assert [entry["data"]["id"] for entry in open_commands] == [
+        "fleet.open",
+        "fleet.open.network",
+        "fleet.open.members",
+        "fleet.open.invitations",
+        "fleet.open.profiles",
+        "fleet.open.workflows",
+        "fleet.open.activity",
+        "fleet.open.settings",
+    ]
+    assert [entry["data"]["label"] for entry in open_commands] == [
+        "Fleet: Open Overview",
+        "Fleet: Open Network",
+        "Fleet: Open Members",
+        "Fleet: Open Invitations",
+        "Fleet: Open Profiles",
+        "Fleet: Open Workflows",
+        "Fleet: Open Activity",
+        "Fleet: Open Settings",
+    ]
+    assert all(entry["area"] == "palette" for entry in open_commands)
+    assert all(entry["hasRender"] is False for entry in open_commands)
+    assert all(entry["data"]["keywords"][0] == "fleet" for entry in open_commands)
+
+    assert contributions[18] == {
+        "id": "refresh-command",
+        "area": "palette",
+        "data": {
+            "id": "fleet.refresh",
+            "label": "Fleet: Refresh Overview",
+            "keywords": ["fleet", "refresh", "reconnect"],
+        },
+        "hasRender": False,
+    }
+    assert len(contributions) == 19
 
 
 def test_hidden_legacy_dashboard_entry_registers_without_visible_ui() -> None:
@@ -1492,3 +1526,45 @@ console.log(JSON.stringify({
             ["vram", "4.0 GiB free / 8.0 GiB"],
         ],
     }
+
+
+def test_fleet_app_shell_has_stable_internal_routes_without_sidebar_sprawl() -> None:
+    source = PLUGIN.read_text(encoding="utf-8")
+
+    assert "export const FLEET_SECTIONS" in source
+    assert "export function getFleetSection" in source
+    assert "function FleetAppShell" in source
+    assert "function FleetSectionNavigation" in source
+    assert "'aria-label': 'Fleet sections'" in source
+    assert "'aria-current': active ? 'page' : undefined" in source
+    assert "for (const section of FLEET_SECTIONS)" in source
+    assert "id: `page:${section.id}`" in source
+    assert "data: { path: section.path }" in source
+    assert source.count("area: SIDEBAR_NAV_AREA") == 1
+    assert (
+        "data: { codicon: 'server-process', label: 'Fleet', path: '/fleet' }" in source
+    )
+
+    for path in (
+        "/fleet",
+        "/fleet/network",
+        "/fleet/members",
+        "/fleet/invitations",
+        "/fleet/profiles",
+        "/fleet/workflows",
+        "/fleet/activity",
+        "/fleet/settings",
+    ):
+        assert f"path: '{path}'" in source
+
+    assert "surface: 'network'" in source
+    assert "surface: 'workflows'" in source
+    assert "host.navigate('/fleet/workflows')" in source
+    assert "function useFleetWorkflowSession" in source
+    assert "SegmentedControl" not in source
+    assert (
+        "Provider visibility, Nodescale trust, Keryx identity, Fleet authorization"
+        in source
+    )
+    assert "No invitation secret is read, cached, or simulated by this shell." in source
+    assert "This shell does not mutate backend configuration." in source

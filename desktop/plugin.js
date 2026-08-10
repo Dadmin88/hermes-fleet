@@ -14,7 +14,6 @@ import {
   STATUSBAR_AREAS,
   ScrollArea,
   SearchField,
-  SegmentedControl,
   StatusDot,
   host,
   queryClient,
@@ -35,6 +34,72 @@ const POSITION_LIMIT = 100_000
 const POSITION_LIMIT_COUNT = 512
 const WORKFLOW_LIMIT_COUNT = 256
 const EVENT_SCHEMA = 'fleet.desktop-events.v1'
+
+export const FLEET_SECTIONS = Object.freeze([
+  Object.freeze({
+    id: 'overview',
+    label: 'Overview',
+    path: '/fleet',
+    icon: 'dashboard',
+    description: 'Current Fleet health and operator entry points.'
+  }),
+  Object.freeze({
+    id: 'network',
+    label: 'Network',
+    path: '/fleet/network',
+    icon: 'type-hierarchy-sub',
+    description: 'Managed Fleet authority and distinct provider observations.'
+  }),
+  Object.freeze({
+    id: 'members',
+    label: 'Members',
+    path: '/fleet/members',
+    icon: 'organization',
+    description: 'Device membership, trust, binding, and Fleet admission.'
+  }),
+  Object.freeze({
+    id: 'invitations',
+    label: 'Invitations',
+    path: '/fleet/invitations',
+    icon: 'mail',
+    description: 'Single-use network onboarding invitations and lifecycle.'
+  }),
+  Object.freeze({
+    id: 'profiles',
+    label: 'Profiles',
+    path: '/fleet/profiles',
+    icon: 'account',
+    description: 'Hermes profile presence and placement visibility.'
+  }),
+  Object.freeze({
+    id: 'workflows',
+    label: 'Workflows',
+    path: '/fleet/workflows',
+    icon: 'git-merge',
+    description: 'Local non-executing workflow authoring.'
+  }),
+  Object.freeze({
+    id: 'activity',
+    label: 'Activity',
+    path: '/fleet/activity',
+    icon: 'pulse',
+    description: 'Fleet state changes and future authoritative audit history.'
+  }),
+  Object.freeze({
+    id: 'settings',
+    label: 'Settings',
+    path: '/fleet/settings',
+    icon: 'settings-gear',
+    description: 'Fleet presentation preferences and operator configuration.'
+  })
+])
+
+export function getFleetSection(value) {
+  return FLEET_SECTIONS.find(section => section.id === value) ?? null
+}
+
+let fleetWorkflowSessionHistory = null
+
 
 export const FLEET_NODE_TYPE_CATEGORIES = Object.freeze([
   'machine',
@@ -973,6 +1038,33 @@ export function redoWorkflow(history) {
     present: current.future[0],
     future: current.future.slice(1)
   }
+}
+
+
+function getFleetWorkflowSession() {
+  if (!fleetWorkflowSessionHistory) {
+    fleetWorkflowSessionHistory = createWorkflowHistory(
+      createEmptyWorkflow('local-workflow')
+    )
+  }
+  return fleetWorkflowSessionHistory
+}
+
+function commitFleetWorkflowSession(updater) {
+  const current = getFleetWorkflowSession()
+  const candidate = typeof updater === 'function' ? updater(current) : updater
+  const normalized = normalizeWorkflowHistory(candidate)
+  fleetWorkflowSessionHistory = normalized
+  return normalized
+}
+
+function useFleetWorkflowSession() {
+  const [history, setLocalHistory] = useState(() => getFleetWorkflowSession())
+  const setHistory = useCallback(updater => {
+    const next = commitFleetWorkflowSession(updater)
+    setLocalHistory(next)
+  }, [])
+  return [history, setHistory]
 }
 
 function workflowTargetFromTopology(node) {
@@ -4683,11 +4775,8 @@ function WorkflowModePanel({ history, setHistory }) {
   })
 }
 
-function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
-  const [mode, setMode] = useState('topology')
-  const [workflowHistory, setWorkflowHistory] = useState(() =>
-    createWorkflowHistory(createEmptyWorkflow('local-workflow'))
-  )
+function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'network' }) {
+  const [workflowHistory, setWorkflowHistory] = useFleetWorkflowSession()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
   const [positions, setPositions] = useState(() =>
@@ -4757,8 +4846,8 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
       if (workflow === current.present) return current
       return applyWorkflowEdit(current, workflow)
     })
-    setMode('workflow')
-  }, [selectedNode])
+    host.navigate('/fleet/workflows')
+  }, [selectedNode, setWorkflowHistory])
 
   const topologyPanel = topologyProjection.error
     ? jsx('div', {
@@ -4860,27 +4949,7 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
     className: 'fleet-canvas-root flex min-h-0 flex-1 flex-col gap-3 py-4',
     children: [
       jsx('style', { children: FLEET_CANVAS_STYLES }),
-      jsxs('div', {
-        className: 'flex flex-wrap items-center gap-3 px-4',
-        children: [
-          jsx(SegmentedControl, {
-            options: [
-              { id: 'topology', label: 'Topology' },
-              { id: 'workflow', label: 'Workflow' }
-            ],
-            value: mode,
-            onChange: setMode
-          }),
-          jsx('span', {
-            className: 'text-[0.6875rem] text-muted-foreground',
-            children: mode === 'topology'
-              ? 'Live provider topology'
-              : 'Editor only · execution unavailable'
-          }),
-          null
-        ]
-      }),
-      mode === 'workflow'
+      surface === 'workflows'
         ? jsx(WorkflowModePanel, {
             history: workflowHistory,
             setHistory: setWorkflowHistory
@@ -4923,6 +4992,303 @@ function ActivityDrawer({ activity, onClear }) {
   })
 }
 
+
+function FleetSectionNavigation({ activeId, mobile = false }) {
+  return jsx('nav', {
+    className: mobile
+      ? 'flex min-w-max items-center gap-1 px-3 py-2'
+      : 'grid gap-1 p-2',
+    'aria-label': 'Fleet sections',
+    children: FLEET_SECTIONS.map(section => {
+      const active = section.id === activeId
+      return jsxs('button', {
+        type: 'button',
+        className: mobile
+          ? `inline-flex h-9 items-center gap-2 rounded-md px-3 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`
+          : `flex min-h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`,
+        'aria-current': active ? 'page' : undefined,
+        'data-fleet-section': section.id,
+        onClick: () => host.navigate(section.path),
+        children: [
+          jsx(Codicon, { name: section.icon, size: '0.9rem', 'aria-hidden': true }),
+          jsx('span', { children: section.label })
+        ]
+      }, section.id)
+    })
+  })
+}
+
+function FleetAppShell({ sectionId, children }) {
+  return jsxs('main', {
+    className: 'flex h-full min-h-0 overflow-hidden bg-background',
+    children: [
+      jsxs('aside', {
+        className: 'hidden w-52 shrink-0 flex-col border-r border-border bg-muted/10 md:flex',
+        children: [
+          jsxs('div', {
+            className: 'border-b border-border px-4 py-4',
+            children: [
+              jsxs('div', {
+                className: 'flex items-center gap-2.5',
+                children: [
+                  jsx('span', {
+                    className: 'grid h-8 w-8 place-items-center rounded-lg border border-border bg-background text-foreground',
+                    children: jsx(Codicon, { name: 'server-process', size: '1rem' })
+                  }),
+                  jsxs('div', {
+                    className: 'min-w-0',
+                    children: [
+                      jsx('div', {
+                        className: 'truncate text-sm font-semibold text-foreground',
+                        children: 'Hermes Fleet'
+                      }),
+                      jsx('div', {
+                        className: 'truncate text-[0.6875rem] text-muted-foreground',
+                        children: 'Network control plane'
+                      })
+                    ]
+                  })
+                ]
+              })
+            ]
+          }),
+          jsx(ScrollArea, {
+            className: 'min-h-0 flex-1',
+            children: jsx(FleetSectionNavigation, { activeId: sectionId })
+          })
+        ]
+      }),
+      jsxs('section', {
+        className: 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+        children: [
+          jsx('div', {
+            className: 'shrink-0 overflow-x-auto border-b border-border bg-muted/10 md:hidden',
+            children: jsx(FleetSectionNavigation, { activeId: sectionId, mobile: true })
+          }),
+          children
+        ]
+      })
+    ]
+  })
+}
+
+function FleetSectionHeader({ section, actions = null, meta = null }) {
+  return jsxs('header', {
+    className: 'flex shrink-0 flex-wrap items-start justify-between gap-4 border-b border-border px-5 py-4',
+    children: [
+      jsxs('div', {
+        className: 'min-w-0',
+        children: [
+          jsx('h1', {
+            className: 'text-base font-semibold text-foreground',
+            children: section.label
+          }),
+          jsx('p', {
+            className: 'mt-1 max-w-2xl text-xs leading-5 text-muted-foreground',
+            children: section.description
+          }),
+          meta
+            ? jsx('div', {
+                className: 'mt-2 text-[0.6875rem] text-muted-foreground',
+                children: meta
+              })
+            : null
+        ]
+      }),
+      actions
+        ? jsx('div', {
+            className: 'flex min-w-0 flex-wrap items-center justify-end gap-2',
+            children: actions
+          })
+        : null
+    ]
+  })
+}
+
+function FleetMetricCard({ label, value, detail }) {
+  return jsxs('div', {
+    className: 'rounded-xl border border-border bg-muted/10 p-4',
+    children: [
+      jsx('div', {
+        className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground',
+        children: label
+      }),
+      jsx('div', {
+        className: 'mt-1 text-2xl font-semibold tabular-nums text-foreground',
+        children: value
+      }),
+      jsx('div', {
+        className: 'mt-1 text-xs text-muted-foreground',
+        children: detail
+      })
+    ]
+  })
+}
+
+function FleetOverviewHome({ overview, connection }) {
+  const section = getFleetSection('overview')
+  return jsxs('div', {
+    className: 'flex min-h-0 flex-1 flex-col overflow-auto',
+    children: [
+      jsx(FleetSectionHeader, {
+        section,
+        actions: [
+          jsx(ConnectionChip, { state: connection }, 'connection'),
+          jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: 'outline',
+            onClick: () => host.navigate('/fleet/network'),
+            children: 'Open Network'
+          }, 'network'),
+          jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: 'outline',
+            onClick: () => host.navigate('/fleet/workflows'),
+            children: 'Open Workflows'
+          }, 'workflows')
+        ]
+      }),
+      jsxs('div', {
+        className: 'grid gap-5 p-5',
+        children: [
+          jsx('section', {
+            className: 'grid gap-3 sm:grid-cols-2 xl:grid-cols-4',
+            'aria-label': 'Fleet summary',
+            children: [
+              jsx(FleetMetricCard, {
+                label: 'Managed',
+                value: overview.summary.managed,
+                detail: `${overview.summary.active} active admission${overview.summary.active === 1 ? '' : 's'}`
+              }, 'managed'),
+              jsx(FleetMetricCard, {
+                label: 'Observed',
+                value: overview.summary.observed_unmanaged,
+                detail: 'Provider evidence without Fleet authority'
+              }, 'observed'),
+              jsx(FleetMetricCard, {
+                label: 'Ready',
+                value: overview.summary.ready,
+                detail: `${overview.summary.alive} alive managed node${overview.summary.alive === 1 ? '' : 's'}`
+              }, 'ready'),
+              jsx(FleetMetricCard, {
+                label: 'Needs attention',
+                value: overview.summary.not_ready,
+                detail: 'Active managed nodes that are not scheduler ready'
+              }, 'attention')
+            ]
+          }),
+          jsxs('section', {
+            className: 'grid gap-4 lg:grid-cols-2',
+            children: [
+              jsxs('div', {
+                className: 'rounded-xl border border-border p-4',
+                children: [
+                  jsx('h2', {
+                    className: 'text-sm font-semibold text-foreground',
+                    children: 'Operator console'
+                  }),
+                  jsx('p', {
+                    className: 'mt-1 text-xs leading-5 text-muted-foreground',
+                    children: 'Fleet now has one internal operator shell. Membership, invitations, profiles, activity, and settings have stable destinations before their mutation contracts are connected.'
+                  }),
+                  jsx('div', {
+                    className: 'mt-3 flex flex-wrap gap-2',
+                    children: ['members', 'invitations', 'profiles', 'settings'].map(id => {
+                      const target = getFleetSection(id)
+                      return jsx(Button, {
+                        type: 'button',
+                        size: 'sm',
+                        variant: 'outline',
+                        onClick: () => host.navigate(target.path),
+                        children: target.label
+                      }, id)
+                    })
+                  })
+                ]
+              }),
+              jsxs('div', {
+                className: 'rounded-xl border border-border p-4',
+                children: [
+                  jsx('h2', {
+                    className: 'text-sm font-semibold text-foreground',
+                    children: 'Authority stays layered'
+                  }),
+                  jsx('p', {
+                    className: 'mt-1 text-xs leading-5 text-muted-foreground',
+                    children: 'Provider visibility, Nodescale trust, Keryx identity, Fleet authorization, and scheduler readiness remain separate gates. This Desktop shell does not infer one from another.'
+                  })
+                ]
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  })
+}
+
+const FLEET_PLACEHOLDER_COPY = Object.freeze({
+  members: {
+    title: 'Membership surface reserved',
+    body: 'Managed membership inspection will connect through an authenticated Nodescale operator contract. Provider observations are not treated as trust or admission.'
+  },
+  invitations: {
+    title: 'Invitation surface reserved',
+    body: 'Invitation lifecycle controls will connect only through a dedicated Nodescale operator contract. No invitation secret is read, cached, or simulated by this shell.'
+  },
+  profiles: {
+    title: 'Profile surface reserved',
+    body: 'Profile presence and placement will consume Fleet-owned exact profile observation and placement contracts. This shell does not invent installation state.'
+  },
+  activity: {
+    title: 'Activity surface reserved',
+    body: 'The full authoritative activity history is not exposed yet. Live Desktop topology transitions remain available from the Network surface.'
+  },
+  settings: {
+    title: 'Settings surface reserved',
+    body: 'Fleet settings will separate local presentation preferences from authoritative backend policy. This shell does not mutate backend configuration.'
+  }
+})
+
+function FleetPlaceholderSection({ section }) {
+  const copy = FLEET_PLACEHOLDER_COPY[section.id]
+  return jsxs('div', {
+    className: 'flex min-h-0 flex-1 flex-col overflow-auto',
+    children: [
+      jsx(FleetSectionHeader, { section }),
+      jsx('div', {
+        className: 'grid flex-1 place-items-center p-6',
+        children: jsxs('section', {
+          className: 'grid max-w-xl justify-items-center gap-3 rounded-2xl border border-border bg-muted/10 p-6 text-center',
+          children: [
+            jsx('span', {
+              className: 'grid h-10 w-10 place-items-center rounded-xl border border-border bg-background text-foreground',
+              children: jsx(Codicon, { name: section.icon, size: '1.1rem' })
+            }),
+            jsx('h2', {
+              className: 'text-sm font-semibold text-foreground',
+              children: copy.title
+            }),
+            jsx('p', {
+              className: 'text-xs leading-5 text-muted-foreground',
+              children: copy.body
+            }),
+            jsx(Button, {
+              type: 'button',
+              size: 'sm',
+              variant: 'outline',
+              onClick: () => host.navigate('/fleet'),
+              children: 'Back to Overview'
+            })
+          ]
+        })
+      })
+    ]
+  })
+}
+
 function FleetStatusChip({ ctx }) {
   const query = useQuery({
     queryKey: QUERY_KEY,
@@ -4940,7 +5306,7 @@ function FleetStatusChip({ ctx }) {
   })
 }
 
-function FleetPage({ ctx }) {
+function FleetOperationalPage({ ctx, sectionId }) {
   const events = useFleetEvents(ctx)
   const [activityOpen, setActivityOpen] = useState(false)
   const query = useQuery({
@@ -4950,10 +5316,11 @@ function FleetPage({ ctx }) {
     retry: 1
   })
   const activityState = useFleetActivity(query.data)
+  const section = getFleetSection(sectionId)
 
   if (query.isPending) {
-    return jsx('main', {
-      className: 'grid h-full min-h-64 place-items-center',
+    return jsx('div', {
+      className: 'grid min-h-0 flex-1 place-items-center',
       children: jsxs('div', {
         className: 'grid justify-items-center gap-3 text-center',
         children: [
@@ -4965,8 +5332,8 @@ function FleetPage({ ctx }) {
   }
 
   if (query.isError) {
-    return jsx('main', {
-      className: 'grid h-full min-h-64 place-items-center p-6',
+    return jsx('div', {
+      className: 'grid min-h-0 flex-1 place-items-center p-6',
       children: jsx(ErrorState, {
         title: 'Fleet is unavailable',
         description: 'Unable to reach the Fleet backend.',
@@ -4981,45 +5348,81 @@ function FleetPage({ ctx }) {
   }
 
   const overview = query.data
+  if (sectionId === 'overview') {
+    return jsx(FleetOverviewHome, {
+      overview,
+      connection: events.connection
+    })
+  }
 
-  return jsxs('main', {
-    className: 'flex h-full min-h-0 flex-col overflow-hidden bg-background',
-    children: [
-      jsxs('header', {
-        className: 'flex flex-wrap items-start justify-between gap-4 border-b border-border px-5 py-4',
-        children: [
-          jsxs('div', {
-            children: [
-              jsx('h1', { className: 'text-base font-semibold text-foreground', children: 'Fleet Canvas' }),
-              jsx('p', {
-                className: 'mt-1 text-xs text-muted-foreground',
-                children: 'Managed Fleet authority and distinct provider observations on a stable operator layout.'
-              })
-            ]
-          }),
-          jsxs('div', {
-            className: 'flex min-w-0 flex-wrap items-start justify-end gap-4',
-            children: [
-              jsx(SummaryItem, { label: 'Managed', value: overview.summary.managed }),
-              jsx(SummaryItem, { label: 'Observed', value: overview.summary.observed_unmanaged }),
-              jsx(SummaryItem, { label: 'Ready', value: overview.summary.ready }),
-              jsx(SummaryItem, { label: 'Attention', value: overview.summary.not_ready }),
-              jsx(ConnectionChip, { state: events.connection }),
-              jsx(Button, {
-                type: 'button',
-                size: 'sm',
-                variant: activityOpen ? 'secondary' : 'outline',
-                'aria-expanded': activityOpen,
-                onClick: () => setActivityOpen(value => !value),
-                children: `Activity (${activityState.activity.length})`
-              })
-            ]
+  if (sectionId === 'workflows') {
+    return jsxs('div', {
+      className: 'flex min-h-0 flex-1 flex-col overflow-hidden',
+      children: [
+        jsx(FleetSectionHeader, {
+          section,
+          meta: 'Editor only · execution unavailable',
+          actions: jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: 'outline',
+            onClick: () => host.navigate('/fleet/network'),
+            children: 'Open Network'
           })
+        }),
+        jsx(FleetCanvasWorkspace, {
+          overview,
+          ctx,
+          refresh: query.refetch,
+          activity: activityState.activity,
+          surface: 'workflows'
+        })
+      ]
+    })
+  }
+
+  return jsxs('div', {
+    className: 'flex min-h-0 flex-1 flex-col overflow-hidden',
+    children: [
+      jsx(FleetSectionHeader, {
+        section,
+        actions: [
+          jsx(ConnectionChip, { state: events.connection }, 'connection'),
+          jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: activityOpen ? 'secondary' : 'outline',
+            'aria-expanded': activityOpen,
+            onClick: () => setActivityOpen(value => !value),
+            children: `Activity (${activityState.activity.length})`
+          }, 'activity')
         ]
       }),
-      activityOpen ? jsx(ActivityDrawer, { activity: activityState.activity, onClear: activityState.clearActivity }) : null,
-      jsx(FleetCanvasWorkspace, { overview, ctx, refresh: query.refetch, activity: activityState.activity })
+      activityOpen
+        ? jsx(ActivityDrawer, {
+            activity: activityState.activity,
+            onClear: activityState.clearActivity
+          })
+        : null,
+      jsx(FleetCanvasWorkspace, {
+        overview,
+        ctx,
+        refresh: query.refetch,
+        activity: activityState.activity,
+        surface: 'network'
+      })
     ]
+  })
+}
+
+function FleetRoute({ ctx, sectionId }) {
+  const section = getFleetSection(sectionId) ?? getFleetSection('overview')
+  const operational = ['overview', 'network', 'workflows'].includes(section.id)
+  return jsx(FleetAppShell, {
+    sectionId: section.id,
+    children: operational
+      ? jsx(FleetOperationalPage, { ctx, sectionId: section.id })
+      : jsx(FleetPlaceholderSection, { section })
   })
 }
 
@@ -5028,12 +5431,14 @@ export default {
   name: 'Fleet',
   description: 'Visual control plane for managed Hermes Fleet nodes.',
   register(ctx) {
-    ctx.register({
-      id: 'page',
-      area: ROUTES_AREA,
-      data: { path: '/fleet' },
-      render: () => jsx(FleetPage, { ctx })
-    })
+    for (const section of FLEET_SECTIONS) {
+      ctx.register({
+        id: `page:${section.id}`,
+        area: ROUTES_AREA,
+        data: { path: section.path },
+        render: () => jsx(FleetRoute, { ctx, sectionId: section.id })
+      })
+    }
     ctx.register({
       id: 'nav',
       area: SIDEBAR_NAV_AREA,
@@ -5046,16 +5451,18 @@ export default {
       order: 55,
       render: () => jsx(FleetStatusChip, { ctx })
     })
-    ctx.register({
-      id: 'open-command',
-      area: PALETTE_AREA,
-      data: {
-        id: 'fleet.open',
-        label: 'Fleet: Open Canvas',
-        keywords: ['fleet', 'nodes', 'readiness', 'canvas'],
-        run: () => host.navigate('/fleet')
-      }
-    })
+    for (const section of FLEET_SECTIONS) {
+      ctx.register({
+        id: `open-${section.id}-command`,
+        area: PALETTE_AREA,
+        data: {
+          id: section.id === 'overview' ? 'fleet.open' : `fleet.open.${section.id}`,
+          label: `Fleet: Open ${section.label}`,
+          keywords: ['fleet', section.id, section.label.toLowerCase()],
+          run: () => host.navigate(section.path)
+        }
+      })
+    }
     ctx.register({
       id: 'refresh-command',
       area: PALETTE_AREA,

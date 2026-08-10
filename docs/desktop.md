@@ -66,18 +66,38 @@ export FLEET_MANAGED_PROJECTION_SOCKET="$HERMES_HOME/fleet/managed-projection.so
 
 The gateway only needs that variable when the socket is not at the conventional path.
 
+
+## Application structure
+
+Fleet keeps exactly one global Hermes Desktop sidebar entry and owns its navigation inside the Fleet application shell. The internal routes are stable operator destinations rather than separate top-level Desktop plugins:
+
+| Section | Route | Phase 0 behavior |
+| --- | --- | --- |
+| Overview | `/fleet` | Existing validated Fleet summary plus operator entry points. |
+| Network | `/fleet/network` | Live managed/observed Canvas and node inspection. |
+| Members | `/fleet/members` | Truthful shell; no membership mutation contract is inferred. |
+| Invitations | `/fleet/invitations` | Truthful shell; no invitation secrets or mutations are exposed yet. |
+| Profiles | `/fleet/profiles` | Truthful shell reserved for Fleet-owned profile presence/placement contracts. |
+| Workflows | `/fleet/workflows` | Existing local editor, explicitly non-executing. |
+| Activity | `/fleet/activity` | Truthful shell reserved for authoritative activity history. |
+| Settings | `/fleet/settings` | Truthful shell; no backend policy is mutated yet. |
+
+The responsive internal navigation collapses from a left rail to a horizontally scrollable section bar on narrow Desktop windows. Route changes do not create additional Hermes sidebar entries.
+
+Workflow documents remain process-memory-only in this phase. Internal Fleet route changes preserve the current workflow editing session, including exact-machine targets created from Network selection, but a Desktop plugin reload still resets that session. This does not create a durable workflow backend or execution runtime.
+
 ## Runtime behavior
 
-Open **Fleet** from the Hermes Desktop sidebar.
+Open **Fleet** from the Hermes Desktop sidebar. The Fleet entry opens **Overview**; use the internal navigation for Network, Members, Invitations, Profiles, Workflows, Activity, and Settings.
 
-Fleet Desktop renders:
+The validated operational surfaces render:
 
 - **Loading:** `Discovering nodes…` using the native Hermes loader;
-- **Unavailable:** an explicit backend error with Retry;
-- **Empty:** an explicit empty-Fleet explanation;
+- **Unavailable:** an explicit backend error with Retry while the Fleet navigation remains available;
 - **Overview:** Managed, Observed, Alive, Ready, and Needs Attention counts;
-- **Managed nodes:** real Fleet nodes with current readiness and worker capacity;
-- **Observed nodes:** distinct dashed cards marked **Observed · unmanaged**, with provider identity and observation evidence only.
+- **Network:** real managed Fleet nodes with readiness/worker capacity plus distinct observed provider evidence;
+- **Workflows:** the existing local non-executing workflow editor on its own route;
+- **Reserved operator sections:** explicit explanatory shells that do not fabricate membership, invitation, profile, activity-history, or settings authority.
 
 No fake nodes or scheduler metrics are seeded. Observed nodes have no rename, run, reservation, scheduler, readiness, or other authority-mutating controls. A selected observation may be copied into local Workflow Mode as an editor-only exact-machine target; that transition preserves `authority: observed`, remains runtime-unavailable, and grants no Fleet control or execution capability. Relationship edges remain absent because neither API supplies provenance-bearing relationship evidence.
 
