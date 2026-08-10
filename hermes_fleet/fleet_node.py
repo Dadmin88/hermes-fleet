@@ -410,9 +410,7 @@ class FleetNodeWorker:
             )
         except ValueError:
             try:
-                await asyncio.to_thread(
-                    self._hermes.stop, run_id, timeout_seconds=0.25
-                )
+                await asyncio.to_thread(self._hermes.stop, run_id, timeout_seconds=0.25)
             except HermesRunError:
                 try:
                     self._bindings.mark_indeterminate(task_id)
