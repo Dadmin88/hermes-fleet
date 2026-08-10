@@ -121,13 +121,7 @@ fn exact_lookup_filters_digest_without_narrowing_general_presence() {
     assert_eq!(general[3].profile_content_digest.as_deref(), Some(DIGEST_B));
 
     let exact = store
-        .find_exact_profile_candidates(
-            profile_name,
-            Some("0.1.0"),
-            DIGEST_A,
-            1_200,
-            policy(),
-        )
+        .find_exact_profile_candidates(profile_name, Some("0.1.0"), DIGEST_A, 1_200, policy())
         .unwrap();
     assert_eq!(
         exact
@@ -154,13 +148,7 @@ fn exact_lookup_filters_digest_without_narrowing_general_presence() {
     );
 
     let other_digest = store
-        .find_exact_profile_candidates(
-            profile_name,
-            Some("0.1.0"),
-            DIGEST_B,
-            1_200,
-            policy(),
-        )
+        .find_exact_profile_candidates(profile_name, Some("0.1.0"), DIGEST_B, 1_200, policy())
         .unwrap();
     assert_eq!(other_digest.len(), 1);
     assert_eq!(other_digest[0].device_id, "mismatch");
@@ -219,28 +207,18 @@ fn exact_lookup_survives_restart_and_readmission_fences_old_presence() {
     let restarted = FleetStateStore::open(&path).unwrap();
     assert_eq!(
         restarted
-            .find_exact_profile_candidates(
-                profile_name,
-                Some("0.1.0"),
-                DIGEST_A,
-                1_200,
-                policy(),
-            )
+            .find_exact_profile_candidates(profile_name, Some("0.1.0"), DIGEST_A, 1_200, policy(),)
             .unwrap()
             .len(),
         1
     );
 
-    restarted.apply_projection(projection("device-1", 2)).unwrap();
+    restarted
+        .apply_projection(projection("device-1", 2))
+        .unwrap();
     assert!(
         restarted
-            .find_exact_profile_candidates(
-                profile_name,
-                Some("0.1.0"),
-                DIGEST_A,
-                1_300,
-                policy(),
-            )
+            .find_exact_profile_candidates(profile_name, Some("0.1.0"), DIGEST_A, 1_300, policy(),)
             .unwrap()
             .is_empty()
     );
@@ -266,13 +244,7 @@ fn exact_lookup_survives_restart_and_readmission_fences_old_presence() {
         .unwrap();
     assert_eq!(
         restarted
-            .find_exact_profile_candidates(
-                profile_name,
-                Some("0.1.0"),
-                DIGEST_A,
-                1_500,
-                policy(),
-            )
+            .find_exact_profile_candidates(profile_name, Some("0.1.0"), DIGEST_A, 1_500, policy(),)
             .unwrap()
             .len(),
         1
