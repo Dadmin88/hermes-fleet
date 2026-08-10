@@ -136,6 +136,7 @@ Start with the [documentation index](docs/README.md).
 - [Managed projection V1](docs/managed-projection-v1.md)
 - [Node observations and scheduler readiness](docs/node-readiness.md)
 - [Fleet Desktop D1](docs/desktop.md)
+- [Fleet Canvas topology](docs/canvas.md)
 - [Integration verification](docs/smoke-test.md)
 - [Operator skill](SKILL.md)
 - [Changelog](CHANGELOG.md)
