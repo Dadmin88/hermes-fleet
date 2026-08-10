@@ -64,6 +64,8 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "STATUSBAR_AREAS.right" in source
     assert "role: 'region'" in source
     assert "role: 'button'" in source
+    assert "const [rovingId, setRovingId] = useState(null)" in source
+    assert "'data-focused': focused" in source
     assert "node.source.kind === 'workflow'" in source
     assert "? 'Observed identity'" in source
     assert ": 'Stable identity'" in source
@@ -96,6 +98,9 @@ def test_graph_first_canvas_opens_evidence_in_an_explicit_overlay_drawer() -> No
     assert "canvasNodes.find(node => node.stable_id === selectedId) ?? null" in source
     assert "selectedNode && inspectorOpen" in source
     assert "Workflow node limit reached (256)." in source
+    assert "title: 'Topology unavailable'" in source
+    assert "fleet-workflow-surface" in source
+    assert "const CONTRIBUTION_PORT_LIMIT = 16" in source
     assert "appendTopologyTargetsToWorkflow(current.present" in source
     assert "title: 'Your Fleet is empty'" not in source
     assert (
@@ -435,6 +440,16 @@ const contributionWithInvertedBounds = {
     additionalProperties: false
   }
 }
+const oversizedPorts = {
+  ...contributionBase,
+  id: 'oversized-ports',
+  inputs: Array.from({ length: 17 }, (_, index) => ({
+    id: `input-${index}`,
+    direction: 'input',
+    kind: 'data',
+    label: `Input ${index}`
+  }))
+}
 const boxed = mod.nodesInsideSelection([
   { id: 'a', x: 0, y: 0, width: 100, height: 80 },
   { id: 'b', x: 300, y: 300, width: 100, height: 80 }
@@ -468,8 +483,13 @@ console.log(JSON.stringify({
   invertedBoundsRejected:
     !mod.createFleetNodeRegistry([contributionWithInvertedBounds]).has('plugin-bounds'),
   nonArrayContributionsRejected: rejects(() => mod.createFleetNodeRegistry({})),
+  oversizedPortsRejected:
+    !mod.createFleetNodeRegistry([oversizedPorts]).has('oversized-ports'),
   appendedCounts: [appended.nodes.length, appended.connections.length],
   appendDedupeCount: appendedAgain.nodes.length,
+  duplicateSelectionCount:
+    mod.appendTopologyTargetsToWorkflow(workflow, [observedSource, observedSource])
+      .nodes.length,
   appendUndoCount: appendHistory.present.nodes.length,
   duplicateMemberRejected: rejects(() => mod.deserializeWorkflow(duplicateMemberJson)),
   contradictoryTargetRejected: rejects(() =>
@@ -563,8 +583,10 @@ console.log(JSON.stringify({
     assert loaded["extraContributionRejected"] is True
     assert loaded["invertedBoundsRejected"] is True
     assert loaded["nonArrayContributionsRejected"] is True
+    assert loaded["oversizedPortsRejected"] is True
     assert loaded["appendedCounts"] == [3, 1]
     assert loaded["appendDedupeCount"] == 3
+    assert loaded["duplicateSelectionCount"] == 3
     assert loaded["appendUndoCount"] == 2
     assert loaded["duplicateMemberRejected"] is True
     assert loaded["contradictoryTargetRejected"] is True

@@ -67,6 +67,7 @@ function isPlainRecord(value) {
 const CONFIGURATION_PROPERTY_LIMIT = 32
 const CONFIGURATION_ENUM_LIMIT = 32
 const CONFIGURATION_STRING_LIMIT = 4096
+const CONTRIBUTION_PORT_LIMIT = 16
 
 function configurationSchema(properties = {}) {
   return Object.freeze({
@@ -340,7 +341,12 @@ export function getFleetNodeType(value) {
 }
 
 function validContributionPorts(inputs, outputs) {
-  if (!Array.isArray(inputs) || !Array.isArray(outputs)) return false
+  if (
+    !Array.isArray(inputs) ||
+    !Array.isArray(outputs) ||
+    inputs.length > CONTRIBUTION_PORT_LIMIT ||
+    outputs.length > CONTRIBUTION_PORT_LIMIT
+  ) return false
   const used = new Set()
   return [
     ...inputs.map(port => [port, 'input']),
@@ -832,7 +838,12 @@ export function appendTopologyTargetsToWorkflow(workflow, selectedNodes) {
   const existingTargets = new Set(
     next.nodes.map(node => node.target?.stable_id).filter(Boolean)
   )
-  const additions = selectedNodes.filter(node => !existingTargets.has(node.stable_id))
+  const seenTargets = new Set(existingTargets)
+  const additions = selectedNodes.filter(node => {
+    if (seenTargets.has(node.stable_id)) return false
+    seenTargets.add(node.stable_id)
+    return true
+  })
   if (!additions.length) return workflow
   if (next.nodes.length + additions.length > WORKFLOW_LIMIT_COUNT) {
     throw new Error('workflow node limit reached')
@@ -920,6 +931,10 @@ const FLEET_CANVAS_STYLES = `
   transform: translateY(-2px);
   border-color: var(--fleet-selected);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--fleet-selected) 28%, transparent), 0 18px 38px color-mix(in srgb, var(--ui-bg-editor) 64%, transparent);
+}
+.fleet-graph-node[data-focused='true'] .fleet-node-shell {
+  border-color: var(--fleet-selected);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fleet-selected) 36%, transparent), 0 14px 32px color-mix(in srgb, var(--ui-bg-editor) 58%, transparent);
 }
 .fleet-node-shell[data-disabled='true'] { opacity: 0.82; }
 .fleet-node-enter { animation: fleet-node-enter 220ms ease-out both; }
@@ -1051,8 +1066,19 @@ const FLEET_CANVAS_STYLES = `
     height: 5rem;
   }
   .fleet-workflow-palette {
-    width: 8rem;
-    flex-basis: 8rem;
+    width: 100%;
+    flex-basis: 11rem;
+    max-height: 11rem;
+  }
+  .fleet-workflow-surface { flex-direction: column; }
+  .fleet-workflow-canvas { min-height: 14rem; }
+  .fleet-minimap {
+    width: 5rem;
+    height: 5rem;
+  }
+  .fleet-canvas-controls {
+    max-width: calc(100% - 1.5rem);
+    flex-wrap: wrap;
   }
 }
 @keyframes fleet-drawer-in {
@@ -2053,9 +2079,11 @@ function CanvasNodeRenderer({ node, selected, hovered }) {
 function GraphNode({
   node,
   selected,
+  focused,
   hovered,
   animated,
   onSelect,
+  onRovingFocus,
   onCenter,
   onHover,
   onMove,
@@ -2109,11 +2137,13 @@ function GraphNode({
   return jsxs('g', {
     transform: `translate(${node.x} ${node.y})`,
     role: 'button',
-    tabIndex: selected ? 0 : -1,
+    tabIndex: focused ? 0 : -1,
     'aria-pressed': selected,
     'aria-label': `${node.label}, ${node.status.label}, ${detailLabel}, ${identityLabel} ${node.id}`,
     'data-fleet-node': node.id,
-    className: animated ? 'fleet-node-enter' : undefined,
+    'data-focused': focused,
+    className: `fleet-graph-node${animated ? ' fleet-node-enter' : ''}`,
+    onFocus: () => onRovingFocus(node.id),
     onClick: event => {
       event.stopPropagation()
       event.currentTarget.focus({ preventScroll: true })
@@ -2174,10 +2204,16 @@ function FleetCanvas({
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 })
   const [hoveredId, setHoveredId] = useState(null)
+  const [rovingId, setRovingId] = useState(null)
   const nodeById = useMemo(
     () => new Map(graph.nodes.map(node => [node.id, node])),
     [graph.nodes]
   )
+
+  useEffect(() => {
+    if (rovingId && !nodeById.has(rovingId)) setRovingId(null)
+    else if (!rovingId && selectedId && nodeById.has(selectedId)) setRovingId(selectedId)
+  }, [nodeById, rovingId, selectedId])
 
   useEffect(() => {
     const element = rootRef.current
@@ -2364,7 +2400,7 @@ function FleetCanvas({
     className: 'fleet-canvas-surface relative min-h-0 flex-1 overflow-hidden rounded-2xl',
     children: [
       jsxs('div', {
-        className: 'absolute right-3 top-3 z-10 flex gap-1 rounded-xl border border-border/60 bg-background/85 p-1 shadow-lg backdrop-blur-sm',
+        className: 'fleet-canvas-controls absolute right-3 top-3 z-10 flex gap-1 rounded-xl border border-border/60 bg-background/85 p-1 shadow-lg backdrop-blur-sm',
         children: [
           jsx(Button, {
             type: 'button',
@@ -2410,7 +2446,7 @@ function FleetCanvas({
         ref: rootRef,
         className: 'fleet-canvas-grid h-full min-h-80 w-full select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         role: 'region',
-        tabIndex: selectedId ? -1 : 0,
+        tabIndex: rovingId ? -1 : 0,
         'aria-label': canvasLabel,
         style: { touchAction: 'none' },
         onPointerDown: beginPan,
@@ -2430,9 +2466,11 @@ function FleetCanvas({
                 jsx(GraphNode, {
                   node,
                   selected: selectedId === node.id,
+                  focused: rovingId === node.id,
                   hovered: hoveredId === node.id,
                   animated: animatedIds.has(node.id),
                   onSelect: setSelectedId,
+                  onRovingFocus: setRovingId,
                   onCenter: centerNode,
                   onHover: setHoveredId,
                   onMove: moveNodeByKeyboard,
@@ -3363,7 +3401,7 @@ function WorkflowModePanel({ history, setHistory }) {
   }
 
   const canvas = jsxs('div', {
-    className: 'relative flex min-h-0 min-w-0 flex-1 overflow-hidden',
+    className: 'fleet-workflow-canvas relative flex min-h-0 min-w-0 flex-1 overflow-hidden',
     onKeyDown,
     children: [
       jsx(FleetCanvas, {
@@ -3433,7 +3471,7 @@ function WorkflowModePanel({ history, setHistory }) {
         ]
       }),
       jsxs('div', {
-        className: 'mx-4 flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border/60',
+        className: 'fleet-workflow-surface mx-4 flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border/60',
         children: [
           jsx(WorkflowPalette, { query, onQuery: setQuery, onAdd: addNode, atLimit }),
           jsx(ContextMenu, {
@@ -3482,10 +3520,17 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
   const [positions, setPositions] = useState(() =>
     sanitizeFleetPositions(ctx.storage.get(LAYOUT_STORAGE_KEY, {}))
   )
-  const canvasNodes = useMemo(
-    () => buildFleetCanvasNodes(overview),
-    [overview.nodes, overview.observed_nodes]
-  )
+  const topologyProjection = useMemo(() => {
+    try {
+      return { nodes: buildFleetCanvasNodes(overview), error: null }
+    } catch (error) {
+      return {
+        nodes: [],
+        error: error instanceof Error ? error.message : 'Invalid topology snapshot.'
+      }
+    }
+  }, [overview.nodes, overview.observed_nodes])
+  const canvasNodes = topologyProjection.nodes
   const [selectedId, setSelectedId] = useState(null)
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const positionsRef = useRef(positions)
@@ -3539,7 +3584,15 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
     setMode('workflow')
   }, [selectedNode])
 
-  const topologyPanel = jsxs('div', {
+  const topologyPanel = topologyProjection.error
+    ? jsx('div', {
+        className: 'grid min-h-0 flex-1 place-items-center px-6',
+        children: jsx(ErrorState, {
+          title: 'Topology unavailable',
+          description: topologyProjection.error
+        })
+      })
+    : jsxs('div', {
     className: 'flex min-h-0 flex-1 flex-col gap-3 px-4',
     children: [
       jsxs('div', {

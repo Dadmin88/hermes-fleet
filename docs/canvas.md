@@ -286,7 +286,7 @@ Motion is restrained and state-triggered. No constant glow or pulse is used. Red
 
 ## Accessibility
 
-The Canvas exposes tree/treeitem semantics, deterministic node order, visible focus, keyboard directional navigation, Enter/Space selection, Escape-to-close, and named zoom/fit controls. Inspector drawers are non-modal overlays so the graph remains visible. Host primitives provide keyboard and screen-reader behavior for search, segmented mode switching, scrolling, and context menus.
+The Canvas exposes a labelled spatial region with button semantics for nodes, deterministic node order, a distinct visible roving-focus state, keyboard directional navigation, Enter/Space selection, Escape-to-close without clearing selection, and named zoom/fit controls. Inspector drawers are non-modal overlays so the graph remains visible. Host primitives provide keyboard and screen-reader behavior for search, segmented mode switching, scrolling, and context menus.
 
 Pointer targets must remain usable at zoomed presentation sizes. Future multiselect and connection gestures must preserve keyboard equivalents before they are considered complete.
 
