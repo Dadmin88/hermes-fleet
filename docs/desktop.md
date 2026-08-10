@@ -26,14 +26,19 @@ Managed identity is the stable Fleet identity tuple plus its deterministic opaqu
 - its socket at `$HERMES_HOME/fleet/managed-projection.sock`, or `FLEET_MANAGED_PROJECTION_SOCKET` inherited by the gateway process;
 - current managed projection and node observations.
 
-Provider observations are optional. To enable them, the Nodescale observation service and Hermes gateway must run as the same UID and the gateway must inherit both:
+Provider observations are optional. To enable them for a profile-scoped Desktop or gateway, create `$HERMES_HOME/fleet/nodescale-observations.json` as a regular non-symlink file no larger than 4096 bytes:
 
-```bash
-export NODESCALE_OBSERVATION_SOCKET="/absolute/private/path/observations.sock"
-export NODESCALE_OBSERVATION_NETWORK_ID="00000000-0000-0000-0000-000000000000"
+```json
+{
+  "schema": "fleet.nodescale-observations.v1",
+  "socket_path": "/absolute/private/path/observations.sock",
+  "network_id": "00000000-0000-0000-0000-000000000000"
+}
 ```
 
-Use the real Nodescale network UUID. The socket's canonical parent must be service-owned mode `0700`; the socket is mode `0600`. Do not loosen filesystem permissions or use a direct database path.
+The closed schema rejects unknown or missing fields, relative socket paths, symlinks, oversized files, and malformed JSON. Process-level `NODESCALE_OBSERVATION_SOCKET` and `NODESCALE_OBSERVATION_NETWORK_ID` values remain supported and take precedence when both are present; an incomplete environment pair fails closed.
+
+Use the real Nodescale network UUID. Nodescale and the Hermes backend must run as the same UID. The socket's canonical parent must be service-owned mode `0700`; the socket is mode `0600`. Do not loosen filesystem permissions or use a direct database path.
 
 The control socket remains peer-credential protected. Do not make it world-readable to enable Desktop access.
 

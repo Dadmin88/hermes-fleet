@@ -25,6 +25,50 @@ def _load_api():
     return module
 
 
+def test_observation_config_reads_strict_profile_file(monkeypatch, tmp_path) -> None:
+    module = _load_api()
+    socket_path = tmp_path / "nodescale.sock"
+    network_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.delenv("NODESCALE_OBSERVATION_SOCKET", raising=False)
+    monkeypatch.delenv("NODESCALE_OBSERVATION_NETWORK_ID", raising=False)
+    monkeypatch.setattr(module, "get_fleet_dir", lambda: tmp_path)
+    (tmp_path / "nodescale-observations.json").write_text(
+        json.dumps(
+            {
+                "schema": "fleet.nodescale-observations.v1",
+                "socket_path": str(socket_path),
+                "network_id": network_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert module._observation_config() == (socket_path, network_id)
+
+
+def test_observation_config_rejects_unknown_profile_fields(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_api()
+    monkeypatch.delenv("NODESCALE_OBSERVATION_SOCKET", raising=False)
+    monkeypatch.delenv("NODESCALE_OBSERVATION_NETWORK_ID", raising=False)
+    monkeypatch.setattr(module, "get_fleet_dir", lambda: tmp_path)
+    (tmp_path / "nodescale-observations.json").write_text(
+        json.dumps(
+            {
+                "schema": "fleet.nodescale-observations.v1",
+                "socket_path": "/run/user/1000/nodescale.sock",
+                "network_id": "11111111-1111-1111-1111-111111111111",
+                "authority": "managed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid Nodescale observation configuration"):
+        module._observation_config()
+
+
 def test_overview_route_uses_authoritative_desktop_client(
     monkeypatch, tmp_path
 ) -> None:
@@ -96,7 +140,7 @@ def test_overview_route_adds_observed_evidence_without_managed_authority(
         "provider_node_id": "node-1",
         "hostname": "fleet-accept-a",
         "given_name": "fleet-accept-a",
-        "addresses": ["100.64.0.1"],
+        "addresses": ["203.0.113.1"],
         "tags": [],
         "registered_at": None,
         "last_seen_at": "2026-08-10T00:00:01+00:00",

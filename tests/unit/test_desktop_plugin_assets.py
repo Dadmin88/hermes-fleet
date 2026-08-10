@@ -325,7 +325,7 @@ const observed = {
   provider_node_id: 'provider-node-1',
   hostname: 'observed-host',
   given_name: 'Observed Worker',
-  addresses: ['100.64.0.9'],
+  addresses: ['203.0.113.9'],
   tags: ['tag:worker'],
   online: true,
   expired: false,

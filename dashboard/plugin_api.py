@@ -100,11 +100,42 @@ def _socket_path() -> Path:
 def _observation_config() -> tuple[Path, str] | None:
     socket_value = os.environ.get("NODESCALE_OBSERVATION_SOCKET")
     network_id = os.environ.get("NODESCALE_OBSERVATION_NETWORK_ID")
-    if socket_value is None and network_id is None:
+    if socket_value is not None or network_id is not None:
+        if not socket_value or not network_id:
+            raise ValueError("incomplete Nodescale observation configuration")
+        return Path(socket_value).expanduser(), network_id
+
+    config_path = get_fleet_dir() / "nodescale-observations.json"
+    try:
+        metadata = config_path.lstat()
+    except FileNotFoundError:
         return None
-    if not socket_value or not network_id:
-        raise ValueError("incomplete Nodescale observation configuration")
-    return Path(socket_value).expanduser(), network_id
+    if config_path.is_symlink() or not config_path.is_file() or metadata.st_size > 4096:
+        raise ValueError("invalid Nodescale observation configuration")
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid Nodescale observation configuration") from exc
+    if type(payload) is not dict or set(payload) != {
+        "schema",
+        "socket_path",
+        "network_id",
+    }:
+        raise ValueError("invalid Nodescale observation configuration")
+    socket_value = payload.get("socket_path")
+    network_id = payload.get("network_id")
+    if (
+        payload.get("schema") != "fleet.nodescale-observations.v1"
+        or type(socket_value) is not str
+        or not socket_value
+        or len(socket_value) > 1024
+        or not Path(socket_value).is_absolute()
+        or type(network_id) is not str
+        or not network_id
+        or len(network_id) > 256
+    ):
+        raise ValueError("invalid Nodescale observation configuration")
+    return Path(socket_value), network_id
 
 
 def _compose_overview(
