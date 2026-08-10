@@ -259,6 +259,7 @@ def test_high_level_controller_accepts_worker_inventory_response() -> None:
                 "max_workers": 1,
                 "available_worker_slots": 1,
             },
+            "profiles": [{"name": "agency-backend-engineer", "version": "0.1.0"}],
             "resources": {
                 "cpu": None,
                 "ram": None,

@@ -642,6 +642,7 @@ def test_fleet_node_health_and_inventory_add_readiness_when_observation_is_confi
             "max_workers": 1,
             "available_worker_slots": 1,
         },
+        "profiles": [{"name": "agency-backend-engineer", "version": "0.1.0"}],
         "resources": {
             "cpu": None,
             "ram": None,

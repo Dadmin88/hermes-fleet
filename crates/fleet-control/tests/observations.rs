@@ -213,6 +213,7 @@ fn real_service_observes_explains_recovers_and_restores_scheduler_readiness() {
     let unknown_view = inspect(&service.socket);
     assert_eq!(unknown_view["result"]["managed_state"], "unknown");
     assert_eq!(unknown_view["result"]["scheduler_ready"], false);
+    assert_eq!(unknown_view["result"]["profiles"], Value::Null);
     assert_eq!(
         unknown_view["result"]["reasons"],
         json!(["node_unknown", "observation_missing"])
@@ -236,6 +237,7 @@ fn real_service_observes_explains_recovers_and_restores_scheduler_readiness() {
     assert_eq!(ready["result"]["capacity"]["active_workers"], 0);
     assert_eq!(ready["result"]["capacity"]["max_workers"], 1);
     assert_eq!(ready["result"]["capacity"]["available_worker_slots"], 1);
+    assert_eq!(ready["result"]["profiles"], json!([]));
     assert_eq!(ready["result"]["resources"]["gpu"], Value::Null);
 
     let saturated_time = first_time + 1;
@@ -273,10 +275,38 @@ fn real_service_observes_explains_recovers_and_restores_scheduler_readiness() {
     assert_eq!(restarted.database, database);
     let restored = inspect(&restarted.socket);
     assert_eq!(restored["result"]["scheduler_ready"], true);
+    assert_eq!(restored["result"]["profiles"], json!([]));
     assert_eq!(
         restored["result"]["last_observation"]["observed_at_ms"],
         recovered_time
     );
+    restarted.stop();
+}
+
+#[test]
+fn profile_presence_round_trips_through_control_and_restart() {
+    let root = private_tempdir();
+    let mut service = RunningService::start(root.path());
+    apply_managed(&service.socket);
+
+    let mut sample = observation(now_ms(), 0, "available");
+    sample["profiles"] = json!([
+        {"name": "agency-ai-engineer", "version": "0.1.0"},
+        {"name": "agency-backend-engineer", "version": "0.1.0"}
+    ]);
+    assert_eq!(
+        observe(&service.socket, sample)["result"]["outcome"],
+        "recorded"
+    );
+    let expected = json!([
+        {"name": "agency-ai-engineer", "version": "0.1.0"},
+        {"name": "agency-backend-engineer", "version": "0.1.0"}
+    ]);
+    assert_eq!(inspect(&service.socket)["result"]["profiles"], expected);
+
+    service.stop();
+    let mut restarted = RunningService::start(root.path());
+    assert_eq!(inspect(&restarted.socket)["result"]["profiles"], expected);
     restarted.stop();
 }
 
