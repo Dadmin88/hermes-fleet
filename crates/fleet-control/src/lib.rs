@@ -155,8 +155,6 @@ pub fn run(config: ControlConfig, shutdown: Arc<AtomicBool>) -> Result<()> {
         }
     }
 
-    // Dropping the listener first stops new admissions. Existing authenticated
-    // requests have one bounded I/O timeout and are allowed to complete.
     let OwnedListener { listener, socket } = owned;
     drop(listener);
     for worker in workers {
@@ -215,8 +213,6 @@ fn peer_uid(stream: &UnixStream) -> Result<u32> {
         gid: 0,
     };
     let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: `credentials` and `length` point to initialized writable storage,
-    // and the file descriptor is a live Unix stream owned by the caller.
     let status = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -459,7 +455,6 @@ struct CanonicalProjectionMaterial<'a> {
     provenance: &'a WireProvenance,
 }
 
-/// Compute the exact Python/Nodescale canonical projection hash preimage.
 pub fn canonical_projection_hash(document: &Value) -> Result<String> {
     let document: WireProjectionDocument =
         serde_json::from_value(document.clone()).map_err(|_| ControlError::MalformedRequest)?;
@@ -715,8 +710,8 @@ fn inspect_value(view: ProjectionView) -> Value {
 }
 
 fn observation_value(view: NodeOperationalView) -> Value {
-    let (last_observation, capacity, resources) = match view.observation {
-        None => (Value::Null, Value::Null, Value::Null),
+    let (last_observation, capacity, profiles, resources) = match view.observation {
+        None => (Value::Null, Value::Null, Value::Null, Value::Null),
         Some(record) => {
             let observation = record.observation;
             (
@@ -734,6 +729,7 @@ fn observation_value(view: NodeOperationalView) -> Value {
                     "max_workers": observation.capacity.max_workers,
                     "available_worker_slots": observation.capacity.available_worker_slots(),
                 }),
+                json!(observation.profiles),
                 json!(observation.resources),
             )
         }
@@ -748,6 +744,7 @@ fn observation_value(view: NodeOperationalView) -> Value {
         "reasons": view.readiness.reasons,
         "last_observation": last_observation,
         "capacity": capacity,
+        "profiles": profiles,
         "resources": resources,
     })
 }
@@ -904,7 +901,6 @@ impl OwnedListener {
         if let Some(gid) = socket_gid {
             let path_bytes = CString::new(path.as_os_str().as_bytes())
                 .map_err(|_| ControlError::UnsafePath("socket path"))?;
-            // SAFETY: path is a valid NUL-terminated pathname; -1 preserves UID.
             if unsafe { libc::chown(path_bytes.as_ptr(), u32::MAX, gid) } != 0 {
                 let error = std::io::Error::last_os_error();
                 let _ = fs::remove_file(path);
@@ -1019,7 +1015,6 @@ fn prepare_database_file(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let path_bytes = CString::new(path.as_os_str().as_bytes())
                 .map_err(|_| ControlError::UnsafePath("database path"))?;
-            // SAFETY: pathname is NUL-terminated and flags/mode are valid for open(2).
             let fd = unsafe {
                 libc::open(
                     path_bytes.as_ptr(),
@@ -1034,7 +1029,6 @@ fn prepare_database_file(path: &Path) -> Result<()> {
             if fd < 0 {
                 return Err(ControlError::Io(std::io::Error::last_os_error()));
             }
-            // SAFETY: fd was returned by open and is owned by this function.
             unsafe { libc::close(fd) };
         }
         Err(error) => return Err(ControlError::Io(error)),
