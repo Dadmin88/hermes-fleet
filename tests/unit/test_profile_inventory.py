@@ -91,7 +91,7 @@ def test_profile_inventory_fails_closed_on_conflicting_versions(tmp_path) -> Non
         version="0.2.0",
     )
 
-    with pytest.raises(ProfileInventoryError, match="conflicting installed versions"):
+    with pytest.raises(ProfileInventoryError, match="conflicting installed identities"):
         scan_profile_distributions(root)
 
 
@@ -270,5 +270,5 @@ def test_duplicate_distribution_fails_closed_on_conflicting_content_digest(
     _digestible_distribution(second, name="agency-backend-engineer")
     (second / "SOUL.md").write_text("different identity\n", encoding="utf-8")
 
-    with pytest.raises(ProfileInventoryError, match="conflicting installed content"):
+    with pytest.raises(ProfileInventoryError, match="conflicting installed identities"):
         scan_profile_distributions(root)
