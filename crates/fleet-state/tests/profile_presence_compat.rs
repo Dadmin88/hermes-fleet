@@ -93,7 +93,14 @@ fn persisted_observation_without_profiles_remains_readable_as_empty_presence() {
         )
         .unwrap();
     assert!(inspected.readiness.scheduler_ready);
-    assert!(inspected.observation.unwrap().observation.profiles.is_empty());
+    assert!(
+        inspected
+            .observation
+            .unwrap()
+            .observation
+            .profiles
+            .is_empty()
+    );
 
     assert!(
         store
