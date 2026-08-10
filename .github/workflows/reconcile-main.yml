@@ -103,6 +103,23 @@ jobs:
             exit 1
           }
 
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/fleet-state/tests/desktop.rs")
+          text = path.read_text()
+          if "profiles:" not in text:
+              needle = "        resources: ResourceObservation::default(),\n"
+              if text.count(needle) != 1:
+                  raise SystemExit("Unexpected Desktop observation fixture shape")
+              text = text.replace(
+                  needle,
+                  "        profiles: Vec::new(),\n" + needle,
+                  1,
+              )
+              path.write_text(text)
+          PY
+
           cargo fmt --all
           node --check desktop/plugin.js
           python3 -m compileall -q hermes_fleet
