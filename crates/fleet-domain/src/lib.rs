@@ -563,9 +563,9 @@ impl ProfilePresence {
             && name.len() <= MAX_PROFILE_NAME_BYTES
             && name != "."
             && name != ".."
-            && name.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-            })
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
             && !version.is_empty()
             && version.len() <= MAX_PROFILE_VERSION_BYTES
             && version.bytes().all(|byte| byte.is_ascii_graphic())
