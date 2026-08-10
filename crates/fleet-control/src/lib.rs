@@ -35,7 +35,8 @@ use fleet_domain::{
     ProjectionDocument, ReadinessPolicy,
 };
 use fleet_state::{
-    FleetStateStore, NodeOperationalView, ObservationOutcome, ProjectionView, StateError,
+    FleetStateStore, ManagedNodeView, NodeOperationalView, ObservationOutcome, ProjectionView,
+    StateError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,7 +45,10 @@ use thiserror::Error;
 
 pub const SCHEMA: &str = "fleet.managed-projection.v1";
 pub const OBSERVATION_SCHEMA: &str = "fleet.node-observation.v1";
+pub const DESKTOP_SCHEMA: &str = "fleet.desktop.v1";
 pub const MAX_FRAME_BYTES: usize = 32_768;
+pub const MAX_RESPONSE_BYTES: usize = 262_144;
+pub const MAX_DESKTOP_NODES: usize = 256;
 pub const MAX_CONNECTIONS: usize = 32;
 pub const IO_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_FRESHNESS_WINDOW: Duration = Duration::from_secs(90);
@@ -271,10 +275,10 @@ fn declared_schema(payload: &[u8]) -> &'static str {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
-    if schema.as_deref() == Some(OBSERVATION_SCHEMA) {
-        OBSERVATION_SCHEMA
-    } else {
-        SCHEMA
+    match schema.as_deref() {
+        Some(OBSERVATION_SCHEMA) => OBSERVATION_SCHEMA,
+        Some(DESKTOP_SCHEMA) => DESKTOP_SCHEMA,
+        _ => SCHEMA,
     }
 }
 
@@ -295,6 +299,7 @@ enum Request {
     Inspect(InspectRequest),
     Observe(ObserveRequest),
     InspectObservation(InspectObservationRequest),
+    DesktopOverview(DesktopOverviewRequest),
 }
 
 impl Request {
@@ -305,6 +310,7 @@ impl Request {
             Self::Inspect(request) => &request.schema,
             Self::Observe(request) => &request.schema,
             Self::InspectObservation(request) => &request.schema,
+            Self::DesktopOverview(request) => &request.schema,
         }
     }
 
@@ -312,6 +318,7 @@ impl Request {
         match self {
             Self::Capabilities(_) | Self::Apply(_) | Self::Inspect(_) => SCHEMA,
             Self::Observe(_) | Self::InspectObservation(_) => OBSERVATION_SCHEMA,
+            Self::DesktopOverview(_) => DESKTOP_SCHEMA,
         }
     }
 }
@@ -356,6 +363,13 @@ struct InspectObservationRequest {
     selector: InspectSelector,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopOverviewRequest {
+    schema: String,
+    kind: DesktopOverviewKind,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum CapabilitiesKind {
     #[serde(rename = "capabilities")]
@@ -384,6 +398,12 @@ enum ObserveKind {
 enum InspectObservationKind {
     #[serde(rename = "inspect_observation")]
     InspectObservation,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum DesktopOverviewKind {
+    #[serde(rename = "overview")]
+    Overview,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -655,6 +675,20 @@ fn dispatch_result(
                 .map_err(map_state_error)?;
             Ok(observation_value(view))
         }
+        Request::DesktopOverview(request) => {
+            let _ = request.kind;
+            let policy = ReadinessPolicy::new(freshness_window.as_millis() as u64)
+                .map_err(|_| ControlError::MalformedRequest)?;
+            let nodes = state
+                .list_managed_nodes(current_time_ms()?, policy)
+                .map_err(map_state_error)?;
+            if nodes.len() > MAX_DESKTOP_NODES {
+                return Err(ControlError::MalformedRequest);
+            }
+            Ok(json!({
+                "nodes": nodes.into_iter().map(desktop_node_value).collect::<Vec<_>>()
+            }))
+        }
     }
 }
 
@@ -752,6 +786,41 @@ fn observation_value(view: NodeOperationalView) -> Value {
     })
 }
 
+fn desktop_node_value(view: ManagedNodeView) -> Value {
+    let stable_id = stable_node_id(&view.source, &view.network_id, &view.device_id);
+    let active = view.managed_state == fleet_domain::ManagedNodeState::Active;
+    let readiness = observation_value(view.operational);
+    json!({
+        "stable_id": stable_id,
+        "identity": {
+            "source": view.source,
+            "network_id": view.network_id,
+            "device_id": view.device_id.clone(),
+        },
+        "naming": {
+            "display_name": view.device_id,
+            "provider_name": Value::Null,
+            "alias": Value::Null,
+            "has_alias": false,
+        },
+        "managed": {
+            "state": view.managed_state,
+            "active": active,
+            "projection_generation": view.projection_generation,
+            "membership_generation": view.membership_generation,
+            "binding_generation": view.binding_generation,
+        },
+        "readiness": readiness,
+        "operations": view.effective_operations,
+    })
+}
+
+fn stable_node_id(source: &str, network_id: &str, device_id: &str) -> String {
+    let material = serde_json::to_vec(&[source, network_id, device_id])
+        .expect("managed node identity is serializable");
+    format!("fleet-node-{:x}", Sha256::digest(material))
+}
+
 fn current_time_ms() -> Result<u64> {
     let milliseconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -788,6 +857,7 @@ fn dispatch_response(
         Request::Inspect(_) => "inspect",
         Request::Observe(_) => "observe",
         Request::InspectObservation(_) => "inspect_observation",
+        Request::DesktopOverview(_) => "overview",
     };
     dispatch_result(request, state, freshness_window)
         .map(|result| success_response(schema, kind, result))
@@ -795,7 +865,7 @@ fn dispatch_response(
 
 fn send_response(stream: &mut UnixStream, response: &Value) -> Result<()> {
     let payload = serde_json::to_vec(response).map_err(|_| ControlError::MalformedRequest)?;
-    if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
+    if payload.is_empty() || payload.len() > MAX_RESPONSE_BYTES {
         return Err(ControlError::MalformedRequest);
     }
     stream.write_all(&(payload.len() as u32).to_be_bytes())?;

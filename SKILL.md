@@ -129,11 +129,11 @@ Equivalent commands:
 
 ```text
 hermes fleet list
-hermes fleet show vps
-hermes fleet health vps
-hermes fleet inventory vps
-hermes fleet message vps "Hello from Katana" --topic smoke-test
-hermes fleet run vps "Return exactly FLEET_OK"
+hermes fleet show worker-1
+hermes fleet health worker-1
+hermes fleet inventory worker-1
+hermes fleet message worker-1 "Hello from controller-1" --topic smoke-test
+hermes fleet run worker-1 "Return exactly FLEET_OK"
 hermes fleet status <keryx-task-id>
 hermes fleet cancel <keryx-task-id>
 ```

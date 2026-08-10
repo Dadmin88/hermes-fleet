@@ -53,7 +53,7 @@ class _IncomingTask:
     payload: str
     operation: str
     task_id: str = "task-1"
-    peer_id: str = "peer-katana"
+    peer_id: str = "peer-controller-1"
     metadata: dict[str, str] = field(default_factory=dict)
     completed: list[Any] | None = None
     failed: str | None = None
@@ -150,7 +150,7 @@ def _worker(
         defaults=FleetDefaults(),
         hermes=hermes,
         bindings=RunBindingStore(state_path),
-        controller_peer_ids=("peer-katana",),
+        controller_peer_ids=("peer-controller-1",),
         advertised_operations=advertised_operations,
         now_ms=now_ms or (lambda: 10_000),
         readiness_inspector=readiness_inspector,
@@ -373,7 +373,7 @@ def test_fleet_node_message_returns_safe_ack_without_calling_hermes(tmp_path) ->
         "correlation_id": "corr-1",
         "operation": "fleet.message",
         "received_by": "peer-vps",
-        "sender_peer_id": "peer-katana",
+        "sender_peer_id": "peer-controller-1",
         "status": "received",
         "topic": "smoke-test",
     }

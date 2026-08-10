@@ -13,9 +13,10 @@ use std::{
 };
 
 use fleet_domain::{
-    ApplyOutcome, FleetOperation, ManagedNodeState, ManagedOperation, ManagedProjectionRecord,
-    NodeObservation, NodeReadiness, ObservationRecord, ProjectionApply, ProjectionDocument,
-    ReadinessPolicy, RecoveryAction, RunBindingState, apply_projection, evaluate_readiness,
+    ApplyOutcome, FleetOperation, Generation, ManagedNodeState, ManagedOperation,
+    ManagedProjectionRecord, NodeObservation, NodeReadiness, ObservationRecord, ProjectionApply,
+    ProjectionDocument, ReadinessPolicy, RecoveryAction, RunBindingState, apply_projection,
+    evaluate_readiness,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -171,6 +172,21 @@ pub struct NodeOperationalView {
     pub readiness: NodeReadiness,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedNodeView {
+    pub source: String,
+    pub network_id: String,
+    pub device_id: String,
+    pub projection_generation: Generation,
+    pub membership_generation: Generation,
+    pub binding_generation: Generation,
+    pub managed_state: ManagedNodeState,
+    pub generated_operations: BTreeSet<FleetOperation>,
+    pub effective_operations: BTreeSet<FleetOperation>,
+    pub operator_denied_operations: BTreeSet<FleetOperation>,
+    pub operational: NodeOperationalView,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunRecoveryDecision {
@@ -264,38 +280,7 @@ impl FleetStateStore {
     ) -> Result<ProjectionView> {
         validate_key(source, network_id, device_id)?;
         let connection = self.connect()?;
-        let generated = load_projection(&connection, source, network_id, device_id)?;
-        let mut statement = connection.prepare(
-            "SELECT operation FROM operator_projection_denies
-             WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
-             ORDER BY operation",
-        )?;
-        let denied = statement
-            .query_map(params![source, network_id, device_id], |row| {
-                row.get::<_, String>(0)
-            })?
-            .map(|value| {
-                let value = value?;
-                FleetOperation::parse(&value).map_err(|_| rusqlite::Error::InvalidQuery)
-            })
-            .collect::<std::result::Result<BTreeSet<_>, _>>()?;
-        let effective_operations = generated
-            .as_ref()
-            .filter(|record| record.document.operation == ManagedOperation::Upsert)
-            .map(|record| {
-                record
-                    .document
-                    .generated_operations
-                    .difference(&denied)
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(ProjectionView {
-            generated,
-            effective_operations,
-            operator_denied_operations: denied,
-        })
+        inspect_projection_from(&connection, source, network_id, device_id)
     }
 
     pub fn set_operator_deny(
@@ -436,31 +421,70 @@ impl FleetStateStore {
         }
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let projection = load_projection(&transaction, source, network_id, device_id)?;
-        let admission_generation = projection
-            .as_ref()
-            .map(|record| record.document.projection_generation.get());
-        let managed_state = managed_state(projection.as_ref());
-        let observation = load_observation(&transaction, source, network_id, device_id)?;
-        if observation.as_ref().is_some_and(|record| {
-            Some(record.observation.admission_generation) != admission_generation
-        }) {
-            return Err(StateError::CorruptState(
-                "stored observation admission generation does not match projection",
+        let view = inspect_node_from(&transaction, source, network_id, device_id, now_ms, policy)?;
+        transaction.commit()?;
+        Ok(view)
+    }
+
+    pub fn list_managed_nodes(
+        &self,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ManagedNodeView>> {
+        if now_ms == 0 || now_ms > i64::MAX as u64 {
+            return Err(StateError::InvalidInput(
+                "inspection timestamp is outside the supported range",
             ));
         }
-        let available_worker_slots = observation
-            .as_ref()
-            .map(|record| record.observation.capacity.available_worker_slots());
-        let readiness = evaluate_readiness(managed_state, observation.as_ref(), now_ms, policy);
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let keys = {
+            let mut statement = transaction.prepare(
+                "SELECT source, network_id, device_id FROM managed_projections
+                 ORDER BY source, network_id, device_id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut nodes = Vec::with_capacity(keys.len());
+        for (source, network_id, device_id) in keys {
+            let projection =
+                inspect_projection_from(&transaction, &source, &network_id, &device_id)?;
+            let record = projection.generated.ok_or(StateError::CorruptState(
+                "listed managed projection disappeared",
+            ))?;
+            let operational = inspect_node_from(
+                &transaction,
+                &source,
+                &network_id,
+                &device_id,
+                now_ms,
+                policy,
+            )?;
+            let document = record.document;
+            nodes.push(ManagedNodeView {
+                source,
+                network_id,
+                device_id,
+                projection_generation: document.projection_generation,
+                membership_generation: document.membership_generation,
+                binding_generation: document.binding_generation,
+                managed_state: operational.managed_state,
+                generated_operations: document.generated_operations,
+                effective_operations: projection.effective_operations,
+                operator_denied_operations: projection.operator_denied_operations,
+                operational,
+            });
+        }
         transaction.commit()?;
-        Ok(NodeOperationalView {
-            managed_state,
-            admission_generation,
-            observation,
-            available_worker_slots,
-            readiness,
-        })
+        Ok(nodes)
     }
 
     pub fn reserve_run(&self, task_id: &str) -> Result<RunReservation> {
@@ -772,6 +796,81 @@ fn load_observation(
             })
         })
         .transpose()
+}
+
+fn inspect_projection_from(
+    connection: &Connection,
+    source: &str,
+    network_id: &str,
+    device_id: &str,
+) -> Result<ProjectionView> {
+    let generated = load_projection(connection, source, network_id, device_id)?;
+    let mut statement = connection.prepare(
+        "SELECT operation FROM operator_projection_denies
+         WHERE source = ?1 AND network_id = ?2 AND device_id = ?3
+         ORDER BY operation",
+    )?;
+    let denied = statement
+        .query_map(params![source, network_id, device_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|value| {
+            let value = value?;
+            FleetOperation::parse(&value).map_err(|_| rusqlite::Error::InvalidQuery)
+        })
+        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+    let effective_operations = generated
+        .as_ref()
+        .filter(|record| record.document.operation == ManagedOperation::Upsert)
+        .map(|record| {
+            record
+                .document
+                .generated_operations
+                .difference(&denied)
+                .copied()
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ProjectionView {
+        generated,
+        effective_operations,
+        operator_denied_operations: denied,
+    })
+}
+
+fn inspect_node_from(
+    connection: &Connection,
+    source: &str,
+    network_id: &str,
+    device_id: &str,
+    now_ms: u64,
+    policy: ReadinessPolicy,
+) -> Result<NodeOperationalView> {
+    let projection = load_projection(connection, source, network_id, device_id)?;
+    let admission_generation = projection
+        .as_ref()
+        .map(|record| record.document.projection_generation.get());
+    let managed_state = managed_state(projection.as_ref());
+    let observation = load_observation(connection, source, network_id, device_id)?;
+    if observation
+        .as_ref()
+        .is_some_and(|record| Some(record.observation.admission_generation) != admission_generation)
+    {
+        return Err(StateError::CorruptState(
+            "stored observation admission generation does not match projection",
+        ));
+    }
+    let available_worker_slots = observation
+        .as_ref()
+        .map(|record| record.observation.capacity.available_worker_slots());
+    let readiness = evaluate_readiness(managed_state, observation.as_ref(), now_ms, policy);
+    Ok(NodeOperationalView {
+        managed_state,
+        admission_generation,
+        observation,
+        available_worker_slots,
+        readiness,
+    })
 }
 
 fn managed_state(record: Option<&ManagedProjectionRecord>) -> ManagedNodeState {

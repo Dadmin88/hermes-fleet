@@ -9,7 +9,7 @@ class _Keryx:
 
     async def list_peers(self):
         return [
-            {"peer_id": "peer-katana", "connected": True, "local": True},
+            {"peer_id": "peer-controller-1", "connected": True, "local": True},
             {"peer_id": "peer-vps", "connected": False, "local": False},
         ]
 

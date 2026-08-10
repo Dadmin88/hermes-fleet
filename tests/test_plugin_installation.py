@@ -83,6 +83,9 @@ def test_git_artifact_installs_and_registers_outside_source_checkout(
     assert installed.resolve() != REPO_ROOT.resolve()
     assert (installed / "plugin.yaml").is_file()
     assert (installed / "__init__.py").is_file()
+    assert (installed / "dashboard" / "manifest.json").is_file()
+    assert (installed / "dashboard" / "plugin_api.py").is_file()
+    assert (installed / "desktop" / "plugin.js").is_file()
 
     inspection = _run(
         [hermes, "plugins", "list", "--json", "--no-bundled"],

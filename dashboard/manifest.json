@@ -1,0 +1,10 @@
+{
+  "name": "hermes-fleet",
+  "label": "Fleet",
+  "description": "Native Fleet topology and readiness control surface backend",
+  "version": "0.1.0",
+  "tab": {
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}
