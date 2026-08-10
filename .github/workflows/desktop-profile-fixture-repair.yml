@@ -1,0 +1,49 @@
+name: Desktop readiness profile fixture repair
+
+on:
+  push:
+    branches: [feat/desktop-d1]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Adapt the stale Desktop test fixture only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Fleet Fixture Repair"
+          git config user.email "fleet-fixture-repair@users.noreply.github.com"
+          python -m pip install -e '.[dev]'
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/unit/test_desktop_api.py')
+          text = path.read_text()
+          needle = '            "capacity": capacity,\n            "resources": resources,\n'
+          replacement = '            "capacity": capacity,\n            "profiles": [] if active else None,\n            "resources": resources,\n'
+          if text.count(needle) != 1:
+              raise SystemExit('Unexpected Desktop readiness fixture shape')
+          path.write_text(text.replace(needle, replacement, 1))
+          PY
+          changed="$(git diff --name-only)"
+          test "$changed" = "tests/unit/test_desktop_api.py" || {
+            echo "Unexpected repair changes:" >&2
+            printf '%s\n' "$changed" >&2
+            exit 1
+          }
+          python -m pytest -q tests/unit/test_desktop_api.py
+          ruff check tests/unit/test_desktop_api.py
+          ruff format --check tests/unit/test_desktop_api.py
+          git rm .github/workflows/desktop-profile-fixture-repair.yml
+          git add tests/unit/test_desktop_api.py
+          git diff --cached --check
+          git commit -m "test: adapt Desktop fixture to profile readiness"
+          git push origin HEAD:feat/desktop-d1
