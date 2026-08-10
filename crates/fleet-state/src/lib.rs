@@ -2,8 +2,8 @@
 //!
 //! This crate persists accepted managed projection, one current scheduling
 //! observation per managed node, and duplicate-safe Hermes run-binding truth.
-//! It deliberately contains no transport, scheduler, telemetry history, profile,
-//! Sentinel, or UI responsibilities.
+//! It deliberately contains no transport, scheduler, telemetry history, profile
+//! installation, Sentinel, or UI responsibilities.
 
 use std::{
     collections::BTreeSet,
@@ -78,6 +78,8 @@ CREATE TABLE node_observations (
 const MAX_IDENTIFIER_CHARS: usize = 256;
 const MAX_OBSERVATION_FUTURE_SKEW_MS: u64 = 5_000;
 const MAX_RESULT_CHARS: usize = 65_536;
+const MAX_PROFILE_NAME_BYTES: usize = 128;
+const MAX_PROFILE_VERSION_BYTES: usize = 128;
 
 #[derive(Debug)]
 pub enum StateError {
@@ -168,6 +170,16 @@ pub struct NodeOperationalView {
     pub admission_generation: Option<u64>,
     pub observation: Option<ObservationRecord>,
     pub available_worker_slots: Option<u32>,
+    pub readiness: NodeReadiness,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileNodeCandidate {
+    pub source: String,
+    pub network_id: String,
+    pub device_id: String,
+    pub profile_version: String,
+    pub available_worker_slots: u32,
     pub readiness: NodeReadiness,
 }
 
@@ -463,6 +475,90 @@ impl FleetStateStore {
         })
     }
 
+    pub fn find_profile_candidates(
+        &self,
+        profile_name: &str,
+        required_version: Option<&str>,
+        now_ms: u64,
+        policy: ReadinessPolicy,
+    ) -> Result<Vec<ProfileNodeCandidate>> {
+        validate_profile_query(profile_name, required_version)?;
+        if now_ms == 0 || now_ms > i64::MAX as u64 {
+            return Err(StateError::InvalidInput(
+                "inspection timestamp is outside the supported range",
+            ));
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let keys = {
+            let mut statement = transaction.prepare(
+                "SELECT source, network_id, device_id
+                 FROM managed_projections
+                 ORDER BY source, network_id, device_id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut candidates = Vec::new();
+        for (source, network_id, device_id) in keys {
+            let projection = load_projection(&transaction, &source, &network_id, &device_id)?;
+            let admission_generation = projection
+                .as_ref()
+                .map(|record| record.document.projection_generation.get());
+            let managed_state = managed_state(projection.as_ref());
+            if managed_state != ManagedNodeState::Active {
+                continue;
+            }
+
+            let observation = load_observation(&transaction, &source, &network_id, &device_id)?;
+            if observation.as_ref().is_some_and(|record| {
+                Some(record.observation.admission_generation) != admission_generation
+            }) {
+                return Err(StateError::CorruptState(
+                    "stored observation admission generation does not match projection",
+                ));
+            }
+            let Some(record) = observation else {
+                continue;
+            };
+            let readiness = evaluate_readiness(managed_state, Some(&record), now_ms, policy);
+            if !readiness.scheduler_ready {
+                continue;
+            }
+            let Some(profile) = record
+                .observation
+                .profiles
+                .iter()
+                .find(|profile| profile.name == profile_name)
+            else {
+                continue;
+            };
+            if required_version.is_some_and(|version| profile.version != version) {
+                continue;
+            }
+
+            candidates.push(ProfileNodeCandidate {
+                source,
+                network_id,
+                device_id,
+                profile_version: profile.version.clone(),
+                available_worker_slots: record.observation.capacity.available_worker_slots(),
+                readiness,
+            });
+        }
+        transaction.commit()?;
+        Ok(candidates)
+    }
+
     pub fn reserve_run(&self, task_id: &str) -> Result<RunReservation> {
         validate_identifier(task_id, "task ID")?;
         let mut connection = self.connect()?;
@@ -515,6 +611,7 @@ impl FleetStateStore {
             return Err(StateError::InvalidInput("result text is too large"));
         }
         self.transition_run(task_id, |current| match current {
+            RunBindingState::Creating => unreachable!(),
             RunBindingState::Running { run_id: existing } if existing == run_id => {
                 Ok(RunBindingState::Completed {
                     run_id: run_id.to_owned(),
@@ -1138,6 +1235,26 @@ fn validate_key(source: &str, network_id: &str, device_id: &str) -> Result<()> {
     }
     validate_identifier(network_id, "network ID")?;
     validate_identifier(device_id, "device ID")
+}
+
+fn validate_profile_query(profile_name: &str, required_version: Option<&str>) -> Result<()> {
+    let valid_name = !profile_name.is_empty()
+        && profile_name.len() <= MAX_PROFILE_NAME_BYTES
+        && !matches!(profile_name, "." | "..")
+        && profile_name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+        });
+    let valid_version = required_version.is_none_or(|version| {
+        !version.is_empty()
+            && version.len() <= MAX_PROFILE_VERSION_BYTES
+            && version.bytes().all(|byte| byte.is_ascii_graphic())
+    });
+    if !valid_name || !valid_version {
+        return Err(StateError::InvalidInput(
+            "profile query is not bounded canonical text",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_identifier(value: &str, _label: &'static str) -> Result<()> {
