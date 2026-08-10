@@ -546,6 +546,7 @@ pub struct ResourceObservation {
 const MAX_PROFILE_PRESENCE: usize = 256;
 const MAX_PROFILE_NAME_BYTES: usize = 128;
 const MAX_PROFILE_VERSION_BYTES: usize = 128;
+const PROFILE_CONTENT_DIGEST_BYTES: usize = 64;
 
 /// One installed Hermes profile distribution advertised by a Fleet node.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -553,12 +554,20 @@ const MAX_PROFILE_VERSION_BYTES: usize = 128;
 pub struct ProfilePresence {
     pub name: String,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<String>,
 }
 
 impl ProfilePresence {
     fn is_valid(&self) -> bool {
         let name = self.name.as_str();
         let version = self.version.as_str();
+        let valid_digest = self.content_digest.as_ref().is_none_or(|digest| {
+            digest.len() == PROFILE_CONTENT_DIGEST_BYTES
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        });
         !name.is_empty()
             && name.len() <= MAX_PROFILE_NAME_BYTES
             && name != "."
@@ -569,6 +578,7 @@ impl ProfilePresence {
             && !version.is_empty()
             && version.len() <= MAX_PROFILE_VERSION_BYTES
             && version.bytes().all(|byte| byte.is_ascii_graphic())
+            && valid_digest
     }
 }
 

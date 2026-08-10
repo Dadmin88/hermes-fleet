@@ -42,6 +42,7 @@ fn profile(name: &str, version: &str) -> ProfilePresence {
     ProfilePresence {
         name: name.to_owned(),
         version: version.to_owned(),
+        content_digest: None,
     }
 }
 

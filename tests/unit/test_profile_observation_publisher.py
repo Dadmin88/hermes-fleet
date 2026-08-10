@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+DIGEST = "7a9480c8d1d3e34ee64f66cfc8c06d7bfdcc6f9c7fdeee6d433cbdb637259b0f"
+
 
 def _health() -> dict[str, object]:
     return {
@@ -22,7 +24,11 @@ def test_build_observation_includes_explicit_canonical_profiles(monkeypatch) -> 
     monkeypatch.setattr(observation, "linux_resources", lambda: {})
     profiles = [
         {"name": "agency-ai-engineer", "version": "0.1.0"},
-        {"name": "agency-backend-engineer", "version": "0.1.0"},
+        {
+            "name": "agency-backend-engineer",
+            "version": "0.1.0",
+            "content_digest": DIGEST,
+        },
     ]
 
     sample = observation.build_observation(
@@ -72,6 +78,20 @@ def test_build_observation_preserves_legacy_shape_when_profiles_are_omitted(
         [{"name": "agency backend", "version": "0.1.0"}],
         [{"name": "agency-backend", "version": "0.1 0"}],
         [{"name": "agency-backend", "version": "0.1.0", "extra": True}],
+        [
+            {
+                "name": "agency-backend",
+                "version": "0.1.0",
+                "content_digest": "a" * 63,
+            }
+        ],
+        [
+            {
+                "name": "agency-backend",
+                "version": "0.1.0",
+                "content_digest": "A" * 64,
+            }
+        ],
     ],
 )
 def test_build_observation_rejects_noncanonical_profile_inventory(
@@ -102,7 +122,13 @@ def test_publish_observation_scans_builds_and_publishes_off_event_loop(
 
     event_loop_thread = threading.get_ident()
     worker_threads: list[int] = []
-    expected_profiles = [{"name": "agency-backend-engineer", "version": "0.1.0"}]
+    expected_profiles = [
+        {
+            "name": "agency-backend-engineer",
+            "version": "0.1.0",
+            "content_digest": DIGEST,
+        }
+    ]
 
     def scan() -> list[dict[str, str]]:
         worker_threads.append(threading.get_ident())

@@ -1,6 +1,8 @@
 use fleet_domain::NodeObservation;
 use serde_json::{Value, json};
 
+const DIGEST: &str = "7a9480c8d1d3e34ee64f66cfc8c06d7bfdcc6f9c7fdeee6d433cbdb637259b0f";
+
 fn observation_json(profiles: Value) -> Value {
     json!({
         "admission_generation": 1,
@@ -45,6 +47,24 @@ fn canonical_profile_inventory_is_valid_and_round_trips() {
     let serialized = serde_json::to_value(&observation).unwrap();
     assert_eq!(serialized["profiles"][0]["name"], "agency-ai-engineer");
     assert_eq!(serialized["profiles"][1]["name"], "agency-backend-engineer");
+    assert!(serialized["profiles"][0].get("content_digest").is_none());
+    assert!(serialized["profiles"][1].get("content_digest").is_none());
+}
+
+#[test]
+fn exact_profile_content_digest_is_valid_and_round_trips() {
+    let observation: NodeObservation = serde_json::from_value(observation_json(json!([
+        {
+            "name": "agency-backend-engineer",
+            "version": "0.1.0",
+            "content_digest": DIGEST
+        }
+    ])))
+    .unwrap();
+
+    assert!(observation.validate().is_ok());
+    let serialized = serde_json::to_value(&observation).unwrap();
+    assert_eq!(serialized["profiles"][0]["content_digest"], DIGEST);
 }
 
 #[test]
@@ -74,6 +94,21 @@ fn invalid_profile_identity_material_fails_closed() {
         json!([{"name": "agency-backend", "version": "0.1 0"}]),
         json!([{"name": "a".repeat(129), "version": "0.1.0"}]),
         json!([{"name": "agency-backend", "version": "v".repeat(129)}]),
+        json!([{
+            "name": "agency-backend",
+            "version": "0.1.0",
+            "content_digest": "a".repeat(63)
+        }]),
+        json!([{
+            "name": "agency-backend",
+            "version": "0.1.0",
+            "content_digest": "g".repeat(64)
+        }]),
+        json!([{
+            "name": "agency-backend",
+            "version": "0.1.0",
+            "content_digest": "A".repeat(64)
+        }]),
     ] {
         let observation: NodeObservation =
             serde_json::from_value(observation_json(profiles)).unwrap();
