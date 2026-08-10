@@ -193,7 +193,7 @@ def test_unsupported_catalog_contract_fails_closed(
 def test_duplicate_catalog_json_members_fail_closed(tmp_path) -> None:
     repo, _ = _repo(tmp_path)
     (repo / "catalog.py").write_text(
-        "print('{\"schema_version\":2,\"schema_version\":2}')\n",
+        'print(\'{"schema_version":2,"schema_version":2}\')\n',
         encoding="utf-8",
     )
     revision = _commit(repo, "duplicate catalog key")
@@ -228,9 +228,7 @@ def test_selected_profile_manifest_identity_must_match_catalog(tmp_path) -> None
     repo, _ = _repo(tmp_path)
     manifest = repo / "profiles" / "agency-example" / "distribution.yaml"
     manifest.write_text(
-        "name: agency-other\n"
-        "version: 1.0.0\n"
-        'description: "Example Agency profile."\n',
+        'name: agency-other\nversion: 1.0.0\ndescription: "Example Agency profile."\n',
         encoding="utf-8",
     )
     revision = _commit(repo, "manifest drift")
