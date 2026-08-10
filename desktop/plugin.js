@@ -3,9 +3,13 @@ import {
   EmptyState,
   ErrorState,
   Loader,
+  PALETTE_AREA,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  STATUSBAR_AREAS,
   StatusDot,
+  host,
+  queryClient,
   useQuery
 } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -21,6 +25,72 @@ const MIN_SCALE = 0.5
 const MAX_SCALE = 2.5
 const POSITION_LIMIT = 100_000
 const POSITION_LIMIT_COUNT = 256
+const EVENT_SCHEMA = 'fleet.desktop-events.v1'
+
+export function diffFleetOverview(previous, current, sequence = 0) {
+  const before = new Map((previous?.nodes ?? []).map(node => [node.stable_id, node]))
+  const after = new Map((current?.nodes ?? []).map(node => [node.stable_id, node]))
+  const entries = []
+  for (const [id, node] of after) {
+    const old = before.get(id)
+    if (!old) {
+      entries.push({ id: `${sequence}:${id}:added`, node_id: id, kind: 'added', message: `${node.naming.display_name} joined the managed view.` })
+      continue
+    }
+    const oldStatus = statusFor(old).key
+    const nextStatus = statusFor(node).key
+    if (oldStatus !== nextStatus) {
+      entries.push({
+        id: `${sequence}:${id}:status`,
+        node_id: id,
+        kind: nextStatus === 'ready' ? 'recovered' : 'status',
+        message: `${node.naming.display_name} changed from ${oldStatus} to ${nextStatus}.`
+      })
+    } else if (old.naming.display_name !== node.naming.display_name) {
+      entries.push({ id: `${sequence}:${id}:renamed`, node_id: id, kind: 'renamed', message: `${old.naming.display_name} is now ${node.naming.display_name}.` })
+    }
+  }
+  for (const [id, node] of before) {
+    if (!after.has(id)) {
+      entries.push({ id: `${sequence}:${id}:removed`, node_id: id, kind: 'removed', message: `${node.naming.display_name} left the managed view.` })
+    }
+  }
+  return entries.slice(0, 64)
+}
+
+function validFleetEvent(value) {
+  return Boolean(
+    value &&
+    value.schema === EVENT_SCHEMA &&
+    Number.isSafeInteger(value.sequence) &&
+    value.sequence > 0 &&
+    ['snapshot', 'overview_changed', 'unavailable', 'recovered', 'heartbeat'].includes(value.kind)
+  )
+}
+
+function useFleetEvents(ctx) {
+  const [connection, setConnection] = useState('polling')
+  const [activity, setActivity] = useState([])
+  useEffect(() =>
+    ctx.socket('/events', event => {
+      if (!validFleetEvent(event)) return
+      if (event.kind === 'unavailable') {
+        setConnection('reconnecting')
+        return
+      }
+      setConnection('live')
+      if (event.kind === 'heartbeat') return
+      if (!event.overview || event.overview.schema !== 'fleet.desktop.v1') return
+      const previous = queryClient.getQueryData(QUERY_KEY)
+      const changes = diffFleetOverview(previous, event.overview, event.sequence)
+      if (changes.length) {
+        setActivity(items => [...changes, ...items].slice(0, 64))
+      }
+      queryClient.setQueryData(QUERY_KEY, event.overview)
+    }),
+  [ctx])
+  return { connection, activity, clearActivity: () => setActivity([]) }
+}
 
 function compareIds(left, right) {
   return left < right ? -1 : left > right ? 1 : 0
@@ -64,6 +134,160 @@ function statusFor(node) {
     return { key: 'attention', label: 'NEEDS ATTENTION', tone: 'warn' }
   }
   return { key: 'awaiting', label: 'AWAITING EVIDENCE', tone: 'bad' }
+}
+
+const READINESS_REASON_DESCRIPTIONS = {
+  node_unknown: 'Fleet does not know this managed identity.',
+  node_not_active: 'The managed node is not active.',
+  observation_missing: 'No readiness evidence has been received.',
+  observation_stale: 'The latest readiness evidence is stale.',
+  observation_time_invalid: 'The readiness evidence timestamp is invalid.',
+  network_unreachable: 'The node network is unreachable.',
+  keryx_unavailable: 'Keryx is unavailable.',
+  hermes_unavailable: 'Hermes is unavailable.',
+  worker_unavailable: 'The worker runtime is unavailable.',
+  no_worker_capacity: 'No worker capacity is currently available.'
+}
+
+export function describeReadinessReason(reason) {
+  return READINESS_REASON_DESCRIPTIONS[reason] ?? `Unknown readiness reason: ${reason}`
+}
+
+export function formatFleetAge(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'No evidence'
+  if (milliseconds < 1000) return `${Math.round(milliseconds)}ms ago`
+  const seconds = milliseconds / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s ago`
+  const minutes = seconds / 60
+  if (minutes < 60) return `${minutes.toFixed(1)}m ago`
+  const hours = minutes / 60
+  if (hours < 24) return `${hours.toFixed(1)}h ago`
+  return `${(hours / 24).toFixed(1)}d ago`
+}
+
+export function formatFleetBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'No evidence'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  const units = ['KiB', 'MiB', 'GiB', 'TiB', 'PiB']
+  let value = bytes
+  let unit = -1
+  do {
+    value /= 1024
+    unit += 1
+  } while (value >= 1024 && unit < units.length - 1)
+  return `${value.toFixed(1)} ${units[unit]}`
+}
+
+function readinessStep(key, label, state, detail) {
+  return { key, label, state, detail }
+}
+
+export function buildReadinessLadder(node) {
+  const readiness = node.readiness
+  const observation = readiness.last_observation
+  const capacity = readiness.capacity
+  return [
+    readinessStep(
+      'managed',
+      'Managed',
+      node.managed.active ? 'ready' : 'blocked',
+      node.managed.active ? 'Active managed admission' : `Managed state: ${node.managed.state}`
+    ),
+    readinessStep(
+      'fresh',
+      'Fresh evidence',
+      !observation ? 'unknown' : readiness.fresh ? 'ready' : 'blocked',
+      !observation ? 'No observation' : formatFleetAge(readiness.observation_age_ms)
+    ),
+    readinessStep(
+      'network',
+      'Network',
+      !observation ? 'unknown' : observation.network === 'reachable' ? 'ready' : 'blocked',
+      observation?.network ?? 'No evidence'
+    ),
+    readinessStep(
+      'keryx',
+      'Keryx',
+      !observation ? 'unknown' : observation.keryx === 'available' ? 'ready' : 'blocked',
+      observation?.keryx ?? 'No evidence'
+    ),
+    readinessStep(
+      'hermes',
+      'Hermes',
+      !observation ? 'unknown' : observation.hermes === 'available' ? 'ready' : 'blocked',
+      observation?.hermes ?? 'No evidence'
+    ),
+    readinessStep(
+      'worker',
+      'Worker',
+      !observation ? 'unknown' : observation.worker === 'available' ? 'ready' : 'blocked',
+      observation?.worker ?? 'No evidence'
+    ),
+    readinessStep(
+      'capacity',
+      'Capacity',
+      !capacity ? 'unknown' : capacity.available_worker_slots > 0 ? 'ready' : 'blocked',
+      capacity ? `${capacity.available_worker_slots} worker slot(s) free` : 'No evidence'
+    )
+  ]
+}
+
+function byteCapacity(value) {
+  return value
+    ? `${formatFleetBytes(value.available_bytes)} free / ${formatFleetBytes(value.total_bytes)}`
+    : 'No evidence'
+}
+
+export function buildResourceRows(readiness) {
+  const capacity = readiness.capacity
+  const resources = readiness.resources
+  const rows = [
+    {
+      key: 'workers',
+      label: 'Workers',
+      value: capacity
+        ? `${capacity.active_workers} / ${capacity.max_workers} active · ${capacity.available_worker_slots} free`
+        : 'No evidence'
+    },
+    {
+      key: 'cpu',
+      label: 'CPU',
+      value: resources?.cpu
+        ? `${resources.cpu.logical_cores} logical · ${resources.cpu.load_basis_points == null ? 'load unavailable' : `${(resources.cpu.load_basis_points / 100).toFixed(2)}% load`}`
+        : 'No evidence'
+    },
+    { key: 'ram', label: 'RAM', value: byteCapacity(resources?.ram) },
+    { key: 'swap', label: 'Swap', value: byteCapacity(resources?.swap) },
+    { key: 'disk', label: 'Disk', value: byteCapacity(resources?.disk) },
+    {
+      key: 'gpu',
+      label: 'GPU',
+      value: resources?.gpu ? (resources.gpu.present ? 'Present' : 'Not present') : 'No evidence'
+    }
+  ]
+  if (resources?.gpu?.vram) {
+    rows.push({ key: 'vram', label: 'VRAM', value: byteCapacity(resources.gpu.vram) })
+  }
+  return rows
+}
+
+export function aliasMutationBody(node, alias) {
+  return {
+    source: node.identity.source,
+    network_id: node.identity.network_id,
+    device_id: node.identity.device_id,
+    binding_generation: node.managed.binding_generation,
+    alias
+  }
+}
+
+export function aliasClearMutationBody(node) {
+  return {
+    source: node.identity.source,
+    network_id: node.identity.network_id,
+    device_id: node.identity.device_id,
+    binding_generation: node.managed.binding_generation
+  }
 }
 
 function normalizedSearch(value) {
@@ -254,6 +478,7 @@ function GraphNode({
   node,
   selected,
   hovered,
+  animated,
   onSelect,
   onCenter,
   onHover,
@@ -310,6 +535,7 @@ function GraphNode({
     'aria-selected': selected,
     'aria-label': `${node.label}, ${node.status.label}, ${capacityLabel}, Stable identity ${node.id}`,
     'data-fleet-node': node.id,
+    className: animated ? 'motion-safe:animate-pulse transition-opacity duration-300' : 'transition-opacity duration-300',
     onClick: event => {
       event.stopPropagation()
       onSelect(node.id)
@@ -378,7 +604,7 @@ function GraphNode({
   })
 }
 
-function FleetCanvas({ graph, positions, setPositions, commitPositions, selectedId, setSelectedId }) {
+function FleetCanvas({ graph, positions, setPositions, commitPositions, selectedId, setSelectedId, animatedIds }) {
   const rootRef = useRef(null)
   const pointerRef = useRef(null)
   const initializedRef = useRef(false)
@@ -587,6 +813,7 @@ function FleetCanvas({ graph, positions, setPositions, commitPositions, selected
                   node,
                   selected: selectedId === node.id,
                   hovered: hoveredId === node.id,
+                  animated: animatedIds.has(node.id),
                   onSelect: setSelectedId,
                   onCenter: centerNode,
                   onHover: setHoveredId,
@@ -610,6 +837,296 @@ function FleetCanvas({ graph, positions, setPositions, commitPositions, selected
   })
 }
 
+function InspectorSection({ title, children }) {
+  return jsxs('section', {
+    className: 'grid gap-2 border-t border-border pt-3 first:border-t-0 first:pt-0',
+    children: [
+      jsx('h3', {
+        className: 'text-xs font-semibold uppercase tracking-wide text-muted-foreground',
+        children: title
+      }),
+      children
+    ]
+  })
+}
+
+function InspectorRow({ label, value, mono = false }) {
+  return jsxs('div', {
+    className: 'grid grid-cols-[minmax(5rem,auto)_minmax(0,1fr)] gap-3 text-xs',
+    children: [
+      jsx('dt', { className: 'text-muted-foreground', children: label }),
+      jsx('dd', {
+        className: `${mono ? 'font-mono ' : ''}min-w-0 break-words text-right text-foreground`,
+        children: value
+      })
+    ]
+  })
+}
+
+function ReadinessLadder({ node }) {
+  const steps = buildReadinessLadder(node)
+  return jsx('ol', {
+    className: 'grid gap-2',
+    'aria-label': 'Readiness ladder',
+    children: steps.map(step =>
+      jsxs('li', {
+        className: 'grid grid-cols-[auto_minmax(0,1fr)] gap-2 rounded-md border border-border p-2',
+        children: [
+          jsx(StatusDot, {
+            tone: step.state === 'ready' ? 'good' : step.state === 'blocked' ? 'bad' : 'muted'
+          }),
+          jsxs('div', {
+            className: 'min-w-0',
+            children: [
+              jsxs('div', {
+                className: 'flex items-center justify-between gap-2 text-xs',
+                children: [
+                  jsx('strong', { className: 'text-foreground', children: step.label }),
+                  jsx('span', {
+                    className: 'uppercase tracking-wide text-muted-foreground',
+                    children: step.state
+                  })
+                ]
+              }),
+              jsx('p', {
+                className: 'mt-1 break-words text-[0.6875rem] text-muted-foreground',
+                children: step.detail
+              })
+            ]
+          })
+        ]
+      }, step.key)
+    )
+  })
+}
+
+function NodeInspector({ node, ctx, refresh }) {
+  const [alias, setAlias] = useState(node.naming.alias ?? '')
+  const [mutation, setMutation] = useState({ state: 'idle', message: '' })
+  const [copyMessage, setCopyMessage] = useState('')
+  const pending = mutation.state === 'pending'
+  const aliasValid = alias.length > 0 && alias.length <= 128 && alias.trim() === alias
+
+  useEffect(() => {
+    setAlias(node.naming.alias ?? '')
+    setMutation({ state: 'idle', message: '' })
+    setCopyMessage('')
+  }, [node.naming.alias, node.stable_id])
+
+  async function reconcile() {
+    await refresh()
+  }
+
+  async function saveAlias() {
+    if (!aliasValid || pending) return
+    setMutation({ state: 'pending', message: 'Saving alias…' })
+    try {
+      await ctx.rest(`/nodes/${encodeURIComponent(node.stable_id)}/alias`, {
+        method: 'PUT',
+        body: aliasMutationBody(node, alias)
+      })
+      await reconcile()
+      setMutation({ state: 'success', message: 'Alias saved.' })
+    } catch {
+      try {
+        await reconcile()
+      } catch {}
+      setMutation({ state: 'error', message: 'Alias update was rejected.' })
+    }
+  }
+
+  async function resetAlias() {
+    if (!node.naming.has_alias || pending) return
+    setMutation({ state: 'pending', message: 'Resetting name…' })
+    try {
+      await ctx.rest(`/nodes/${encodeURIComponent(node.stable_id)}/alias`, {
+        method: 'DELETE',
+        body: aliasClearMutationBody(node)
+      })
+      await reconcile()
+      setMutation({ state: 'success', message: 'Provider name restored.' })
+    } catch {
+      try {
+        await reconcile()
+      } catch {}
+      setMutation({ state: 'error', message: 'Name reset was rejected.' })
+    }
+  }
+
+  async function copyStableIdentity() {
+    try {
+      if (!globalThis.navigator?.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await globalThis.navigator.clipboard.writeText(node.stable_id)
+      setCopyMessage('Copied stable identity.')
+    } catch {
+      setCopyMessage('Unable to copy stable identity.')
+    }
+  }
+
+  const reasons = node.readiness.reasons
+  const resources = buildResourceRows(node.readiness)
+  const providerFallback = node.naming.provider_name ?? node.identity.device_id
+
+  return jsxs('aside', {
+    className: 'min-h-0 w-full shrink-0 overflow-auto rounded-lg border border-border bg-background p-4 lg:w-96',
+    'aria-label': `Inspector for ${node.naming.display_name}`,
+    children: [
+      jsxs('div', {
+        className: 'mb-4 flex items-start justify-between gap-3',
+        children: [
+          jsxs('div', {
+            className: 'min-w-0',
+            children: [
+              jsx('p', { className: 'text-xs text-muted-foreground', children: 'Node Inspector' }),
+              jsx('h2', {
+                className: 'truncate text-base font-semibold text-foreground',
+                children: node.naming.display_name
+              })
+            ]
+          }),
+          jsx(StatusDot, { tone: statusFor(node).tone })
+        ]
+      }),
+      jsxs('div', {
+        className: 'grid gap-4',
+        children: [
+          jsx(InspectorSection, {
+            title: 'Identity',
+            children: jsxs('dl', {
+              className: 'grid gap-2',
+              children: [
+                jsx(InspectorRow, { label: 'Source', value: node.identity.source, mono: true }),
+                jsx(InspectorRow, { label: 'Network', value: node.identity.network_id, mono: true }),
+                jsx(InspectorRow, { label: 'Device', value: node.identity.device_id, mono: true }),
+                jsx(InspectorRow, { label: 'Stable ID', value: node.stable_id, mono: true }),
+                jsx(InspectorRow, { label: 'Binding', value: node.managed.binding_generation, mono: true }),
+                jsx(Button, {
+                  type: 'button',
+                  size: 'sm',
+                  variant: 'outline',
+                  onClick: copyStableIdentity,
+                  children: 'Copy stable identity'
+                }),
+                jsx('p', {
+                  className: 'text-[0.6875rem] text-muted-foreground',
+                  'aria-live': 'polite',
+                  children: copyMessage
+                })
+              ]
+            })
+          }),
+          jsx(InspectorSection, {
+            title: 'Name',
+            children: jsxs('div', {
+              className: 'grid gap-2',
+              children: [
+                jsx('label', {
+                  className: 'text-xs text-muted-foreground',
+                  htmlFor: `fleet-alias-${node.stable_id}`,
+                  children: 'Operator alias'
+                }),
+                jsx('input', {
+                  id: `fleet-alias-${node.stable_id}`,
+                  value: alias,
+                  maxLength: 128,
+                  disabled: pending,
+                  onChange: event => setAlias(event.target.value),
+                  className: 'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                }),
+                jsx('p', {
+                  className: 'text-[0.6875rem] text-muted-foreground',
+                  children: node.naming.provider_name
+                    ? `Provider name: ${node.naming.provider_name}`
+                    : `Provider name unavailable; reset uses stable device ID ${providerFallback}.`
+                }),
+                jsxs('div', {
+                  className: 'flex flex-wrap gap-2',
+                  children: [
+                    jsx(Button, {
+                      type: 'button',
+                      size: 'sm',
+                      onClick: saveAlias,
+                      disabled: !aliasValid || pending || alias === (node.naming.alias ?? ''),
+                      children: 'Save alias'
+                    }),
+                    jsx(Button, {
+                      type: 'button',
+                      size: 'sm',
+                      variant: 'outline',
+                      onClick: resetAlias,
+                      disabled: !node.naming.has_alias || pending,
+                      children: 'Reset to provider name'
+                    })
+                  ]
+                }),
+                jsx('p', {
+                  className: mutation.state === 'error'
+                    ? 'text-xs text-destructive'
+                    : 'text-xs text-muted-foreground',
+                  role: mutation.state === 'error' ? 'alert' : undefined,
+                  'aria-live': 'polite',
+                  children: mutation.message
+                })
+              ]
+            })
+          }),
+          jsx(InspectorSection, {
+            title: 'Readiness ladder',
+            children: jsx(ReadinessLadder, { node })
+          }),
+          jsx(InspectorSection, {
+            title: 'Why not ready',
+            children: reasons.length
+              ? jsx('ul', {
+                  className: 'grid gap-1 text-xs text-foreground',
+                  children: reasons.map(reason =>
+                    jsx('li', { children: describeReadinessReason(reason) }, reason)
+                  )
+                })
+              : jsx('p', { className: 'text-xs text-muted-foreground', children: 'No readiness blockers.' })
+          }),
+          jsx(InspectorSection, {
+            title: 'Capacity and resources',
+            children: jsx('dl', {
+              className: 'grid gap-2',
+              children: resources.map(row =>
+                jsx(InspectorRow, { label: row.label, value: row.value }, row.key)
+              )
+            })
+          }),
+          jsx(InspectorSection, {
+            title: 'Advertised operations',
+            children: node.operations.length
+              ? jsx('ul', {
+                  className: 'flex flex-wrap gap-1.5',
+                  children: node.operations.map(operation =>
+                    jsx('li', {
+                      className: 'rounded border border-border px-2 py-1 font-mono text-[0.6875rem] text-foreground',
+                      children: operation
+                    }, operation)
+                  )
+                })
+              : jsx('p', { className: 'text-xs text-muted-foreground', children: 'No operations advertised.' })
+          }),
+          jsx('details', {
+            className: 'border-t border-border pt-3',
+            children: [
+              jsx('summary', {
+                className: 'cursor-pointer text-xs font-semibold text-foreground',
+                children: 'Technical details'
+              }),
+              jsx('pre', {
+                className: 'mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border p-2 text-[0.6875rem] text-muted-foreground',
+                children: JSON.stringify(node, null, 2)
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  })
+}
+
 const FILTERS = [
   ['all', 'All'],
   ['ready', 'Ready'],
@@ -618,7 +1135,7 @@ const FILTERS = [
   ['inactive', 'Inactive']
 ]
 
-function FleetCanvasWorkspace({ overview, ctx }) {
+function FleetCanvasWorkspace({ overview, ctx, refresh, activity }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
   const [positions, setPositions] = useState(() =>
@@ -635,6 +1152,12 @@ function FleetCanvasWorkspace({ overview, ctx }) {
   const visibleGraph = useMemo(
     () => filterFleetGraph(graph, query, filter),
     [filter, graph, query]
+  )
+  const selectedNode =
+    overview.nodes.find(node => node.stable_id === selectedId) ?? overview.nodes[0]
+  const animatedIds = useMemo(
+    () => new Set(activity.slice(0, 8).map(entry => entry.node_id)),
+    [activity]
   )
   const commitPositions = useCallback(value => {
     const next = sanitizeFleetPositions(value ?? positionsRef.current)
@@ -679,13 +1202,20 @@ function FleetCanvasWorkspace({ overview, ctx }) {
           )
         ]
       }),
-      jsx(FleetCanvas, {
-        graph: visibleGraph,
-        positions,
-        setPositions,
-        commitPositions,
-        selectedId,
-        setSelectedId
+      jsxs('div', {
+        className: 'flex min-h-0 flex-1 flex-col gap-3 lg:flex-row',
+        children: [
+          jsx(FleetCanvas, {
+            graph: visibleGraph,
+            positions,
+            setPositions,
+            commitPositions,
+            selectedId,
+            setSelectedId,
+            animatedIds
+          }),
+          jsx(NodeInspector, { node: selectedNode, ctx, refresh })
+        ]
       }),
       jsxs('div', {
         className: 'flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground',
@@ -713,7 +1243,56 @@ function FleetCanvasWorkspace({ overview, ctx }) {
   })
 }
 
+function ConnectionChip({ state }) {
+  const tone = state === 'live' ? 'good' : state === 'reconnecting' ? 'warn' : 'muted'
+  const label = state === 'live' ? 'Live' : state === 'reconnecting' ? 'Reconnecting' : 'Polling'
+  return jsxs('span', {
+    className: 'inline-flex items-center gap-1.5 text-xs text-muted-foreground',
+    role: 'status',
+    'aria-live': 'polite',
+    children: [jsx(StatusDot, { tone }), label]
+  })
+}
+
+function ActivityDrawer({ activity, onClear }) {
+  return jsxs('section', {
+    className: 'max-h-48 overflow-auto border-b border-border bg-muted/20 px-5 py-3',
+    'aria-label': 'Fleet activity',
+    children: [
+      jsxs('div', {
+        className: 'mb-2 flex items-center justify-between',
+        children: [
+          jsx('h2', { className: 'text-sm font-semibold text-foreground', children: 'Activity' }),
+          jsx(Button, { type: 'button', variant: 'ghost', size: 'sm', onClick: onClear, disabled: !activity.length, children: 'Clear' })
+        ]
+      }),
+      activity.length
+        ? jsx('ol', {
+            className: 'grid gap-1 text-xs text-muted-foreground',
+            children: activity.map(entry => jsx('li', { children: entry.message }, entry.id))
+          })
+        : jsx('p', { className: 'text-xs text-muted-foreground', children: 'No state transitions observed in this session.' })
+    ]
+  })
+}
+
+function FleetStatusChip({ ctx }) {
+  const query = useQuery({
+    queryKey: QUERY_KEY,
+    queryFn: () => ctx.rest('/overview'),
+    refetchInterval: 15_000,
+    retry: 1
+  })
+  if (!query.data) return jsxs('span', { className: 'inline-flex items-center gap-1.5 text-xs', children: [jsx(StatusDot, { tone: 'muted' }), 'Fleet unavailable'] })
+  return jsxs('span', {
+    className: 'inline-flex items-center gap-1.5 text-xs',
+    children: [jsx(StatusDot, { tone: query.data.summary.not_ready ? 'warn' : 'good' }), `Fleet ${query.data.summary.ready}/${query.data.summary.managed} ready`]
+  })
+}
+
 function FleetPage({ ctx }) {
+  const events = useFleetEvents(ctx)
+  const [activityOpen, setActivityOpen] = useState(false)
   const query = useQuery({
     queryKey: QUERY_KEY,
     queryFn: () => ctx.rest('/overview'),
@@ -752,12 +1331,21 @@ function FleetPage({ ctx }) {
 
   const overview = query.data
   if (!overview.nodes.length) {
-    return jsx('main', {
-      className: 'grid h-full min-h-64 place-items-center p-6',
-      children: jsx(EmptyState, {
-        title: 'Your Fleet is empty',
-        description: 'Managed nodes will appear here as they join Fleet.'
-      })
+    return jsxs('main', {
+      className: 'flex h-full min-h-64 flex-col',
+      children: [
+        jsx('header', {
+          className: 'flex justify-end border-b border-border px-5 py-3',
+          children: jsx(ConnectionChip, { state: events.connection })
+        }),
+        jsx('div', {
+          className: 'grid flex-1 place-items-center p-6',
+          children: jsx(EmptyState, {
+            title: 'Your Fleet is empty',
+            description: 'Managed nodes will appear here as they join Fleet.'
+          })
+        })
+      ]
     })
   }
 
@@ -782,12 +1370,22 @@ function FleetPage({ ctx }) {
               jsx(SummaryItem, { label: 'Managed', value: overview.summary.managed }),
               jsx(SummaryItem, { label: 'Alive', value: overview.summary.alive }),
               jsx(SummaryItem, { label: 'Ready', value: overview.summary.ready }),
-              jsx(SummaryItem, { label: 'Needs attention', value: overview.summary.not_ready })
+              jsx(SummaryItem, { label: 'Needs attention', value: overview.summary.not_ready }),
+              jsx(ConnectionChip, { state: events.connection }),
+              jsx(Button, {
+                type: 'button',
+                size: 'sm',
+                variant: activityOpen ? 'secondary' : 'outline',
+                'aria-expanded': activityOpen,
+                onClick: () => setActivityOpen(value => !value),
+                children: `Activity (${events.activity.length})`
+              })
             ]
           })
         ]
       }),
-      jsx(FleetCanvasWorkspace, { overview, ctx })
+      activityOpen ? jsx(ActivityDrawer, { activity: events.activity, onClear: events.clearActivity }) : null,
+      jsx(FleetCanvasWorkspace, { overview, ctx, refresh: query.refetch, activity: events.activity })
     ]
   })
 }
@@ -808,6 +1406,35 @@ export default {
       area: SIDEBAR_NAV_AREA,
       order: 55,
       data: { codicon: 'server-process', label: 'Fleet', path: '/fleet' }
+    })
+    ctx.register({
+      id: 'status',
+      area: STATUSBAR_AREAS.right,
+      order: 55,
+      render: () => jsx(FleetStatusChip, { ctx })
+    })
+    ctx.register({
+      id: 'open-command',
+      area: PALETTE_AREA,
+      data: {
+        id: 'fleet.open',
+        label: 'Fleet: Open Canvas',
+        keywords: ['fleet', 'nodes', 'readiness', 'canvas'],
+        run: () => host.navigate('/fleet')
+      }
+    })
+    ctx.register({
+      id: 'refresh-command',
+      area: PALETTE_AREA,
+      data: {
+        id: 'fleet.refresh',
+        label: 'Fleet: Refresh Overview',
+        keywords: ['fleet', 'refresh', 'reconnect'],
+        run: async () => {
+          await queryClient.invalidateQueries({ queryKey: QUERY_KEY })
+          host.notify({ kind: 'info', message: 'Fleet overview refreshed.' })
+        }
+      }
     })
   }
 }

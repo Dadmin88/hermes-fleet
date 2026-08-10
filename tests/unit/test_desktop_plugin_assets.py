@@ -35,6 +35,19 @@ def test_desktop_plugin_is_runtime_loadable_and_registers_d1_surfaces() -> None:
     assert "refetchInterval: 15_000" in source
     assert "ctx.storage.get(LAYOUT_STORAGE_KEY" in source
     assert "ctx.storage.set(LAYOUT_STORAGE_KEY" in source
+    assert "function NodeInspector" in source
+    assert "aria-label': 'Readiness ladder'" in source
+    assert "method: 'PUT'" in source
+    assert "method: 'DELETE'" in source
+    assert "Reset to provider name" in source
+    assert "Technical details" in source
+    assert "Copy stable identity" in source
+    assert "fleet.desktop-events.v1" in source
+    assert "ctx.socket('/events'" in source
+    assert "queryClient.setQueryData(QUERY_KEY" in source
+    assert "motion-safe:animate-pulse" in source
+    assert "id: 'fleet.open'" in source
+    assert "STATUSBAR_AREAS.right" in source
     assert "role: 'tree'" in source
     assert "role: 'treeitem'" in source
     assert "Stable identity ${node.id}" in source
@@ -66,6 +79,13 @@ const sdkUrl = dataUrl(`
   export const ErrorState = 'ErrorState'
   export const Loader = 'Loader'
   export const StatusDot = 'StatusDot'
+  export const PALETTE_AREA = 'palette'
+  export const STATUSBAR_AREAS = { right: 'status:right' }
+  export const host = { navigate: () => undefined, notify: () => undefined }
+  export const queryClient = {
+    getQueryData: () => undefined,
+    setQueryData: () => undefined
+  }
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
 const reactUrl = dataUrl(`
@@ -125,6 +145,32 @@ console.log(JSON.stringify({ id: plugin.id, contributions: serializable }))
                 },
                 "hasRender": False,
             },
+            {
+                "id": "status",
+                "area": "status:right",
+                "order": 55,
+                "hasRender": True,
+            },
+            {
+                "id": "open-command",
+                "area": "palette",
+                "data": {
+                    "id": "fleet.open",
+                    "label": "Fleet: Open Canvas",
+                    "keywords": ["fleet", "nodes", "readiness", "canvas"],
+                },
+                "hasRender": False,
+            },
+            {
+                "id": "refresh-command",
+                "area": "palette",
+                "data": {
+                    "id": "fleet.refresh",
+                    "label": "Fleet: Refresh Overview",
+                    "keywords": ["fleet", "refresh", "reconnect"],
+                },
+                "hasRender": False,
+            },
         ],
     }
 
@@ -167,6 +213,13 @@ const sdkUrl = dataUrl(`
   export const ErrorState = 'ErrorState'
   export const Loader = 'Loader'
   export const StatusDot = 'StatusDot'
+  export const PALETTE_AREA = 'palette'
+  export const STATUSBAR_AREAS = { right: 'status:right' }
+  export const host = { navigate: () => undefined, notify: () => undefined }
+  export const queryClient = {
+    getQueryData: () => undefined,
+    setQueryData: () => undefined
+  }
   export const useQuery = () => { throw new Error('render was not expected') }
 `)
 const reactUrl = dataUrl(`
@@ -316,4 +369,178 @@ console.log(JSON.stringify({
         "manyFinite": True,
         "duplicateIds": ["node-unique"],
         "oversizedPositionCount": 0,
+    }
+
+
+def test_d3_inspector_contract_is_provider_neutral_and_evidence_driven() -> None:
+    script = r"""
+import fs from 'node:fs'
+const dataUrl = source =>
+  `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+const sdkUrl = dataUrl(`
+  export const ROUTES_AREA = 'app.routes'
+  export const SIDEBAR_NAV_AREA = 'app.sidebar.nav'
+  export const Button = 'Button'
+  export const EmptyState = 'EmptyState'
+  export const ErrorState = 'ErrorState'
+  export const Loader = 'Loader'
+  export const StatusDot = 'StatusDot'
+  export const PALETTE_AREA = 'palette'
+  export const STATUSBAR_AREAS = { right: 'status:right' }
+  export const host = { navigate: () => undefined, notify: () => undefined }
+  export const queryClient = {
+    getQueryData: () => undefined,
+    setQueryData: () => undefined
+  }
+  export const useQuery = () => { throw new Error('render was not expected') }
+`)
+const reactUrl = dataUrl(`
+  export const useCallback = value => value
+  export const useEffect = () => undefined
+  export const useMemo = factory => factory()
+  export const useRef = value => ({ current: value })
+  export const useState = value => [
+    typeof value === 'function' ? value() : value,
+    () => {}
+  ]
+`)
+const jsxUrl = dataUrl(`
+  export const jsx = (type, props, key) => ({ type, props, key })
+  export const jsxs = jsx
+`)
+let source = fs.readFileSync(process.argv[1], 'utf8')
+source = source.replaceAll("'@hermes/plugin-sdk'", `'${sdkUrl}'`)
+source = source.replaceAll("'react/jsx-runtime'", `'${jsxUrl}'`)
+source = source.replaceAll("'react'", `'${reactUrl}'`)
+const mod = await import(dataUrl(source))
+const base = {
+  stable_id: 'fleet-node-' + '1'.repeat(64),
+  identity: { source: 'nodescale', network_id: 'network-1', device_id: 'device-1' },
+  naming: {
+    display_name: 'device-1', provider_name: null, alias: null, has_alias: false
+  },
+  managed: {
+    state: 'active',
+    active: true,
+    projection_generation: '9',
+    membership_generation: '8',
+    binding_generation: '7'
+  },
+  readiness: {
+    managed_state: 'active',
+    admission_generation: 7,
+    alive: true,
+    fresh: true,
+    scheduler_ready: true,
+    observation_age_ms: 2500,
+    reasons: [],
+    last_observation: {
+      admission_generation: 7,
+      observed_at_ms: 100,
+      received_at_ms: 101,
+      network: 'reachable',
+      keryx: 'available',
+      hermes: 'available',
+      worker: 'available'
+    },
+    capacity: { active_workers: 1, max_workers: 3, available_worker_slots: 2 },
+    resources: {
+      cpu: { logical_cores: 8, load_basis_points: 2575 },
+      ram: { total_bytes: 17179869184, available_bytes: 8589934592 },
+      swap: { total_bytes: 0, available_bytes: 0 },
+      disk: { total_bytes: 107374182400, available_bytes: 53687091200 },
+      gpu: {
+        present: true,
+        vram: { total_bytes: 8589934592, available_bytes: 4294967296 }
+      }
+    }
+  },
+  operations: ['fleet.health', 'fleet.inventory']
+}
+const stale = structuredClone(base)
+stale.readiness.alive = false
+stale.readiness.fresh = false
+stale.readiness.scheduler_ready = false
+stale.readiness.reasons = ['observation_stale']
+const missing = structuredClone(base)
+missing.readiness.alive = false
+missing.readiness.fresh = false
+missing.readiness.scheduler_ready = false
+missing.readiness.observation_age_ms = null
+missing.readiness.reasons = ['observation_missing']
+missing.readiness.last_observation = null
+missing.readiness.capacity = null
+missing.readiness.resources = null
+console.log(JSON.stringify({
+  ready: mod.buildReadinessLadder(base).map(item => [item.key, item.state]),
+  stale: mod.buildReadinessLadder(stale).map(item => [item.key, item.state]),
+  missing: mod.buildReadinessLadder(missing).map(item => [item.key, item.state]),
+  reason: mod.describeReadinessReason('keryx_unavailable'),
+  unknownReason: mod.describeReadinessReason('future_reason'),
+  age: mod.formatFleetAge(2500),
+  bytes: mod.formatFleetBytes(17179869184),
+  mutation: mod.aliasMutationBody(base, 'Workstation'),
+  activity: mod
+    .diffFleetOverview({ nodes: [stale] }, { nodes: [base] }, 3)
+    .map(item => [item.kind, item.node_id]),
+  resources: mod.buildResourceRows(base.readiness).map(item => [item.key, item.value])
+}))
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(PLUGIN)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "ready": [
+            ["managed", "ready"],
+            ["fresh", "ready"],
+            ["network", "ready"],
+            ["keryx", "ready"],
+            ["hermes", "ready"],
+            ["worker", "ready"],
+            ["capacity", "ready"],
+        ],
+        "stale": [
+            ["managed", "ready"],
+            ["fresh", "blocked"],
+            ["network", "ready"],
+            ["keryx", "ready"],
+            ["hermes", "ready"],
+            ["worker", "ready"],
+            ["capacity", "ready"],
+        ],
+        "missing": [
+            ["managed", "ready"],
+            ["fresh", "unknown"],
+            ["network", "unknown"],
+            ["keryx", "unknown"],
+            ["hermes", "unknown"],
+            ["worker", "unknown"],
+            ["capacity", "unknown"],
+        ],
+        "reason": "Keryx is unavailable.",
+        "unknownReason": "Unknown readiness reason: future_reason",
+        "age": "2.5s ago",
+        "bytes": "16.0 GiB",
+        "mutation": {
+            "source": "nodescale",
+            "network_id": "network-1",
+            "device_id": "device-1",
+            "binding_generation": "7",
+            "alias": "Workstation",
+        },
+        "activity": [["recovered", "fleet-node-" + "1" * 64]],
+        "resources": [
+            ["workers", "1 / 3 active · 2 free"],
+            ["cpu", "8 logical · 25.75% load"],
+            ["ram", "8.0 GiB free / 16.0 GiB"],
+            ["swap", "0 B free / 0 B"],
+            ["disk", "50.0 GiB free / 100.0 GiB"],
+            ["gpu", "Present"],
+            ["vram", "4.0 GiB free / 8.0 GiB"],
+        ],
     }

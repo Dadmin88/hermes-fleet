@@ -43,6 +43,18 @@ Saved positions:
 
 Filtering creates an induced view only; it never changes managed state or deletes layout.
 
+## Inspector and names
+
+Selecting a node opens a semantic Inspector beside the Canvas. It shows the exact managed identity and generations, presentation-name provenance, readiness reasons and seven-step ladder, freshness, worker capacity, CPU/RAM/swap/disk/GPU evidence, advertised operations, and raw technical details.
+
+Name precedence is backend-owned: durable alias, then authoritative provider name when supplied, then the stable device-ID fallback. Aliases are presentation only. Alias writes carry the exact identity and expected `binding_generation`; stale Inspector writes fail closed. Reset clears the alias and returns to provider name or stable fallback. Aliases never become selectors, provider renames, readiness, execution bindings, or authority.
+
+## Live reconciliation
+
+The plugin API exposes typed `fleet.desktop-events.v1` WebSocket frames derived only from validated `fleet.desktop.v1` snapshots. Hermes Desktop connects through the authenticated `ctx.socket` SDK door and reconciles the shared React Query cache. The existing 15-second query remains the required fallback and is the normal path for OAuth remotes where plugin sockets intentionally resolve to a no-op.
+
+The page reports **Live**, **Polling**, or **Reconnecting** without discarding last-known authoritative data. Added nodes and readiness recovery use `motion-safe` transitions; reduced-motion users receive no required animation. Session-bounded Activity records describe only observed snapshot differences. The status bar and command palette reuse the same query cache.
+
 ## Accessibility
 
 The SVG exposes a tree of machine nodes. The selected node is the roving tab stop. Arrow keys move focus and selection between visible nodes; `Home` and `End` move to the first and last visible nodes; `Enter` or `Space` selects. Every node has an accessible label containing its display name, status, worker capacity, and full stable identity. Canvas pan, zoom, fit, center, selection, and node positioning have keyboard paths, the minimum zoom preserves a 44-pixel node target, and the Canvas adds no required animation.

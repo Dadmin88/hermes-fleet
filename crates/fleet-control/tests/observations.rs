@@ -362,6 +362,77 @@ fn desktop_overview_lists_real_managed_nodes_with_current_readiness() {
 }
 
 #[test]
+fn desktop_alias_control_is_generation_fenced_and_updates_overview_naming() {
+    let root = private_tempdir();
+    let service = RunningService::start(root.path());
+    apply_managed(&service.socket);
+    let selector = json!({
+        "source": "nodescale",
+        "network_id": "net-demo",
+        "device_id": "node-demo"
+    });
+
+    let stale = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "set_alias",
+            "selector": selector,
+            "binding_generation": "2",
+            "alias": "Stale"
+        }),
+    );
+    assert_eq!(stale["schema"], "fleet.desktop-alias.v1");
+    assert_eq!(stale["kind"], "error");
+    assert_eq!(stale["ok"], false);
+
+    let set = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "set_alias",
+            "selector": selector,
+            "binding_generation": "1",
+            "alias": "Workstation"
+        }),
+    );
+    assert_eq!(set["schema"], "fleet.desktop-alias.v1");
+    assert_eq!(set["kind"], "set_alias");
+    assert_eq!(set["ok"], true);
+    assert_eq!(set["result"]["outcome"], "created");
+
+    let overview = transact(
+        &service.socket,
+        &json!({"schema": "fleet.desktop.v1", "kind": "overview"}),
+    );
+    let naming = &overview["result"]["nodes"][0]["naming"];
+    assert_eq!(naming["display_name"], "Workstation");
+    assert_eq!(naming["provider_name"], Value::Null);
+    assert_eq!(naming["alias"], "Workstation");
+    assert_eq!(naming["has_alias"], true);
+
+    let clear = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.desktop-alias.v1",
+            "kind": "clear_alias",
+            "selector": selector,
+            "binding_generation": "1"
+        }),
+    );
+    assert_eq!(clear["kind"], "clear_alias");
+    assert_eq!(clear["result"]["outcome"], "cleared");
+    let overview = transact(
+        &service.socket,
+        &json!({"schema": "fleet.desktop.v1", "kind": "overview"}),
+    );
+    assert_eq!(
+        overview["result"]["nodes"][0]["naming"]["display_name"],
+        "node-demo"
+    );
+}
+
+#[test]
 fn desktop_overview_supports_a_bounded_many_node_response() {
     let root = private_tempdir();
     let service = RunningService::start(root.path());

@@ -13,6 +13,7 @@ from ._paths import is_concrete_path
 from .observation import normalize_readiness
 
 _SCHEMA = "fleet.desktop.v1"
+_ALIAS_SCHEMA = "fleet.desktop-alias.v1"
 _MAX_RESPONSE_BYTES = 262_144
 _MAX_NODES = 256
 _U64_MAX = (1 << 64) - 1
@@ -53,7 +54,11 @@ class DesktopApiClient:
 
     def overview(self) -> dict[str, Any]:
         """Return validated authoritative rows plus bounded presentation counts."""
-        result = self._request()
+        result = self._request(
+            {"schema": _SCHEMA, "kind": "overview"},
+            expected_schema=_SCHEMA,
+            expected_kind="overview",
+        )
         if type(result) is not dict or set(result) != {"nodes"}:
             raise RuntimeError("Fleet returned an invalid Desktop overview")
         raw_nodes = result["nodes"]
@@ -81,9 +86,60 @@ class DesktopApiClient:
             "nodes": nodes,
         }
 
-    def _request(self) -> dict[str, Any]:
-        payload = json.dumps(
-            {"schema": _SCHEMA, "kind": "overview"},
+    def set_alias(
+        self,
+        *,
+        source: str,
+        network_id: str,
+        device_id: str,
+        binding_generation: str,
+        alias: str,
+    ) -> str:
+        """Set presentation-only alias state fenced by authoritative binding."""
+        normalized_alias = _alias_text(alias)
+        result = self._request(
+            {
+                "schema": _ALIAS_SCHEMA,
+                "kind": "set_alias",
+                "selector": _selector(source, network_id, device_id),
+                "binding_generation": _generation(binding_generation),
+                "alias": normalized_alias,
+            },
+            expected_schema=_ALIAS_SCHEMA,
+            expected_kind="set_alias",
+        )
+        return _alias_outcome(result, {"created", "replaced", "unchanged"})
+
+    def clear_alias(
+        self,
+        *,
+        source: str,
+        network_id: str,
+        device_id: str,
+        binding_generation: str,
+    ) -> str:
+        """Clear presentation-only alias state fenced by authoritative binding."""
+        result = self._request(
+            {
+                "schema": _ALIAS_SCHEMA,
+                "kind": "clear_alias",
+                "selector": _selector(source, network_id, device_id),
+                "binding_generation": _generation(binding_generation),
+            },
+            expected_schema=_ALIAS_SCHEMA,
+            expected_kind="clear_alias",
+        )
+        return _alias_outcome(result, {"cleared", "already_clear"})
+
+    def _request(
+        self,
+        payload: dict[str, Any],
+        *,
+        expected_schema: str,
+        expected_kind: str,
+    ) -> dict[str, Any]:
+        encoded = json.dumps(
+            payload,
             ensure_ascii=True,
             separators=(",", ":"),
             sort_keys=True,
@@ -91,7 +147,7 @@ class DesktopApiClient:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(self._timeout_seconds)
             connection.connect(str(self._socket_path))
-            connection.sendall(struct.pack("!I", len(payload)) + payload)
+            connection.sendall(struct.pack("!I", len(encoded)) + encoded)
             connection.shutdown(socket.SHUT_WR)
             length = struct.unpack("!I", _recv_exact(connection, 4))[0]
             if not 1 <= length <= _MAX_RESPONSE_BYTES:
@@ -112,13 +168,40 @@ class DesktopApiClient:
         if (
             type(document) is not dict
             or set(document) != {"schema", "kind", "ok", "result"}
-            or document["schema"] != _SCHEMA
-            or document["kind"] != "overview"
+            or document["schema"] != expected_schema
+            or document["kind"] != expected_kind
             or document["ok"] is not True
             or type(document["result"]) is not dict
         ):
             raise RuntimeError("Fleet rejected or malformed the Desktop request")
         return document["result"]
+
+
+def _selector(source: object, network_id: object, device_id: object) -> dict[str, str]:
+    return {
+        "source": _identity_text(source, "Desktop alias source"),
+        "network_id": _identity_text(network_id, "Desktop alias network ID"),
+        "device_id": _identity_text(device_id, "Desktop alias device ID"),
+    }
+
+
+def _alias_text(value: object) -> str:
+    alias = _display_text(value, "Desktop alias")
+    if len(alias) > 128 or any(
+        character in {"\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"}
+        for character in alias
+    ):
+        raise ValueError("Desktop alias is invalid")
+    return alias
+
+
+def _alias_outcome(result: object, allowed: set[str]) -> str:
+    if type(result) is not dict or set(result) != {"outcome"}:
+        raise RuntimeError("Fleet returned an invalid Desktop alias outcome")
+    outcome = result["outcome"]
+    if type(outcome) is not str or outcome not in allowed:
+        raise RuntimeError("Fleet returned an invalid Desktop alias outcome")
+    return outcome
 
 
 def _normalize_node(value: object) -> dict[str, Any]:

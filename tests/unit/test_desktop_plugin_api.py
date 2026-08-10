@@ -1,12 +1,15 @@
 import asyncio
+import hashlib
 import importlib.util
+import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
 API_PATH = ROOT / "dashboard" / "plugin_api.py"
@@ -71,6 +74,55 @@ def test_overview_route_returns_service_unavailable_without_leaking_details(
     assert error.value.detail == "Fleet Desktop state is unavailable."
 
 
+def test_typed_event_contract_is_stable_and_router_exposes_websocket():
+    module = _load_api()
+    overview = {"schema": "fleet.desktop.v1", "summary": {"managed": 0}, "nodes": []}
+    assert module.build_event("snapshot", 1, overview) == {
+        "schema": "fleet.desktop-events.v1",
+        "kind": "snapshot",
+        "sequence": 1,
+        "overview": overview,
+    }
+    assert module.build_event("unavailable", 2) == {
+        "schema": "fleet.desktop-events.v1",
+        "kind": "unavailable",
+        "sequence": 2,
+    }
+    assert module._overview_digest({"b": 2, "a": 1}) == module._overview_digest(
+        {"a": 1, "b": 2}
+    )
+    assert any(
+        getattr(route, "path", None) == "/events" for route in module.router.routes
+    )
+
+
+def test_websocket_emits_typed_authoritative_snapshot(monkeypatch):
+    module = _load_api()
+    overview = {
+        "schema": "fleet.desktop.v1",
+        "summary": {"managed": 0, "active": 0, "alive": 0, "ready": 0, "not_ready": 0},
+        "nodes": [],
+    }
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def overview(self):
+            return overview
+
+    monkeypatch.setattr(module, "DesktopApiClient", FakeClient)
+    app = FastAPI()
+    app.include_router(module.router)
+    with TestClient(app).websocket_connect("/events") as websocket:
+        assert websocket.receive_json() == {
+            "schema": "fleet.desktop-events.v1",
+            "kind": "snapshot",
+            "sequence": 1,
+            "overview": overview,
+        }
+
+
 def test_dashboard_api_loads_from_an_installed_plugin_without_repo_pythonpath(
     tmp_path,
 ) -> None:
@@ -97,3 +149,129 @@ assert module.router is not None
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def _stable_id(source: str, network_id: str, device_id: str) -> str:
+    material = json.dumps(
+        [source, network_id, device_id], separators=(",", ":")
+    ).encode()
+    return f"fleet-node-{hashlib.sha256(material).hexdigest()}"
+
+
+def test_alias_routes_bind_stable_id_and_call_generation_fenced_client(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_api()
+    socket_path = tmp_path / "fleet.sock"
+    monkeypatch.setenv("FLEET_MANAGED_PROJECTION_SOCKET", str(socket_path))
+    captured: list[tuple] = []
+
+    class FakeClient:
+        def __init__(self, *, socket_path: Path) -> None:
+            captured.append(("socket", socket_path))
+
+        def set_alias(self, **request) -> str:
+            captured.append(("set", request))
+            return "created"
+
+        def clear_alias(self, **request) -> str:
+            captured.append(("clear", request))
+            return "cleared"
+
+    monkeypatch.setattr(module, "DesktopApiClient", FakeClient)
+    stable_id = _stable_id("nodescale", "network-1", "node-a")
+    set_request = module.AliasSetRequest(
+        source="nodescale",
+        network_id="network-1",
+        device_id="node-a",
+        binding_generation="7",
+        alias="Workstation",
+    )
+    assert asyncio.run(module.set_alias(stable_id, set_request)) == {
+        "outcome": "created"
+    }
+    clear_request = module.AliasClearRequest(
+        source="nodescale",
+        network_id="network-1",
+        device_id="node-a",
+        binding_generation="7",
+    )
+    assert asyncio.run(module.clear_alias(stable_id, clear_request)) == {
+        "outcome": "cleared"
+    }
+    assert captured == [
+        ("socket", socket_path),
+        (
+            "set",
+            {
+                "source": "nodescale",
+                "network_id": "network-1",
+                "device_id": "node-a",
+                "binding_generation": "7",
+                "alias": "Workstation",
+            },
+        ),
+        ("socket", socket_path),
+        (
+            "clear",
+            {
+                "source": "nodescale",
+                "network_id": "network-1",
+                "device_id": "node-a",
+                "binding_generation": "7",
+            },
+        ),
+    ]
+
+
+def test_alias_route_rejects_stable_id_mismatch_before_control_call(
+    monkeypatch,
+) -> None:
+    module = _load_api()
+
+    class ForbiddenClient:
+        def __init__(self, **_kwargs) -> None:
+            raise AssertionError("mismatched identity reached Fleet control")
+
+    monkeypatch.setattr(module, "DesktopApiClient", ForbiddenClient)
+    request = module.AliasSetRequest(
+        source="nodescale",
+        network_id="network-1",
+        device_id="node-a",
+        binding_generation="1",
+        alias="Workstation",
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(module.set_alias("fleet-node-" + "0" * 64, request))
+    assert error.value.status_code == 400
+    assert error.value.detail == "Invalid Fleet node identity."
+
+
+def test_alias_route_reports_generation_conflict_without_leaking_details(
+    monkeypatch,
+) -> None:
+    module = _load_api()
+
+    class RejectingClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def set_alias(self, **_request) -> str:
+            raise RuntimeError("private control protocol details")
+
+    monkeypatch.setattr(module, "DesktopApiClient", RejectingClient)
+    request = module.AliasSetRequest(
+        source="nodescale",
+        network_id="network-1",
+        device_id="node-a",
+        binding_generation="1",
+        alias="Workstation",
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            module.set_alias(
+                _stable_id("nodescale", "network-1", "node-a"), request
+            )
+        )
+    assert error.value.status_code == 409
+    assert error.value.detail == "Fleet rejected the alias update."
