@@ -100,6 +100,8 @@ export function getFleetSection(value) {
 
 let fleetWorkflowSessionHistory = null
 let fleetWorkflowPersistedVersion = null
+let fleetWorkflowHistoryGeneration = 0
+let fleetWorkflowPersistenceLocked = false
 
 
 export const FLEET_NODE_TYPE_CATEGORIES = Object.freeze([
@@ -1014,6 +1016,184 @@ export function normalizeWorkflowListing(value) {
     previousId = summary.workflowId
     return { ...summary }
   })
+}
+
+export function workflowPersistenceCanReplaceHistory(expectedGeneration, currentGeneration) {
+  if (
+    !Number.isSafeInteger(expectedGeneration) ||
+    expectedGeneration < 0 ||
+    !Number.isSafeInteger(currentGeneration) ||
+    currentGeneration < 0
+  ) throw new Error('invalid workflow persistence generation')
+  return expectedGeneration === currentGeneration
+}
+
+export function getFleetWorkflowEditorGeneration() {
+  return fleetWorkflowHistoryGeneration
+}
+
+export function markFleetWorkflowEditorMutation() {
+  if (fleetWorkflowHistoryGeneration >= Number.MAX_SAFE_INTEGER) {
+    throw new Error('workflow editor generation exhausted')
+  }
+  fleetWorkflowHistoryGeneration += 1
+  return fleetWorkflowHistoryGeneration
+}
+
+export function isFleetWorkflowPersistenceLocked() {
+  return fleetWorkflowPersistenceLocked
+}
+
+export function commitFleetWorkflowEditorMutation(history, updater) {
+  if (fleetWorkflowPersistenceLocked) throw new Error('workflow persistence is active')
+  const current = normalizeWorkflowHistory(history)
+  const candidate = typeof updater === 'function' ? updater(current) : updater
+  const next = normalizeWorkflowHistory(candidate)
+  markFleetWorkflowEditorMutation()
+  return next
+}
+
+function beginFleetWorkflowPersistence() {
+  if (fleetWorkflowPersistenceLocked) throw new Error('workflow persistence is active')
+  fleetWorkflowPersistenceLocked = true
+  return fleetWorkflowHistoryGeneration
+}
+
+function finishFleetWorkflowPersistence() {
+  fleetWorkflowPersistenceLocked = false
+}
+
+function validWorkflowRequest(request) {
+  if (typeof request !== 'function') throw new Error('invalid workflow request')
+  return request
+}
+
+export async function loadWorkflowPersistenceControl({ request, targetId }) {
+  const rest = validWorkflowRequest(request)
+  if (!validWorkflowId(targetId)) throw new Error('invalid workflow id')
+  const requestGeneration = beginFleetWorkflowPersistence()
+  try {
+    const listing = normalizeWorkflowListing(await rest('/workflows'))
+    if (!workflowPersistenceCanReplaceHistory(
+      requestGeneration,
+      fleetWorkflowHistoryGeneration
+    )) return { kind: 'stale', listing }
+    const summary = listing.find(item => item.workflowId === targetId)
+    if (!summary) return { kind: 'missing', listing }
+    const response = await rest(`/workflows/${encodeURIComponent(targetId)}`)
+    if (
+      !hasExactKeys(response, ['revision', 'executionAvailable']) ||
+      response.executionAvailable !== false
+    ) throw new Error('invalid workflow response')
+    const revision = deserializeWorkflowRevision(response.revision)
+    if (revision.workflowId !== targetId) throw new Error('invalid workflow response')
+    return workflowPersistenceCanReplaceHistory(
+      requestGeneration,
+      fleetWorkflowHistoryGeneration
+    )
+      ? { kind: 'loaded', listing, revision }
+      : { kind: 'stale', listing }
+  } finally {
+    finishFleetWorkflowPersistence()
+  }
+}
+
+export async function saveWorkflowPersistenceControl({
+  request,
+  workflow,
+  persistedVersion
+}) {
+  const rest = validWorkflowRequest(request)
+  if (persistedVersion !== null && (
+    !Number.isSafeInteger(persistedVersion) || persistedVersion < 1
+  )) throw new Error('invalid persisted workflow version')
+  const document = deserializeWorkflow(workflow)
+  const requestGeneration = beginFleetWorkflowPersistence()
+  try {
+    const response = persistedVersion == null
+      ? await rest('/workflows', {
+          method: 'POST',
+          body: { document }
+        })
+      : await rest(`/workflows/${encodeURIComponent(document.id)}`, {
+          method: 'PUT',
+          body: { document, expectedVersion: persistedVersion }
+        })
+    if (
+      !hasExactKeys(response, ['outcome', 'revision']) ||
+      !['created', 'version_created', 'unchanged'].includes(response.outcome)
+    ) throw new Error('invalid workflow write')
+    const revision = deserializeWorkflowRevision(response.revision)
+    if (revision.workflowId !== document.id) throw new Error('invalid workflow write')
+    return {
+      kind: workflowPersistenceCanReplaceHistory(
+        requestGeneration,
+        fleetWorkflowHistoryGeneration
+      ) ? 'saved' : 'saved_stale',
+      revision
+    }
+  } finally {
+    finishFleetWorkflowPersistence()
+  }
+}
+
+export function workflowDeleteConfirmation(workflowId, hasUnsavedEdits) {
+  if (!validWorkflowId(workflowId) || typeof hasUnsavedEdits !== 'boolean') {
+    throw new Error('invalid workflow deletion confirmation')
+  }
+  return `Delete durable workflow ${workflowId}? Historical revisions remain retained.${
+    hasUnsavedEdits ? ' Unsaved local edits will be discarded.' : ''
+  }`
+}
+
+export function createWorkflowDraftAfterDeletion(history, existingWorkflowIds, seedId) {
+  if (
+    !Array.isArray(existingWorkflowIds) ||
+    existingWorkflowIds.some(id => !validWorkflowId(id)) ||
+    !validWorkflowId(seedId)
+  ) throw new Error('invalid workflow deletion draft')
+  const current = normalizeWorkflowHistory(history).present
+  return {
+    ...current,
+    id: allocateWorkflowId(seedId, new Set(existingWorkflowIds))
+  }
+}
+
+export async function deleteWorkflowPersistenceControl({
+  request,
+  workflowId,
+  persistedVersion,
+  hasUnsavedEdits,
+  confirmDelete
+}) {
+  const rest = validWorkflowRequest(request)
+  if (!validWorkflowId(workflowId)) throw new Error('invalid workflow id')
+  if (!Number.isSafeInteger(persistedVersion) || persistedVersion < 1) {
+    throw new Error('invalid persisted workflow version')
+  }
+  if (typeof confirmDelete === 'function' && !confirmDelete(
+    workflowDeleteConfirmation(workflowId, hasUnsavedEdits)
+  )) return { kind: 'cancelled' }
+  const requestGeneration = beginFleetWorkflowPersistence()
+  try {
+    const response = await rest(`/workflows/${encodeURIComponent(workflowId)}`, {
+      method: 'DELETE',
+      body: { expectedVersion: persistedVersion }
+    })
+    if (
+      !hasExactKeys(response, ['outcome']) ||
+      !['deleted', 'already_deleted'].includes(response.outcome)
+    ) throw new Error('invalid workflow deletion')
+    return {
+      kind: workflowPersistenceCanReplaceHistory(
+        requestGeneration,
+        fleetWorkflowHistoryGeneration
+      ) ? 'deleted' : 'deleted_stale',
+      outcome: response.outcome
+    }
+  } finally {
+    finishFleetWorkflowPersistence()
+  }
 }
 
 export function deserializeWorkflowRevision(value) {
@@ -4710,9 +4890,19 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
     }
   }, [history.present, selectedEdgeId, selectedId])
 
-  const applyEdit = useCallback(next => {
-    setHistory(current => applyWorkflowEdit(current, next))
+  const commitLocalHistory = useCallback(updater => {
+    try {
+      setHistory(current => commitFleetWorkflowEditorMutation(current, updater))
+      return true
+    } catch {
+      setEditorNotice('Wait for the durable Workflow request to finish before editing.')
+      return false
+    }
   }, [setHistory])
+
+  const applyEdit = useCallback(next => {
+    commitLocalHistory(current => applyWorkflowEdit(current, next))
+  }, [commitLocalHistory])
 
   const refreshWorkflowLibrary = useCallback(async () => {
     setLibraryState('loading')
@@ -4734,7 +4924,11 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
   }, [ctx, workflow.id])
 
   const loadWorkflow = useCallback(async () => {
-    if (persistenceState === 'loading' || persistenceState === 'saving') return
+    if (
+      isFleetWorkflowPersistenceLocked() ||
+      persistenceState === 'loading' ||
+      persistenceState === 'saving'
+    ) return
     if (
       history.past.length > 0
       && typeof globalThis.confirm === 'function'
@@ -4743,27 +4937,28 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
     setPersistenceState('loading')
     setEditorNotice('Loading durable workflow…')
     try {
-      const listing = normalizeWorkflowListing(await ctx.rest('/workflows'))
-      setWorkflowLibrary(listing)
-      const targetId = librarySelection || workflow.id
-      const summary = listing.find(item => item.workflowId === targetId)
-      if (!summary) {
+      const result = await loadWorkflowPersistenceControl({
+        request: (...args) => ctx.rest(...args),
+        targetId: librarySelection || workflow.id
+      })
+      if (result.kind === 'stale') {
+        setPersistenceState('error')
+        setEditorNotice('Local edits changed while loading. The durable response was not applied.')
+        return
+      }
+      setWorkflowLibrary(result.listing)
+      if (result.kind === 'missing') {
         setPersistedVersion(null)
         setPersistenceState('ready')
         setEditorNotice('This workflow has not been saved yet.')
         return
       }
-      const response = await ctx.rest(`/workflows/${encodeURIComponent(targetId)}`)
-      if (
-        !hasExactKeys(response, ['revision', 'executionAvailable']) ||
-        response.executionAvailable !== false
-      ) throw new Error('invalid workflow response')
-      const revision = deserializeWorkflowRevision(response.revision)
-      setHistory(createWorkflowHistory(revision.document))
-      setPersistedVersion(revision.version)
-      setLibrarySelection(revision.workflowId)
+      markFleetWorkflowEditorMutation()
+      setHistory(createWorkflowHistory(result.revision.document))
+      setPersistedVersion(result.revision.version)
+      setLibrarySelection(result.revision.workflowId)
       setPersistenceState('ready')
-      setEditorNotice(`Loaded durable version ${revision.version}. Execution unavailable.`)
+      setEditorNotice(`Loaded durable version ${result.revision.version}. Execution unavailable.`)
     } catch {
       setPersistenceState('error')
       setEditorNotice('Durable workflow state is unavailable or incompatible. Local edits were preserved.')
@@ -4771,32 +4966,29 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
   }, [ctx, history.past.length, librarySelection, persistenceState, setHistory, workflow.id])
 
   const saveWorkflow = useCallback(async () => {
-    if (persistenceState === 'loading' || persistenceState === 'saving') return
+    if (
+      isFleetWorkflowPersistenceLocked() ||
+      persistenceState === 'loading' ||
+      persistenceState === 'saving'
+    ) return
     setPersistenceState('saving')
     setEditorNotice('Saving durable workflow…')
     try {
-      const response = persistedVersion == null
-        ? await ctx.rest('/workflows', {
-            method: 'POST',
-            body: { document: deserializeWorkflow(workflow) }
-          })
-        : await ctx.rest(`/workflows/${encodeURIComponent(workflow.id)}`, {
-            method: 'PUT',
-            body: {
-              document: deserializeWorkflow(workflow),
-              expectedVersion: persistedVersion
-            }
-          })
-      if (
-        !hasExactKeys(response, ['outcome', 'revision']) ||
-        !['created', 'version_created', 'unchanged'].includes(response.outcome)
-      ) throw new Error('invalid workflow write')
-      const revision = deserializeWorkflowRevision(response.revision)
-      setHistory(createWorkflowHistory(revision.document))
-      setPersistedVersion(revision.version)
-      setLibrarySelection(revision.workflowId)
+      const result = await saveWorkflowPersistenceControl({
+        request: (...args) => ctx.rest(...args),
+        workflow,
+        persistedVersion
+      })
+      setPersistedVersion(result.revision.version)
+      setLibrarySelection(result.revision.workflowId)
       setPersistenceState('ready')
-      setEditorNotice(`Saved durable version ${revision.version}. Execution unavailable.`)
+      if (result.kind === 'saved') {
+        markFleetWorkflowEditorMutation()
+        setHistory(createWorkflowHistory(result.revision.document))
+        setEditorNotice(`Saved durable version ${result.revision.version}. Execution unavailable.`)
+      } else {
+        setEditorNotice(`Saved durable version ${result.revision.version}. Newer local edits remain unsaved.`)
+      }
     } catch {
       setPersistenceState('error')
       setEditorNotice('Workflow save was rejected. Reload durable state before retrying.')
@@ -4804,6 +4996,7 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
   }, [ctx, persistedVersion, persistenceState, setHistory, workflow])
 
   const newWorkflow = useCallback(() => {
+    if (isFleetWorkflowPersistenceLocked()) return
     if (
       history.past.length > 0
       && typeof globalThis.confirm === 'function'
@@ -4811,7 +5004,7 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
     ) return
     const existing = new Set(workflowLibrary.map(item => item.workflowId))
     const id = allocateWorkflowId(`workflow-${Date.now().toString(36)}`, existing)
-    setHistory(createWorkflowHistory(createEmptyWorkflow(id)))
+    if (!commitLocalHistory(createWorkflowHistory(createEmptyWorkflow(id)))) return
     setPersistedVersion(null)
     setLibrarySelection(id)
     setSelectedId(null)
@@ -4819,32 +5012,44 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
     setInspectorOpen(false)
     setPersistenceState('idle')
     setEditorNotice('New unsaved workflow. Execution unavailable.')
-  }, [history.past.length, setHistory, workflowLibrary])
+  }, [commitLocalHistory, history.past.length, workflowLibrary])
 
   const deleteDurableWorkflow = useCallback(async () => {
-    if (persistedVersion == null || workflow.id !== librarySelection) return
     if (
-      typeof globalThis.confirm === 'function'
-      && !globalThis.confirm(`Delete durable workflow ${workflow.id}? Historical revisions remain retained.`)
+      isFleetWorkflowPersistenceLocked() ||
+      persistedVersion == null ||
+      workflow.id !== librarySelection
     ) return
     setPersistenceState('saving')
     setEditorNotice('Deleting durable workflow…')
     try {
-      const response = await ctx.rest(`/workflows/${encodeURIComponent(workflow.id)}`, {
-        method: 'DELETE',
-        body: { expectedVersion: persistedVersion }
+      const result = await deleteWorkflowPersistenceControl({
+        request: (...args) => ctx.rest(...args),
+        workflowId: workflow.id,
+        persistedVersion,
+        hasUnsavedEdits: history.past.length > 0,
+        confirmDelete: typeof globalThis.confirm === 'function'
+          ? message => globalThis.confirm(message)
+          : undefined
       })
-      if (
-        !hasExactKeys(response, ['outcome']) ||
-        !['deleted', 'already_deleted'].includes(response.outcome)
-      ) throw new Error('invalid workflow deletion')
+      if (result.kind === 'cancelled') {
+        setPersistenceState('idle')
+        setEditorNotice(null)
+        return
+      }
       const remaining = workflowLibrary.filter(item => item.workflowId !== workflow.id)
       setWorkflowLibrary(remaining)
-      const nextId = allocateWorkflowId(
-        `workflow-${Date.now().toString(36)}`,
-        new Set(remaining.map(item => item.workflowId))
-      )
-      const next = createEmptyWorkflow(nextId)
+      const next = result.kind === 'deleted_stale'
+        ? createWorkflowDraftAfterDeletion(
+            getFleetWorkflowSession(),
+            remaining.map(item => item.workflowId),
+            `workflow-${Date.now().toString(36)}`
+          )
+        : createEmptyWorkflow(allocateWorkflowId(
+            `workflow-${Date.now().toString(36)}`,
+            new Set(remaining.map(item => item.workflowId))
+          ))
+      markFleetWorkflowEditorMutation()
       setHistory(createWorkflowHistory(next))
       setPersistedVersion(null)
       setLibrarySelection(remaining[0]?.workflowId ?? next.id)
@@ -4852,12 +5057,14 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
       setSelectedEdgeId(null)
       setInspectorOpen(false)
       setPersistenceState('ready')
-      setEditorNotice('Durable workflow deleted. Historical revisions remain retained.')
+      setEditorNotice(result.kind === 'deleted_stale'
+        ? 'Durable workflow deleted. Newer local edits were preserved as an unsaved draft.'
+        : 'Durable workflow deleted. Historical revisions remain retained.')
     } catch {
       setPersistenceState('error')
       setEditorNotice('Workflow deletion was rejected. Reload durable state before retrying.')
     }
-  }, [ctx, librarySelection, persistedVersion, setHistory, workflow.id, workflowLibrary])
+  }, [ctx, history.past.length, librarySelection, persistedVersion, setHistory, workflow.id, workflowLibrary])
 
   const createConnection = useCallback(input => {
     if (workflow.connections.length >= WORKFLOW_LIMIT_COUNT) {
@@ -4906,14 +5113,14 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
   }), [createConnection, workflow])
 
   const undoEdit = useCallback(() => {
-    setHistory(current => undoWorkflow(current))
+    if (!commitLocalHistory(current => undoWorkflow(current))) return
     setEditorNotice('Undo applied.')
-  }, [setHistory])
+  }, [commitLocalHistory])
 
   const redoEdit = useCallback(() => {
-    setHistory(current => redoWorkflow(current))
+    if (!commitLocalHistory(current => redoWorkflow(current))) return
     setEditorNotice('Redo applied.')
-  }, [setHistory])
+  }, [commitLocalHistory])
 
   const addNode = useCallback(type => {
     if (atLimit) {
@@ -5047,8 +5254,13 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
     ]
   })
 
+  const persistenceBusy = persistenceState === 'loading' || persistenceState === 'saving'
+
   return jsxs('div', {
-    className: 'flex min-h-0 flex-1 flex-col gap-3',
+    className: `flex min-h-0 flex-1 flex-col gap-3 ${
+      persistenceBusy ? 'pointer-events-none opacity-70' : ''
+    }`,
+    'aria-busy': persistenceBusy,
     children: [
       jsxs('section', {
         className: 'mx-4 flex flex-wrap items-end gap-2 rounded-lg border border-border/60 bg-muted/10 p-2',
