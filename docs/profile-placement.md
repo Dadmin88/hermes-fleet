@@ -1,24 +1,28 @@
-# Profile identity and placement
+# Profile identity, presence, and execution locality
 
-Hermes Fleet treats professional profiles as **distributed capabilities whose live presence must be proven on real nodes**.
+Hermes Fleet treats professional profiles as **versioned capabilities whose current presence and exact identity must be proven rather than guessed**.
 
-Hermes Agency defines and distributes the professional profile packages. Hermes Agent installs and executes them. Fleet observes what is actually installed on each managed node, ties that evidence to node readiness and admission, and provides the read-only foundations for exact locate-or-place behavior.
+Hermes Agency defines and distributes professional profile packages. Hermes Agent installs and executes profiles in the current native runtime. Fleet observes what is actually installed on managed nodes, ties that evidence to current admission and readiness, and exposes deterministic read-only lookup facts.
 
 The important split is:
 
-> **Agency owns profile content. Fleet owns live distributed placement truth.**
+> **Agency owns profile content. Fleet owns live distributed evidence and placement policy.**
 
-This document describes the current merged profile-awareness and placement foundations. It also names the missing mutation boundary so users and coding agents do not mistake an in-progress architecture for a shipped automatic installer.
+This document distinguishes the current merged profile-awareness contracts from the planned execution-fabric direction. The planned direction does not turn persistent host profile installation into a prerequisite for distributed work.
 
-## Why profile placement needs its own contract
+## Current product contract
 
-A request such as "use the backend engineer" contains at least three independent questions:
+Fleet currently provides:
 
-1. Which professional profile does the request mean?
-2. Which nodes currently have that exact package installed and are ready to work?
-3. If none do, which node is eligible to receive it, and how can installation be performed and proven safely?
+- bounded discovery of installed Hermes profile distributions on a Fleet node;
+- current profile presence carried in the node observation path;
+- exact Agency V1 content identity when Fleet can safely prove it;
+- general ready-node lookup by profile name and optional version;
+- exact ready-node lookup by profile name, version, and content digest;
+- pinned immutable Agency package/source validation at an exact git revision;
+- deterministic read-only candidate discovery over currently admitted, scheduler-ready nodes.
 
-Hermes Agency answers the first question through its versioned catalog and profile distributions. Fleet answers the live-node portions of the second question. Fleet now has the read-only building blocks needed for the third, but automatic remote installation and final target choice are not yet current product behavior.
+These are observation and lookup capabilities. They do not install, update, remove, rank, reserve, schedule, or execute a profile by themselves.
 
 ## Responsibility split
 
@@ -27,16 +31,16 @@ Hermes Agency answers the first question through its versioned catalog and profi
 | Professional role definition | Hermes Agency `SOUL.md` |
 | Bundled role-specific procedures | Hermes Agency profile `skills/` |
 | Distribution identity and package metadata | Hermes Agency |
-| Installing a profile into a local Hermes installation | Hermes Agent profile tooling |
+| Installing a profile into a current native Hermes installation | Hermes Agent profile tooling |
 | Detecting installed distributions on a Fleet node | Hermes Fleet node observation path |
 | Current managed-node admission | Nodescale projected into Fleet |
 | Current node readiness and Fleet-owned capacity | Hermes Fleet |
 | Authenticated cross-node delivery | Hermes Keryx |
 | Exact ready-node profile lookup | Hermes Fleet state |
-| Automatic remote profile installation | **Not yet a current Fleet operation** |
-| Final locate-or-place target policy | **Not yet a current Fleet coordinator contract** |
+| Future workload placement policy | Hermes Fleet |
+| Future environment materialization | Fleet execution backend selected by a validated ExecutionPlan |
 
-Agency is intentionally not a live presence registry. It does not need to know which laptops, desktops, VPS hosts, or remote workers currently carry its profiles.
+Agency is intentionally not a live node registry. It does not need to know which laptops, desktops, VPS hosts, phones, or remote workers currently carry one of its profiles.
 
 ## The three levels of profile identity
 
@@ -77,7 +81,7 @@ The exact identity becomes:
 }
 ```
 
-That is the identity used by Fleet's strongest exact-profile lookup.
+That is the identity used by Fleet's strongest exact-profile lookup and is suitable as an immutable profile input to future Recipe resolution.
 
 ## What the Agency V1 digest represents
 
@@ -106,12 +110,6 @@ A generic profile can therefore remain visible as `{name, version}` while omitti
 Installed profile discovery runs as part of the existing Fleet node observation path. Fleet does not introduce a second profile-presence daemon or registry.
 
 A current observation can express:
-
-- no observation at all, so profile presence is unknown;
-- a current observation with an empty profile list;
-- a current observation containing one or more canonical installed profile identities.
-
-Conceptually:
 
 ```text
 no current observation
@@ -145,29 +143,27 @@ Likewise, an exact installed package does not make a node eligible when its obse
 
 ## Current lookup layers
 
-Fleet state exposes progressively stronger read-only queries.
-
 ### General profile lookup
 
 A general profile query asks for scheduler-ready nodes that report a profile name, optionally at an exact version.
 
-Use this when the caller cares about an installed distribution identity but does not require an exact Agency content digest.
+Use this when the caller cares about current native profile presence but does not require exact Agency content identity.
 
-The query does not substitute another professional profile when the requested profile is missing.
+The query never substitutes a different professional profile when the requested profile is missing.
 
 ### Exact profile lookup
 
 Exact lookup requires the requested profile content digest and can also require the exact distribution version.
 
-It returns only currently admitted, fresh, scheduler-ready nodes whose observation proves the requested identity.
+It returns only currently admitted, fresh, scheduler-ready nodes whose current observation proves the requested identity.
 
 Digestless or mismatching packages do not satisfy exact lookup.
 
-### Placement-candidate lookup
+### Candidate lookup
 
-When no exact ready carrier exists, Fleet can query the set of currently scheduler-ready admitted nodes that could be considered as profile placement targets.
+Fleet can also query currently scheduler-ready admitted nodes that may be considered by a later placement policy.
 
-Each candidate carries the facts needed by a later policy layer, including:
+Each candidate carries facts such as:
 
 - managed source/network/device identity;
 - current admission generation;
@@ -176,15 +172,15 @@ Each candidate carries the facts needed by a later policy layer, including:
 - same-name installed profile presence when one exists;
 - the current readiness explanation.
 
-The query intentionally returns **all eligible candidates in deterministic order**. It does not rank them and does not select a winner.
+The query intentionally returns **all eligible candidates in deterministic order**. It does not rank or choose a winner.
 
-That separation keeps state inspection from quietly becoming an undocumented scheduler.
+That separation keeps persistence and inspection from quietly becoming an undocumented scheduler.
 
 ## Pinned Agency source snapshots
 
-Automatic placement requires stronger source trust than "clone the current main branch and install whatever is there."
+Exact package identity requires stronger source trust than a mutable repository branch.
 
-Fleet therefore has a pinned Agency snapshot boundary that binds an approved repository to an **exact full git object ID**. A resolved placement package is tied to that immutable checkout rather than a mutable branch or tag.
+Fleet has a pinned Agency snapshot boundary that binds an approved repository to an **exact full git object ID**. A resolved package is tied to that immutable checkout rather than a mutable branch or tag.
 
 The current merged snapshot flow validates, among other things:
 
@@ -198,170 +194,131 @@ The current merged snapshot flow validates, among other things:
 - selected `distribution.yaml` name/version;
 - an independently recomputed content digest for the selected profile package.
 
-A snapshot resolves an `AgencyProfilePackage` without installing it anywhere.
+A snapshot resolves an `AgencyProfilePackage`. It does not install the package anywhere and does not authorize execution.
 
-### Important current security boundary
+The snapshot implementation is suitable only for explicitly approved Agency source repositories and exact revisions under the current contract. Do not generalize it into an arbitrary repository/package executor.
 
-The current merged snapshot implementation runs the pinned checkout's bounded Agency catalog generator while validating the snapshot. It is suitable only for explicitly approved Agency source repositories and exact revisions under the current contract.
+## Persistent remote host installation is not the default future path
 
-Do not generalize this interface into an arbitrary repository/package executor. Any future remote installation path should continue tightening source validation rather than accepting user-supplied git URLs or shell text.
+An earlier Fleet design proposed completing `locate-or-place` by adding a privileged operation that persistently installed a missing Agency profile into the destination host's Hermes profile directory, then waited for a fresh observation to prove installation.
 
-## What "locate" can mean today
+That mutation path is **not a current Fleet contract and is no longer the default planned architecture**.
 
-Fleet already has the data needed to answer questions such as:
-
-```text
-Which ready nodes report agency-backend-engineer?
-```
-
-and, with an exact package identity:
+The planned Fleet Execution Fabric moves the abstraction above host installation:
 
 ```text
-Which ready nodes report this exact
-{name, version, content_digest} package?
+exact Agency package / agent requirement
+        ↓
+Fleet Recipe
+        ↓
+ResolvedRecipe
+        ↓
+backend-specific ExecutionPlan
+        ↓
+capability-aware node selection
+        ↓
+materialize a fresh worker environment
+        ↓
+Hermes performs one task
+        ↓
+result + artifacts through Keryx
+        ↓
+clean task-specific state
 ```
 
-That is genuine distributed placement knowledge because it is derived from current admitted node observations rather than an Agency-side guess.
+Under that model, a trusted compatible node does not need the professional profile persistently installed on its host beforehand. The Recipe carries the requirement, Fleet resolves the exact package/environment identity, and the selected execution backend materializes the environment the node can support.
 
-## What "place" does not mean yet
+Examples of possible backend classes include a Docker/OCI backend on normal Linux hosts and a weaker userspace/OCI backend on supported Android nodes. Those backends are planned architecture, not current shipped contracts.
 
-Fleet does not currently expose a completed remote profile-install operation.
+## How current profile presence remains useful
 
-There is no shipped Fleet request that says "install this validated Agency package on node X" and then proves through a fresh observation that installation succeeded.
+The execution-fabric direction does not make current profile observation obsolete.
 
-There is also no current coordinator that:
+Existing native installations remain useful as:
 
-1. resolves a trusted exact Agency package;
-2. short-circuits when an exact ready carrier already exists;
-3. chooses one placement candidate according to a defined policy;
-4. invokes a privileged structured remote install operation;
-5. waits for the same active admission to report the exact expected package;
-6. routes later work only after that observation proof succeeds.
+- truthful operator inventory;
+- exact current native-run capability evidence;
+- compatibility information for existing `fleet.hermes.run` behavior;
+- possible future cache/locality evidence;
+- a way to distinguish exact approved packages from same-name or digestless installations.
 
-Those are the remaining pieces of complete locate-or-place behavior.
+A future scheduler may prefer already-local immutable ingredients when that improves time-to-useful-work, but locality is not authority and does not bypass Recipe requirements, node admission, execution guarantees, or local authorization.
 
-## Safety properties for the future mutation path
-
-The existing read-only foundation deliberately constrains how remote placement should be completed.
-
-Any future install operation should preserve these rules:
-
-- profile installation is privileged and default-deny;
-- Keryx authenticates transport, but Fleet still authorizes the install operation;
-- a task cannot nominate an arbitrary repository URL to install;
-- a prompt cannot smuggle arbitrary shell commands into profile installation;
-- source identity remains bound to an approved repository and exact immutable revision;
-- the selected profile name, version, path, and digest remain bound to the validated package;
-- Hermes remains the native local profile installer;
-- installer exit code or remote response text is not proof of placement;
-- Fleet must observe the exact expected package after installation;
-- observation proof must belong to the same active admission generation;
-- readiness loss, admission change, timeout, or mismatching content must fail closed.
-
-These properties keep "place a professional profile" from degenerating into "remote arbitrary code/package execution."
-
-## Why admission generation matters
+## Admission generation still matters
 
 Nodescale-managed admission can change across disable, removal, revocation, or re-admission.
 
 Fleet observations are fenced by the current projection/admission generation. When managed state changes, old evidence cannot be reused as if it came from the new admission epoch.
 
-That matters especially for placement:
+Example:
 
 ```text
-install request sent under admission generation N
+profile observed under admission generation N
     ↓
 node is disabled or re-admitted as generation N+1
     ↓
-old generation-N profile observation arrives late
+old generation-N observation arrives late
 ```
 
-The late observation must not complete placement for generation N+1.
+The late observation must not become current profile or placement evidence for generation N+1.
 
-The existing observation/state model already supplies this fence. A future locate-or-place coordinator should consume it rather than inventing a separate placement identity system.
-
-## Why the install response is not enough
-
-A remote process can exit successfully while the desired runtime state is still absent, incomplete, replaced, or different from what the controller intended.
-
-Fleet's architecture therefore separates:
-
-```text
-command acknowledgement
-```
-
-from:
-
-```text
-observed exact runtime state
-```
-
-The intended completion proof for placement is the latter: a fresh Fleet observation from the same admitted node proving the exact package identity and current readiness.
-
-## Example reasoning flow
-
-Suppose a future task requires `agency-backend-engineer` from a pinned Agency snapshot.
-
-```mermaid
-flowchart TD
-    package["Validate exact Agency package"]
-    exact["Find ready exact carriers"]
-    carriers{"Any exact carrier?"}
-    use["Return eligible exact carrier set"]
-    candidates["Find ready placement candidates"]
-    choose["Apply explicit deterministic placement policy"]
-    install["Privileged structured install operation"]
-    observe["Wait for fresh exact observed package"]
-    done["Package proven ready"]
-    fail["Fail closed"]
-
-    package --> exact --> carriers
-    carriers -->|yes| use
-    carriers -->|no| candidates --> choose --> install --> observe
-    observe -->|same admission + exact identity + ready| done
-    observe -->|timeout, mismatch, admission change, readiness loss| fail
-```
-
-The left side of this flow through placement-candidate discovery is largely present as read-only foundation. The privileged install, winner policy, and post-install coordinator path are not yet a current Fleet product surface.
+Future Recipe scheduling and environment materialization should consume the same admission fence rather than inventing a separate node identity system.
 
 ## Guidance for operators
 
-If you need a profile available on a node today:
+If you need a profile available for the **current native Fleet execution path** today:
 
 1. install the profile with supported Hermes profile tooling on the intended machine;
 2. allow the Fleet node observation loop to refresh;
 3. inspect Fleet readiness/profile presence rather than assuming installation succeeded globally;
-4. use exact content identity when the workflow requires an exact approved Agency package.
+4. use exact content identity when the work requires an exact approved Agency package.
 
 Do not treat a same-name profile or an old observation as an exact-placement guarantee.
 
+The future Recipe execution path is separate and must not be represented as shipped until its contracts, implementation, tests, and operational proofs are merged.
+
 ## Guidance for coding agents
 
-When modifying profile placement, preserve this source-of-truth order:
+Preserve these current source-of-truth relationships:
 
 ```text
 approved immutable Agency package
         ↓
-Hermes local installation
+current native Hermes installation, when used
         ↓
 Fleet node observation
         ↓
 Fleet durable current state
         ↓
-readiness / exact-profile query
+readiness / exact-profile lookup
+```
+
+For planned execution-fabric work, preserve this higher-level direction:
+
+```text
+approved immutable Agency package requirement
         ↓
-placement or routing decision
+Fleet Recipe / ResolvedRecipe
+        ↓
+validated ExecutionPlan
+        ↓
+capability-aware node selection + local admission
+        ↓
+backend environment materialization
+        ↓
+Hermes task execution
 ```
 
 Do not:
 
 - make Agency maintain a live Fleet node registry;
 - make Nodescale select professional profiles;
-- make Keryx decide profile-install authorization;
-- trust remote installer stdout as placement proof;
+- make Keryx decide Fleet execution authorization;
 - read Hermes, Keryx, or Nodescale private databases as a shortcut;
 - rank placement candidates inside the persistence query;
-- silently substitute a different profile when the requested identity is unavailable.
+- silently substitute a different profile when the requested identity is unavailable;
+- add persistent remote host profile installation merely to complete the superseded locate-or-place plan;
+- treat image/cache/profile locality as execution authority.
 
 See [`../AGENTS.md`](../AGENTS.md) for the repository-wide agent contract.
 

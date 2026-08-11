@@ -10,10 +10,10 @@ Think of the ecosystem as a stack of deliberately separate responsibilities:
 
 - **Headscale / Tailscale** provides private network reachability.
 - **Nodescale** decides which physical or virtual device has joined, whether it is trusted, and which Keryx identity belongs to it.
-- **Hermes Keryx** authenticates application peers and moves durable work and results between machines.
+- **Hermes Keryx** authenticates application peers and moves durable work, results, and artifacts between machines.
 - **Hermes Fleet** decides which Fleet operation is allowed, which exact machine is being addressed, whether a node is ready, and how distributed Hermes work is coordinated.
 - **Hermes Agent** performs the actual local agent work on each machine.
-- **Hermes Agency** supplies versioned professional Hermes profile distributions and their skills. Fleet observes where those profiles are installed and is growing the placement machinery that can locate or eventually place an exact package on an eligible node.
+- **Hermes Agency** supplies versioned professional Hermes profile distributions and their skills. Fleet can observe exact native profile presence today, while planned Recipe execution can use exact Agency package identity as a portable environment requirement rather than requiring persistent host installation.
 - **Hermes Desktop + the Fleet plugin** gives operators a visual control surface over Fleet state.
 
 No layer is allowed to quietly impersonate another layer's authority.
@@ -51,7 +51,7 @@ flowchart TB
 The diagram has two different kinds of relationships:
 
 1. **Authority and runtime flow**: network membership, trust, transport, Fleet authorization, and Hermes execution.
-2. **Capability supply and observation**: Agency defines profile packages; Hermes installs them; Fleet observes their presence and exact identity.
+2. **Capability supply and observation**: Agency defines profile packages; Hermes can install them in the current native runtime; Fleet observes their presence and exact identity.
 
 Agency is therefore part of the ecosystem, but it is **not another trust or transport authority**.
 
@@ -201,7 +201,7 @@ Fleet does not silently retarget an exact request to a different machine when th
 
 Hermes Agency is a **capability catalog and profile distribution source**. It is not a remote worker registry.
 
-An Agency profile packages a professional role for Hermes, including its role definition and bundled skills. Hermes owns installing and running that profile locally. Fleet owns the live distributed question: **which admitted, ready machines currently have which profile package?**
+An Agency profile packages a professional role for Hermes, including its role definition and bundled skills. Hermes owns current native profile installation and execution. Fleet owns the distributed evidence question: **which admitted, ready machines currently report which exact profile package?**
 
 Fleet's merged profile-awareness foundation currently provides:
 
@@ -211,19 +211,19 @@ Fleet's merged profile-awareness foundation currently provides:
 - deterministic lookup of scheduler-ready nodes that advertise a requested profile;
 - exact lookup by profile name, optional version, and content digest;
 - a pinned Agency snapshot boundary tied to an exact git commit and validated package identity;
-- deterministic read-only placement-candidate discovery for scheduler-ready admitted nodes.
+- deterministic read-only candidate discovery for scheduler-ready admitted nodes.
 
-Fleet does **not yet** provide the complete automatic locate-or-place mutation path. In particular, the current product surface does not yet include:
+These are current observation and lookup contracts. They do not create a persistent remote profile installer, choose a scheduling winner, or authorize execution.
 
-- a privileged remote profile-install Fleet operation;
-- a placement policy that chooses a winning destination;
-- end-to-end automatic install + post-install exact observation proof + routing.
+The planned execution-fabric direction uses exact Agency package identity as a possible Fleet Recipe input. A future scheduler can select a trusted compatible node and a validated execution backend can materialize the required environment without requiring the profile to be permanently installed on that host first.
 
-See [Profile identity and placement](profile-placement.md) for the precise current boundary.
+Persistent automatic host profile installation is not the default planned completion path for distributed profile availability.
+
+See [Profile identity, presence, and execution locality](profile-placement.md) for the precise current and planned boundary.
 
 ## Profile identity: name is not enough
 
-For exact Agency placement, Fleet treats a package as more than a friendly profile name.
+For exact Agency matching, Fleet treats a package as more than a friendly profile name.
 
 The strongest currently supported observed identity is:
 
@@ -253,9 +253,9 @@ Fleet therefore keeps these decisions separate:
 1. **Readiness** answers whether the machine can currently accept Fleet-owned execution.
 2. **Profile presence** answers what Hermes profile packages the current observation reports.
 3. **Exact profile lookup** asks which ready nodes already carry the exact desired package.
-4. **Placement candidate lookup** asks which ready admitted nodes could be considered when the desired package is absent.
+4. **Candidate lookup** asks which other ready admitted nodes could be considered by a future explicit placement policy.
 
-The current candidate query deliberately does not rank or choose a winner. That policy belongs to the locate-or-place layer rather than being smuggled into state inspection.
+The current candidate query deliberately does not rank or choose a winner. Scheduling policy belongs to a separately defined layer rather than being smuggled into state inspection.
 
 ## What an operator actually does
 
@@ -299,11 +299,11 @@ At a high level:
 
 See [Deployment](deployment.md), [Managed projection V1](managed-projection-v1.md), and [Node observations and scheduler readiness](node-readiness.md).
 
-### Make a professional profile available
+### Make a professional profile available today
 
-Today, install the desired Hermes profile distribution using Hermes' supported profile tooling. The Fleet node observation path will then report the installed profile identity on its normal cadence.
+For the current native execution path, install the desired Hermes profile distribution using Hermes' supported profile tooling. The Fleet node observation path will report the installed profile identity on its normal cadence.
 
-Fleet already has the read-only foundations needed to find existing exact carriers and candidate destinations. Automatic distributed profile installation is still a separate privileged mutation and is not presented as shipped behavior.
+Fleet can then inspect native profile locality and exact package identity. The planned Recipe execution path is separate and must not be presented as shipped behavior until its contracts and proofs are merged.
 
 ## Current product versus architectural direction
 
@@ -319,20 +319,21 @@ The ecosystem is being built in layers. Documentation must distinguish a merged 
 - installed Hermes profile presence and exact Agency V1 content digests when safely provable;
 - general and exact ready-profile lookup;
 - pinned Agency snapshot/package validation;
-- read-only eligible placement-candidate lookup;
+- read-only eligible candidate lookup;
 - Fleet Desktop operator surfaces and durable backend-owned Workflow authoring revisions; execution remains unavailable.
 
-### Not current Fleet contracts
+### Planned, not current
 
-- automatic remote profile installation and complete locate-or-place orchestration;
-- a general resource scheduler that ranks arbitrary workloads;
-- disposable task containers or recipe-based execution environments;
+- runtime-neutral Fleet Recipes;
+- backend-specific validated ExecutionPlans;
+- heterogeneous execution-backend capability matching;
+- automatic explainable node selection;
+- disposable task workers and environment materialization;
+- cache/stage/ready worker locality optimization;
 - executable distributed workflow graphs;
-- a second Fleet mailbox or transport layer;
-- implicit broadcast/pub-sub behavior;
 - proven end-to-end cancellation of an already-running cross-node Hermes run.
 
-Some of these are intentional future directions. They should be labelled as planned until the relevant contracts, tests, and operational proofs are merged.
+Persistent automatic host profile installation is neither current nor the default planned path for making a missing professional profile available on another node.
 
 ## A useful map for coding agents
 
@@ -355,7 +356,7 @@ Repository-specific instructions for coding agents live in [`../AGENTS.md`](../A
 ## Where to read next
 
 - [Architecture](architecture.md): Fleet's internal authority, request, state, and deployment boundaries.
-- [Profile identity and placement](profile-placement.md): Agency integration and the exact locate-versus-place boundary.
+- [Profile identity, presence, and execution locality](profile-placement.md): Agency integration, current native profile evidence, and the planned Recipe boundary.
 - [Node observations and scheduler readiness](node-readiness.md): how Fleet decides whether a node is currently ready.
 - [Managed projection V1](managed-projection-v1.md): the Nodescale-to-Fleet contract.
 - [Deployment](deployment.md): controller, worker, Keryx, and Hermes service topology.
