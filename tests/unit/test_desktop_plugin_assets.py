@@ -1758,3 +1758,219 @@ console.log(JSON.stringify({
     assert loaded["freshness"] == "Oldest managed sample 12s ago"
     assert loaded["observationStatus"] == "Provider observations live"
     assert loaded["age"] == "12s ago"
+
+
+def test_phase2_network_workspace_models_truthful_filters_and_presentation_state() -> (
+    None
+):
+    source = PLUGIN.read_text(encoding="utf-8")
+    for contract in (
+        "export const NETWORK_FILTERS",
+        "export function buildFleetNetworkWorkspaceModel",
+        "export function normalizeFleetNetworkPresentationState",
+        "export function setFleetNetworkPresentationState",
+        "function NetworkSummaryStrip",
+        "function NetworkFacetSelect",
+        "Source/provider",
+        "No machines match the current Network filters.",
+        "data-authority",
+        "border-style: dashed",
+        "NETWORK_METRIC_FILTERS",
+        "openFleetNetwork({",
+    ):
+        assert contract in source
+
+    script = r"""
+import fs from 'node:fs'
+const dataUrl = source =>
+  `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+const sdkUrl = dataUrl(`
+  export const ROUTES_AREA = 'app.routes'
+  export const SIDEBAR_NAV_AREA = 'app.sidebar.nav'
+  export const Button = 'Button'
+  export const Codicon = 'Codicon'
+  export const ContextMenu = 'ContextMenu'
+  export const ContextMenuContent = 'ContextMenuContent'
+  export const ContextMenuItem = 'ContextMenuItem'
+  export const ContextMenuSeparator = 'ContextMenuSeparator'
+  export const ContextMenuTrigger = 'ContextMenuTrigger'
+  export const ScrollArea = 'ScrollArea'
+  export const SearchField = 'SearchField'
+  export const EmptyState = 'EmptyState'
+  export const ErrorState = 'ErrorState'
+  export const Loader = 'Loader'
+  export const StatusDot = 'StatusDot'
+  export const PALETTE_AREA = 'palette'
+  export const STATUSBAR_AREAS = { right: 'status:right' }
+  export const host = { navigate: () => undefined, notify: () => undefined }
+  export const queryClient = { invalidateQueries: () => Promise.resolve() }
+  export const useQuery = () => { throw new Error('render was not expected') }
+`)
+const reactUrl = dataUrl(`
+  export const memo = value => value
+  export const useCallback = value => value
+  export const useEffect = () => undefined
+  export const useMemo = factory => factory()
+  export const useRef = value => ({ current: value })
+  export const useState = value => [
+    typeof value === 'function' ? value() : value,
+    () => {}
+  ]
+`)
+const jsxUrl = dataUrl(`
+  export const jsx = (type, props, key) => ({ type, props, key })
+  export const jsxs = jsx
+`)
+let source = fs.readFileSync(process.argv[1], 'utf8')
+source = source.replaceAll("'@hermes/plugin-sdk'", `'${sdkUrl}'`)
+source = source.replaceAll("'react/jsx-runtime'", `'${jsxUrl}'`)
+source = source.replaceAll("'react'", `'${reactUrl}'`)
+const mod = await import(dataUrl(source))
+
+const managed = (id, network, options = {}) => ({
+  stable_id: id,
+  identity: { source: 'nodescale', network_id: network, device_id: id },
+  naming: {
+    display_name: options.name ?? id,
+    provider_name: null,
+    alias: null,
+    has_alias: false
+  },
+  managed: {
+    active: options.active ?? true,
+    state: options.active === false ? 'disabled' : 'active',
+    binding_generation: 1
+  },
+  readiness: {
+    alive: options.alive ?? true,
+    scheduler_ready: options.ready ?? false,
+    fresh: options.fresh ?? true,
+    observation_age_ms: 12000,
+    reasons: options.ready ? [] : ['no_worker_capacity'],
+    last_observation: options.observed === false ? null : {
+      network: 'reachable',
+      keryx: 'available',
+      hermes: 'available',
+      worker: 'available'
+    },
+    capacity: {
+      active_workers: options.ready ? 1 : 2,
+      max_workers: 2,
+      available_worker_slots: options.ready ? 1 : 0
+    },
+    resources: null,
+    profiles: []
+  },
+  operations: ['fleet.health']
+})
+const observed = {
+  observed_id: 'sha256:' + 'b'.repeat(64),
+  network_id: 'network-b',
+  provider_kind: 'headscale',
+  provider_instance_id: 'instance-b',
+  provider_node_id: 'provider-node-b',
+  hostname: 'compute-observed',
+  given_name: 'compute-observed.example.invalid',
+  addresses: ['provider-address-b'],
+  tags: ['tag:worker'],
+  registered_at: null,
+  last_seen_at: null,
+  expires_at: null,
+  online: true,
+  expired: false,
+  classification: 'discovered_unmanaged',
+  first_observed_at: '2026-08-10T00:00:00+00:00',
+  last_observed_at: '2026-08-10T00:00:01+00:00',
+  snapshot_at: '2026-08-10T00:00:01+00:00'
+}
+const canvasNodes = mod.buildFleetCanvasNodes({
+  nodes: [
+    managed('node-a', 'network-a', { name: 'compute-a', ready: true }),
+    managed('node-b', 'network-a', { name: 'compute-b' }),
+    managed('node-c', 'network-c', { active: false, alive: false })
+  ],
+  observed_nodes: [observed]
+})
+const graph = mod.buildFleetGraph(canvasNodes)
+const model = mod.buildFleetNetworkWorkspaceModel(graph)
+const project = result => result.nodes.map(node => node.id)
+console.log(JSON.stringify({
+  filters: mod.NETWORK_FILTERS,
+  model,
+  managed: project(mod.filterFleetGraph(graph, '', 'managed')),
+  active: project(mod.filterFleetGraph(graph, '', 'active')),
+  alive: project(mod.filterFleetGraph(graph, '', 'alive')),
+  ready: project(mod.filterFleetGraph(graph, '', 'ready')),
+  attention: project(mod.filterFleetGraph(graph, '', 'attention')),
+  observed: project(mod.filterFleetGraph(graph, '', 'observed')),
+  provider: project(mod.filterFleetGraph(graph, '', 'all', 'provider:headscale')),
+  network: project(mod.filterFleetGraph(graph, '', 'all', 'all', 'network-c')),
+  query: project(mod.filterFleetGraph(graph, 'compute-b', 'all')),
+  normalized: mod.normalizeFleetNetworkPresentationState({
+    query: 'compute-a',
+    status: 'ready',
+    source: 'managed:nodescale',
+    network: 'network-a',
+    selectedId: 'node-a'
+  }),
+  invalid: mod.normalizeFleetNetworkPresentationState({
+    query: 'x'.repeat(300),
+    status: 'unsupported',
+    source: 'x'.repeat(300),
+    network: 'x'.repeat(300),
+    selectedId: 'x'.repeat(300)
+  })
+}))
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(PLUGIN)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    loaded = json.loads(completed.stdout)
+    assert [row[0] for row in loaded["filters"]] == [
+        "all",
+        "managed",
+        "active",
+        "alive",
+        "ready",
+        "attention",
+        "observed",
+        "awaiting",
+        "inactive",
+    ]
+    assert loaded["model"]["visible"] == 4
+    assert loaded["model"]["managed"] == 3
+    assert loaded["model"]["active"] == 2
+    assert loaded["model"]["alive"] == 2
+    assert loaded["model"]["ready"] == 1
+    assert loaded["model"]["attention"] == 1
+    assert loaded["model"]["inactive"] == 1
+    assert loaded["model"]["observed"] == 1
+    assert loaded["model"]["relationshipCount"] == 0
+    assert loaded["managed"] == ["node-a", "node-b", "node-c"]
+    assert loaded["active"] == ["node-a", "node-b"]
+    assert loaded["alive"] == ["node-a", "node-b"]
+    assert loaded["ready"] == ["node-a"]
+    assert loaded["attention"] == ["node-b"]
+    assert loaded["observed"] == ["observed-node-" + "b" * 64]
+    assert loaded["provider"] == ["observed-node-" + "b" * 64]
+    assert loaded["network"] == ["node-c"]
+    assert loaded["query"] == ["node-b"]
+    assert loaded["normalized"] == {
+        "query": "compute-a",
+        "status": "ready",
+        "source": "managed:nodescale",
+        "network": "network-a",
+        "selectedId": "node-a",
+    }
+    assert loaded["invalid"] == {
+        "query": "",
+        "status": "all",
+        "source": "all",
+        "network": "all",
+        "selectedId": None,
+    }
