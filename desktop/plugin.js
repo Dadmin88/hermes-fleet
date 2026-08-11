@@ -991,6 +991,31 @@ export function deserializeWorkflow(value) {
   return workflow
 }
 
+export function normalizeWorkflowListing(value) {
+  if (
+    !hasExactKeys(value, ['workflows', 'executionAvailable']) ||
+    value.executionAvailable !== false ||
+    !Array.isArray(value.workflows) ||
+    value.workflows.length > WORKFLOW_LIMIT_COUNT
+  ) throw new Error('invalid workflow listing')
+  let previousId = null
+  return value.workflows.map(summary => {
+    if (
+      !hasExactKeys(summary, ['workflowId', 'latestVersion', 'createdAtMs', 'updatedAtMs']) ||
+      !validWorkflowId(summary.workflowId) ||
+      !Number.isSafeInteger(summary.latestVersion) ||
+      summary.latestVersion < 1 ||
+      !Number.isSafeInteger(summary.createdAtMs) ||
+      summary.createdAtMs < 1 ||
+      !Number.isSafeInteger(summary.updatedAtMs) ||
+      summary.updatedAtMs < summary.createdAtMs ||
+      (previousId != null && summary.workflowId <= previousId)
+    ) throw new Error('invalid workflow listing')
+    previousId = summary.workflowId
+    return { ...summary }
+  })
+}
+
 export function deserializeWorkflowRevision(value) {
   if (
     !hasExactKeys(value, ['workflowId', 'version', 'contentHash', 'document', 'createdAtMs']) ||
@@ -4645,6 +4670,9 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
   const [editorNotice, setEditorNotice] = useState(null)
   const [persistedVersion, setPersistedVersion] = useFleetWorkflowPersistedVersion()
   const [persistenceState, setPersistenceState] = useState('idle')
+  const [workflowLibrary, setWorkflowLibrary] = useState([])
+  const [librarySelection, setLibrarySelection] = useState(history.present.id)
+  const [libraryState, setLibraryState] = useState('idle')
   const [positions, setPositions] = useState(() => Object.fromEntries(
     history.present.nodes.map(node => [node.id, node.position])
   ))
@@ -4686,6 +4714,25 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
     setHistory(current => applyWorkflowEdit(current, next))
   }, [setHistory])
 
+  const refreshWorkflowLibrary = useCallback(async () => {
+    setLibraryState('loading')
+    try {
+      const listing = normalizeWorkflowListing(await ctx.rest('/workflows'))
+      setWorkflowLibrary(listing)
+      setLibrarySelection(current =>
+        listing.some(item => item.workflowId === current)
+          ? current
+          : listing[0]?.workflowId ?? workflow.id
+      )
+      setLibraryState('ready')
+      return listing
+    } catch {
+      setLibraryState('error')
+      setEditorNotice('Workflow library is unavailable. Local edits were preserved.')
+      return null
+    }
+  }, [ctx, workflow.id])
+
   const loadWorkflow = useCallback(async () => {
     if (persistenceState === 'loading' || persistenceState === 'saving') return
     if (
@@ -4696,20 +4743,17 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
     setPersistenceState('loading')
     setEditorNotice('Loading durable workflow…')
     try {
-      const listing = await ctx.rest('/workflows')
-      if (
-        !hasExactKeys(listing, ['workflows', 'executionAvailable']) ||
-        listing.executionAvailable !== false ||
-        !Array.isArray(listing.workflows)
-      ) throw new Error('invalid workflow listing')
-      const summary = listing.workflows.find(item => item?.workflowId === workflow.id)
+      const listing = normalizeWorkflowListing(await ctx.rest('/workflows'))
+      setWorkflowLibrary(listing)
+      const targetId = librarySelection || workflow.id
+      const summary = listing.find(item => item.workflowId === targetId)
       if (!summary) {
         setPersistedVersion(null)
         setPersistenceState('ready')
         setEditorNotice('This workflow has not been saved yet.')
         return
       }
-      const response = await ctx.rest(`/workflows/${encodeURIComponent(workflow.id)}`)
+      const response = await ctx.rest(`/workflows/${encodeURIComponent(targetId)}`)
       if (
         !hasExactKeys(response, ['revision', 'executionAvailable']) ||
         response.executionAvailable !== false
@@ -4717,13 +4761,14 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
       const revision = deserializeWorkflowRevision(response.revision)
       setHistory(createWorkflowHistory(revision.document))
       setPersistedVersion(revision.version)
+      setLibrarySelection(revision.workflowId)
       setPersistenceState('ready')
       setEditorNotice(`Loaded durable version ${revision.version}. Execution unavailable.`)
     } catch {
       setPersistenceState('error')
       setEditorNotice('Durable workflow state is unavailable or incompatible. Local edits were preserved.')
     }
-  }, [ctx, history.past.length, persistenceState, setHistory, workflow.id])
+  }, [ctx, history.past.length, librarySelection, persistenceState, setHistory, workflow.id])
 
   const saveWorkflow = useCallback(async () => {
     if (persistenceState === 'loading' || persistenceState === 'saving') return
@@ -4749,6 +4794,7 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
       const revision = deserializeWorkflowRevision(response.revision)
       setHistory(createWorkflowHistory(revision.document))
       setPersistedVersion(revision.version)
+      setLibrarySelection(revision.workflowId)
       setPersistenceState('ready')
       setEditorNotice(`Saved durable version ${revision.version}. Execution unavailable.`)
     } catch {
@@ -4756,6 +4802,62 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
       setEditorNotice('Workflow save was rejected. Reload durable state before retrying.')
     }
   }, [ctx, persistedVersion, persistenceState, setHistory, workflow])
+
+  const newWorkflow = useCallback(() => {
+    if (
+      history.past.length > 0
+      && typeof globalThis.confirm === 'function'
+      && !globalThis.confirm('Discard unsaved workflow edits and create a new workflow?')
+    ) return
+    const existing = new Set(workflowLibrary.map(item => item.workflowId))
+    const id = allocateWorkflowId(`workflow-${Date.now().toString(36)}`, existing)
+    setHistory(createWorkflowHistory(createEmptyWorkflow(id)))
+    setPersistedVersion(null)
+    setLibrarySelection(id)
+    setSelectedId(null)
+    setSelectedEdgeId(null)
+    setInspectorOpen(false)
+    setPersistenceState('idle')
+    setEditorNotice('New unsaved workflow. Execution unavailable.')
+  }, [history.past.length, setHistory, workflowLibrary])
+
+  const deleteDurableWorkflow = useCallback(async () => {
+    if (persistedVersion == null || workflow.id !== librarySelection) return
+    if (
+      typeof globalThis.confirm === 'function'
+      && !globalThis.confirm(`Delete durable workflow ${workflow.id}? Historical revisions remain retained.`)
+    ) return
+    setPersistenceState('saving')
+    setEditorNotice('Deleting durable workflow…')
+    try {
+      const response = await ctx.rest(`/workflows/${encodeURIComponent(workflow.id)}`, {
+        method: 'DELETE',
+        body: { expectedVersion: persistedVersion }
+      })
+      if (
+        !hasExactKeys(response, ['outcome']) ||
+        !['deleted', 'already_deleted'].includes(response.outcome)
+      ) throw new Error('invalid workflow deletion')
+      const remaining = workflowLibrary.filter(item => item.workflowId !== workflow.id)
+      setWorkflowLibrary(remaining)
+      const nextId = allocateWorkflowId(
+        `workflow-${Date.now().toString(36)}`,
+        new Set(remaining.map(item => item.workflowId))
+      )
+      const next = createEmptyWorkflow(nextId)
+      setHistory(createWorkflowHistory(next))
+      setPersistedVersion(null)
+      setLibrarySelection(remaining[0]?.workflowId ?? next.id)
+      setSelectedId(null)
+      setSelectedEdgeId(null)
+      setInspectorOpen(false)
+      setPersistenceState('ready')
+      setEditorNotice('Durable workflow deleted. Historical revisions remain retained.')
+    } catch {
+      setPersistenceState('error')
+      setEditorNotice('Workflow deletion was rejected. Reload durable state before retrying.')
+    }
+  }, [ctx, librarySelection, persistedVersion, setHistory, workflow.id, workflowLibrary])
 
   const createConnection = useCallback(input => {
     if (workflow.connections.length >= WORKFLOW_LIMIT_COUNT) {
@@ -4948,6 +5050,69 @@ function WorkflowModePanel({ history, setHistory, ctx }) {
   return jsxs('div', {
     className: 'flex min-h-0 flex-1 flex-col gap-3',
     children: [
+      jsxs('section', {
+        className: 'mx-4 flex flex-wrap items-end gap-2 rounded-lg border border-border/60 bg-muted/10 p-2',
+        'aria-label': 'Workflow library',
+        children: [
+          jsxs('label', {
+            className: 'flex min-w-48 flex-1 flex-col gap-1 text-[0.6875rem] text-muted-foreground',
+            children: [
+              'Workflow library',
+              jsx('select', {
+                value: librarySelection,
+                onChange: event => setLibrarySelection(event.target.value),
+                className: 'h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground',
+                children: [
+                  !workflowLibrary.length
+                    ? jsx('option', { value: workflow.id, children: 'No durable workflows loaded' })
+                    : null,
+                  ...workflowLibrary.map(item => jsx('option', {
+                    value: item.workflowId,
+                    children: `${item.workflowId} · v${item.latestVersion}`
+                  }, item.workflowId))
+                ]
+              })
+            ]
+          }),
+          jsxs('label', {
+            className: 'flex min-w-48 flex-1 flex-col gap-1 text-[0.6875rem] text-muted-foreground',
+            children: [
+              'Workflow name',
+              jsx('input', {
+                value: workflow.name,
+                maxLength: 128,
+                onChange: event => applyEdit({
+                  ...workflow,
+                  name: event.target.value.slice(0, 128)
+                }),
+                className: 'h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground'
+              })
+            ]
+          }),
+          jsx(Button, {
+            type: 'button', size: 'sm', variant: 'outline',
+            onClick: refreshWorkflowLibrary,
+            disabled: libraryState === 'loading' || persistenceState === 'saving',
+            children: libraryState === 'loading' ? 'Refreshing…' : 'Refresh workflows'
+          }),
+          jsx(Button, {
+            type: 'button', size: 'sm', variant: 'outline',
+            onClick: newWorkflow,
+            disabled: persistenceState === 'loading' || persistenceState === 'saving',
+            children: 'New workflow'
+          }),
+          jsx(Button, {
+            type: 'button', size: 'sm', variant: 'ghost',
+            onClick: deleteDurableWorkflow,
+            disabled:
+              persistedVersion == null ||
+              workflow.id !== librarySelection ||
+              persistenceState === 'loading' ||
+              persistenceState === 'saving',
+            children: 'Delete durable'
+          })
+        ]
+      }),
       jsxs('div', {
         className: 'flex flex-wrap items-center gap-1.5 px-4',
         children: [

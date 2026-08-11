@@ -78,13 +78,13 @@ Fleet keeps exactly one global Hermes Desktop sidebar entry and owns its navigat
 | Members | `/fleet/members` | Read-only Membership Center for managed admission, projection evidence, readiness, and distinct provider observations. |
 | Invitations | `/fleet/invitations` | Truthful shell; no invitation secrets or mutations are exposed yet. |
 | Profiles | `/fleet/profiles` | Truthful shell reserved for Fleet-owned profile presence/placement contracts. |
-| Workflows | `/fleet/workflows` | Durable backend-owned authoring revisions with explicit Load/Save; execution unavailable. |
+| Workflows | `/fleet/workflows` | Durable backend-owned authoring revisions with a refreshable library, explicit Load/Save, new drafts, naming, and version-fenced soft deletion; execution unavailable. |
 | Activity | `/fleet/activity` | Truthful shell reserved for authoritative activity history. |
 | Settings | `/fleet/settings` | Truthful shell; no backend policy is mutated yet. |
 
 The responsive internal navigation collapses from a left rail to a horizontally scrollable section bar on narrow Desktop windows. Route changes do not create additional Hermes sidebar entries.
 
-Workflow editing history remains in process memory for undo/redo, while explicit **Load durable** and **Save durable** controls read and append backend-owned immutable revisions. Internal Fleet route changes preserve the current editing session. A Desktop plugin reload can recover the last saved revision but not unsaved local edits. Saving requires the expected latest version, so conflicts fail visibly instead of overwriting newer backend state. This does not create a workflow execution runtime.
+Workflow editing history remains in process memory for undo/redo, while the refreshable Workflow library and explicit **Load durable** and **Save durable** controls read and append backend-owned immutable revisions. Operators can create a new local draft, edit its display name as ordinary document content, select an active durable definition, and soft-delete the currently loaded definition using its expected latest version. Internal Fleet route changes preserve the current editing session. A Desktop plugin reload can recover a saved revision but not unsaved local edits. Load/new actions confirm before discarding edited history, and save/delete conflicts fail visibly instead of overwriting newer backend state. Historical revisions remain retained but are not yet browsable in Desktop. This does not create a workflow execution runtime.
 
 
 ### Overview command center
