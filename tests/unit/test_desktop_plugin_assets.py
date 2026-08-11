@@ -1974,3 +1974,260 @@ console.log(JSON.stringify({
         "network": "all",
         "selectedId": None,
     }
+
+
+def test_phase3_membership_center_preserves_authority_boundaries() -> None:
+    source = PLUGIN.read_text(encoding="utf-8")
+    for contract in (
+        "export const MEMBERSHIP_FILTERS",
+        "export function buildFleetMembershipCenterModel",
+        "export function filterFleetMembershipRows",
+        "export function buildMembershipAuthorityStages",
+        "function FleetMembershipCenter",
+        "function MembershipAuthorityLadder",
+        "function ManagedMembershipDetail",
+        "function ObservedMembershipDetail",
+        "'aria-label': 'Membership authority ladder'",
+        "Membership and binding generations are version evidence",
+        "does not expose a live trusted flag or authenticated Keryx peer ID",
+        "sectionId === 'members'",
+        "['overview', 'network', 'members', 'workflows']",
+    ):
+        assert contract in source
+    assert "Membership surface reserved" not in source
+    assert "Membership controls await an authenticated operator contract." not in source
+    assert "id: 'members', label: 'Members'" in source
+    assert "availability: 'available'" in source
+
+    script = r"""
+import fs from 'node:fs'
+const dataUrl = source =>
+  `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+const sdkUrl = dataUrl(`
+  export const ROUTES_AREA = 'app.routes'
+  export const SIDEBAR_NAV_AREA = 'app.sidebar.nav'
+  export const Button = 'Button'
+  export const Codicon = 'Codicon'
+  export const ContextMenu = 'ContextMenu'
+  export const ContextMenuContent = 'ContextMenuContent'
+  export const ContextMenuItem = 'ContextMenuItem'
+  export const ContextMenuSeparator = 'ContextMenuSeparator'
+  export const ContextMenuTrigger = 'ContextMenuTrigger'
+  export const ScrollArea = 'ScrollArea'
+  export const SearchField = 'SearchField'
+  export const SegmentedControl = 'SegmentedControl'
+  export const EmptyState = 'EmptyState'
+  export const ErrorState = 'ErrorState'
+  export const Loader = 'Loader'
+  export const StatusDot = 'StatusDot'
+  export const PALETTE_AREA = 'palette'
+  export const STATUSBAR_AREAS = { right: 'status:right' }
+  export const host = { navigate: () => undefined, notify: () => undefined }
+  export const queryClient = {
+    getQueryData: () => undefined,
+    setQueryData: () => undefined,
+    invalidateQueries: () => Promise.resolve()
+  }
+  export const useQuery = () => { throw new Error('render was not expected') }
+`)
+const reactUrl = dataUrl(`
+  export const memo = value => value
+  export const useCallback = value => value
+  export const useEffect = () => undefined
+  export const useMemo = factory => factory()
+  export const useRef = value => ({ current: value })
+  export const useState = value => [
+    typeof value === 'function' ? value() : value,
+    () => {}
+  ]
+`)
+const jsxUrl = dataUrl(`
+  export const jsx = (type, props, key) => ({ type, props, key })
+  export const jsxs = jsx
+`)
+let source = fs.readFileSync(process.argv[1], 'utf8')
+source = source.replaceAll("'@hermes/plugin-sdk'", `'${sdkUrl}'`)
+source = source.replaceAll("'react/jsx-runtime'", `'${jsxUrl}'`)
+source = source.replaceAll("'react'", `'${reactUrl}'`)
+const mod = await import(dataUrl(source))
+
+const managed = (id, options = {}) => ({
+  stable_id: `fleet-node-${id.repeat(64).slice(0, 64)}`,
+  identity: {
+    source: 'nodescale',
+    network_id: 'network-a',
+    device_id: `device-${id}`
+  },
+  naming: {
+    display_name: options.name ?? `compute-${id}`,
+    provider_name: null,
+    alias: null,
+    has_alias: false
+  },
+  managed: {
+    state: options.state ?? 'active',
+    active: (options.state ?? 'active') === 'active',
+    projection_generation: options.projection ?? '10',
+    membership_generation: options.membership ?? '20',
+    binding_generation: options.binding ?? '30'
+  },
+  readiness: {
+    managed_state: options.state ?? 'active',
+    alive: options.alive ?? true,
+    scheduler_ready: options.ready ?? false,
+    fresh: options.fresh ?? true,
+    observation_age_ms: options.age ?? 12000,
+    reasons: options.reasons ?? (options.ready ? [] : ['no_worker_capacity']),
+    last_observation: options.hasObservation === false ? null : {
+      network: 'reachable',
+      keryx: 'available',
+      hermes: 'available',
+      worker: 'available'
+    },
+    capacity: options.capacity ?? {
+      active_workers: 1,
+      max_workers: 2,
+      available_worker_slots: options.ready ? 1 : 0
+    },
+    resources: null,
+    profiles: []
+  },
+  operations: ['fleet.health', 'fleet.inventory']
+})
+
+const observed = {
+  observed_id: 'sha256:' + 'a'.repeat(64),
+  network_id: 'network-a',
+  provider_kind: 'headscale',
+  provider_instance_id: 'provider-instance-a',
+  provider_node_id: 'provider-node-a',
+  hostname: 'compute-observed',
+  given_name: 'compute-observed.example.invalid',
+  addresses: ['192.0.2.10'],
+  tags: ['tag:worker'],
+  registered_at: null,
+  last_seen_at: '2026-08-10T00:00:00+00:00',
+  expires_at: null,
+  online: true,
+  expired: false,
+  classification: 'discovered_unmanaged',
+  first_observed_at: '2026-08-10T00:00:00+00:00',
+  last_observed_at: '2026-08-10T00:00:10+00:00',
+  snapshot_at: '2026-08-10T00:00:10+00:00'
+}
+
+const overview = {
+  schema: 'fleet.desktop.v2',
+  summary: {
+    managed: 3,
+    active: 2,
+    alive: 2,
+    ready: 1,
+    not_ready: 1,
+    observed_unmanaged: 1
+  },
+  nodes: [
+    managed('a', { name: 'compute-a', ready: true, membership: '21', binding: '31' }),
+    managed('b', { name: 'compute-b', ready: false, membership: '22', binding: '32' }),
+    managed('c', {
+      name: 'compute-c',
+      state: 'disabled',
+      alive: false,
+      fresh: false,
+      hasObservation: false,
+      reasons: ['node_not_active'],
+      capacity: null,
+      membership: '23',
+      binding: '33'
+    })
+  ],
+  observed_nodes: [observed],
+  observations: {
+    state: 'available',
+    network_id: 'network-a',
+    reconciliation: {},
+    truncated: false
+  }
+}
+const model = mod.buildFleetMembershipCenterModel(overview)
+const managedRow = model.rows.find(row => row.label === 'compute-a')
+const observedRow = model.rows.find(row => row.kind === 'observed')
+const stages = mod.buildMembershipAuthorityStages(managedRow)
+const observedStages = mod.buildMembershipAuthorityStages(observedRow)
+console.log(JSON.stringify({
+  summary: model.summary,
+  filters: mod.MEMBERSHIP_FILTERS,
+  attention: mod.filterFleetMembershipRows(
+    model.rows, '', 'attention'
+  ).map(row => row.label),
+  inactive: mod.filterFleetMembershipRows(
+    model.rows, '', 'not_active'
+  ).map(row => row.label),
+  observed: mod.filterFleetMembershipRows(
+    model.rows, '', 'observed'
+  ).map(row => row.label),
+  search: mod.filterFleetMembershipRows(
+    model.rows, 'compute-b', 'all'
+  ).map(row => row.label),
+  managedStages: stages.map(stage => [stage.key, stage.state]),
+  managedMembershipDetail: stages.find(stage => stage.key === 'membership').detail,
+  managedBindingDetail: stages.find(stage => stage.key === 'binding').detail,
+  observedStages: observedStages.map(stage => [stage.key, stage.state])
+}))
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(PLUGIN)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    loaded = json.loads(completed.stdout)
+    assert loaded["summary"] == {
+        "visible": 4,
+        "managed": 3,
+        "active": 2,
+        "notActive": 1,
+        "disabled": 1,
+        "removed": 0,
+        "ready": 1,
+        "attention": 1,
+        "observed": 1,
+    }
+    assert [item[0] for item in loaded["filters"]] == [
+        "all",
+        "managed",
+        "active",
+        "not_active",
+        "disabled",
+        "removed",
+        "ready",
+        "attention",
+        "observed",
+    ]
+    assert loaded["attention"] == ["compute-b"]
+    assert loaded["inactive"] == ["compute-c"]
+    assert loaded["observed"] == ["compute-observed"]
+    assert loaded["search"] == ["compute-b"]
+    assert loaded["managedStages"] == [
+        ["provider", "not joined"],
+        ["projection", "accepted"],
+        ["membership", "generation 21"],
+        ["binding", "generation 31"],
+        ["admission", "active"],
+        ["readiness", "ready"],
+    ]
+    assert "not a live current trust check" in loaded["managedMembershipDetail"]
+    assert (
+        "not proof of a live authenticated Keryx peer binding"
+        in loaded["managedBindingDetail"]
+    )
+    assert loaded["observedStages"] == [
+        ["provider", "evidence"],
+        ["projection", "absent"],
+        ["membership", "unavailable"],
+        ["binding", "unavailable"],
+        ["admission", "none"],
+        ["readiness", "not applicable"],
+    ]

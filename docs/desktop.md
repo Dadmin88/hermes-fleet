@@ -173,3 +173,14 @@ The Network workspace provides:
 The current Desktop contract still exposes no authoritative relationship edges. Network therefore renders a truthful relationship count of zero and never infers links from addresses, provider membership, naming, proximity, shared profiles, or any other heuristic.
 
 Provider visibility, Nodescale trust, Keryx identity, Fleet authorization, scheduler readiness, and operation permission remain separate gates. Network filtering or deep-link presentation never promotes observed evidence or changes backend authority.
+
+
+## Membership Center
+
+`/fleet/members` is a read-only membership and admission surface over the same validated `fleet.desktop.v2` overview used by Overview and Network. It combines managed Fleet projection rows with separate provider observations while preserving their authority boundaries.
+
+For managed rows, Membership shows Fleet admission state, projection generation, membership generation, binding generation, current readiness/freshness evidence, capacity/resources, and explicitly advertised operations. Membership and binding generation numbers are accepted projection-version evidence. They are not a live trust check and do not prove a currently healthy authenticated Keryx peer binding.
+
+For observed rows, Membership shows only provider evidence. Visibility never implies trust, Keryx binding, Fleet admission, scheduler readiness, or execution authority. The current Desktop contract also does not join provider observations to managed identities, so Membership does not infer that relationship from names, addresses, tags, or network placement.
+
+The exact live Nodescale trust/revocation and Keryx-binding control surface remains reserved for the authenticated Nodescale operator contract. Phase 3 adds no trust, membership, Keryx, scheduling, profile, or execution mutations.
