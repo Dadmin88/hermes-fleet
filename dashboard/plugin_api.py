@@ -47,6 +47,24 @@ class AliasSetRequest(AliasClearRequest):
     alias: str = Field(min_length=1, max_length=128)
 
 
+class WorkflowCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    document: dict[str, object]
+
+
+class WorkflowUpdateRequest(WorkflowCreateRequest):
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+    expected_version: int = Field(alias="expectedVersion", ge=1, le=(1 << 64) - 1)
+
+
+class WorkflowDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+    expected_version: int = Field(alias="expectedVersion", ge=1, le=(1 << 64) - 1)
+
+
 def _expected_stable_id(request: AliasClearRequest) -> str:
     material = json.dumps(
         [request.source, request.network_id, request.device_id],
@@ -297,6 +315,134 @@ async def overview() -> dict[str, Any]:
         raise HTTPException(
             status_code=503, detail="Fleet Desktop state is unavailable."
         ) from error
+
+
+@router.get("/workflows")
+async def list_workflows() -> dict[str, Any]:
+    """List active backend-owned Workflow definitions without run state."""
+    try:
+        workflows = await asyncio.to_thread(
+            DesktopApiClient(socket_path=_socket_path()).list_workflows
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail="Fleet Workflow state is unavailable."
+        ) from error
+    return {"workflows": workflows, "executionAvailable": False}
+
+
+@router.post("/workflows")
+async def create_workflow(request: WorkflowCreateRequest) -> dict[str, Any]:
+    """Create durable immutable Workflow version 1."""
+    try:
+        return await asyncio.to_thread(
+            DesktopApiClient(socket_path=_socket_path()).create_workflow,
+            request.document,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400, detail="Invalid Workflow document."
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=409, detail="Fleet rejected Workflow creation."
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail="Fleet Workflow state is unavailable."
+        ) from error
+
+
+@router.get("/workflows/{workflow_id}")
+async def read_workflow(workflow_id: str) -> dict[str, Any]:
+    try:
+        revision = await asyncio.to_thread(
+            DesktopApiClient(socket_path=_socket_path()).read_workflow,
+            workflow_id,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400, detail="Invalid Workflow identity."
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail="Fleet Workflow state is unavailable."
+        ) from error
+    if revision is None:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    return {"revision": revision, "executionAvailable": False}
+
+
+@router.get("/workflows/{workflow_id}/versions/{version}")
+async def read_workflow_version(workflow_id: str, version: int) -> dict[str, Any]:
+    try:
+        revision = await asyncio.to_thread(
+            DesktopApiClient(socket_path=_socket_path()).read_workflow_version,
+            workflow_id,
+            version=version,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400, detail="Invalid Workflow version."
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail="Fleet Workflow state is unavailable."
+        ) from error
+    if revision is None:
+        raise HTTPException(status_code=404, detail="Workflow version not found.")
+    return {"revision": revision, "executionAvailable": False}
+
+
+@router.put("/workflows/{workflow_id}")
+async def update_workflow(
+    workflow_id: str, request: WorkflowUpdateRequest
+) -> dict[str, Any]:
+    if request.document.get("id") != workflow_id:
+        raise HTTPException(status_code=400, detail="Workflow identity mismatch.")
+    try:
+        return await asyncio.to_thread(
+            DesktopApiClient(socket_path=_socket_path()).update_workflow,
+            request.document,
+            expected_version=request.expected_version,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400, detail="Invalid Workflow document."
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=409, detail="Fleet rejected Workflow update."
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail="Fleet Workflow state is unavailable."
+        ) from error
+
+
+@router.delete("/workflows/{workflow_id}")
+async def delete_workflow(
+    workflow_id: str, request: WorkflowDeleteRequest
+) -> dict[str, str]:
+    try:
+        outcome = await asyncio.to_thread(
+            DesktopApiClient(socket_path=_socket_path()).delete_workflow,
+            workflow_id,
+            expected_version=request.expected_version,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400, detail="Invalid Workflow identity."
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=409, detail="Fleet rejected Workflow deletion."
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail="Fleet Workflow state is unavailable."
+        ) from error
+    return {"outcome": outcome}
 
 
 @router.put("/nodes/{stable_id}/alias")

@@ -33,10 +33,12 @@ use std::{
 use fleet_domain::{
     ApplyOutcome, FleetOperation, Generation, ManagedOperation, NodeObservation,
     ProjectionDocument, ReadinessPolicy,
+    workflow::{WorkflowDocument, reject_duplicate_json_members},
 };
 use fleet_state::{
     AliasClearOutcome, AliasSetOutcome, FleetStateStore, ManagedNodeView, NodeOperationalView,
-    ObservationOutcome, ProjectionView, StateError,
+    ObservationOutcome, ProjectionView, StateError, WorkflowDeleteOutcome, WorkflowRevision,
+    WorkflowWriteOutcome,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -47,8 +49,9 @@ pub const SCHEMA: &str = "fleet.managed-projection.v1";
 pub const OBSERVATION_SCHEMA: &str = "fleet.node-observation.v1";
 pub const DESKTOP_SCHEMA: &str = "fleet.desktop.v1";
 pub const DESKTOP_ALIAS_SCHEMA: &str = "fleet.desktop-alias.v1";
-pub const MAX_FRAME_BYTES: usize = 32_768;
-pub const MAX_RESPONSE_BYTES: usize = 262_144;
+pub const WORKFLOW_SCHEMA: &str = "fleet.workflow.v1";
+pub const MAX_FRAME_BYTES: usize = 2_097_152;
+pub const MAX_RESPONSE_BYTES: usize = 2_097_152;
 pub const MAX_DESKTOP_NODES: usize = 256;
 pub const MAX_CONNECTIONS: usize = 32;
 pub const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -276,17 +279,51 @@ fn declared_schema(payload: &[u8]) -> &'static str {
         Some(OBSERVATION_SCHEMA) => OBSERVATION_SCHEMA,
         Some(DESKTOP_SCHEMA) => DESKTOP_SCHEMA,
         Some(DESKTOP_ALIAS_SCHEMA) => DESKTOP_ALIAS_SCHEMA,
+        Some(WORKFLOW_SCHEMA) => WORKFLOW_SCHEMA,
         _ => SCHEMA,
     }
 }
 
 fn parse_request(payload: &[u8]) -> Result<Request> {
+    if declared_schema(payload) == WORKFLOW_SCHEMA {
+        let input = std::str::from_utf8(payload).map_err(|_| ControlError::MalformedRequest)?;
+        reject_duplicate_json_members(input).map_err(|_| ControlError::MalformedRequest)?;
+        let request: WorkflowRequest =
+            serde_json::from_slice(payload).map_err(|_| ControlError::MalformedRequest)?;
+        return Ok(request.into());
+    }
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| ControlError::MalformedRequest)?;
     if request.schema() != request.expected_schema() {
         return Err(ControlError::UnsupportedSchema);
     }
     Ok(request)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WorkflowRequest {
+    Capabilities(WorkflowCapabilitiesRequest),
+    Create(WorkflowCreateRequest),
+    Read(WorkflowReadRequest),
+    ReadVersion(WorkflowReadVersionRequest),
+    Update(WorkflowUpdateRequest),
+    List(WorkflowListRequest),
+    Delete(WorkflowDeleteRequest),
+}
+
+impl From<WorkflowRequest> for Request {
+    fn from(request: WorkflowRequest) -> Self {
+        match request {
+            WorkflowRequest::Capabilities(request) => Self::WorkflowCapabilities(request),
+            WorkflowRequest::Create(request) => Self::WorkflowCreate(request),
+            WorkflowRequest::Read(request) => Self::WorkflowRead(request),
+            WorkflowRequest::ReadVersion(request) => Self::WorkflowReadVersion(request),
+            WorkflowRequest::Update(request) => Self::WorkflowUpdate(request),
+            WorkflowRequest::List(request) => Self::WorkflowList(request),
+            WorkflowRequest::Delete(request) => Self::WorkflowDelete(request),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,6 +337,13 @@ enum Request {
     DesktopOverview(DesktopOverviewRequest),
     SetAlias(SetAliasRequest),
     ClearAlias(ClearAliasRequest),
+    WorkflowCapabilities(WorkflowCapabilitiesRequest),
+    WorkflowCreate(WorkflowCreateRequest),
+    WorkflowRead(WorkflowReadRequest),
+    WorkflowReadVersion(WorkflowReadVersionRequest),
+    WorkflowUpdate(WorkflowUpdateRequest),
+    WorkflowList(WorkflowListRequest),
+    WorkflowDelete(WorkflowDeleteRequest),
 }
 
 impl Request {
@@ -313,6 +357,13 @@ impl Request {
             Self::DesktopOverview(request) => &request.schema,
             Self::SetAlias(request) => &request.schema,
             Self::ClearAlias(request) => &request.schema,
+            Self::WorkflowCapabilities(request) => &request.schema,
+            Self::WorkflowCreate(request) => &request.schema,
+            Self::WorkflowRead(request) => &request.schema,
+            Self::WorkflowReadVersion(request) => &request.schema,
+            Self::WorkflowUpdate(request) => &request.schema,
+            Self::WorkflowList(request) => &request.schema,
+            Self::WorkflowDelete(request) => &request.schema,
         }
     }
 
@@ -322,6 +373,13 @@ impl Request {
             Self::Observe(_) | Self::InspectObservation(_) => OBSERVATION_SCHEMA,
             Self::DesktopOverview(_) => DESKTOP_SCHEMA,
             Self::SetAlias(_) | Self::ClearAlias(_) => DESKTOP_ALIAS_SCHEMA,
+            Self::WorkflowCapabilities(_)
+            | Self::WorkflowCreate(_)
+            | Self::WorkflowRead(_)
+            | Self::WorkflowReadVersion(_)
+            | Self::WorkflowUpdate(_)
+            | Self::WorkflowList(_)
+            | Self::WorkflowDelete(_) => WORKFLOW_SCHEMA,
         }
     }
 }
@@ -392,6 +450,63 @@ struct ClearAliasRequest {
     binding_generation: Generation,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowCapabilitiesRequest {
+    schema: String,
+    kind: WorkflowCapabilitiesKind,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowCreateRequest {
+    schema: String,
+    kind: WorkflowCreateKind,
+    document: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WorkflowReadRequest {
+    schema: String,
+    kind: WorkflowReadKind,
+    workflow_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WorkflowReadVersionRequest {
+    schema: String,
+    kind: WorkflowReadVersionKind,
+    workflow_id: String,
+    version: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WorkflowUpdateRequest {
+    schema: String,
+    kind: WorkflowUpdateKind,
+    expected_version: u64,
+    document: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowListRequest {
+    schema: String,
+    kind: WorkflowListKind,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WorkflowDeleteRequest {
+    schema: String,
+    kind: WorkflowDeleteKind,
+    workflow_id: String,
+    expected_version: u64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum CapabilitiesKind {
     #[serde(rename = "capabilities")]
@@ -438,6 +553,48 @@ enum SetAliasKind {
 enum ClearAliasKind {
     #[serde(rename = "clear_alias")]
     ClearAlias,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum WorkflowCapabilitiesKind {
+    #[serde(rename = "capabilities")]
+    Capabilities,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum WorkflowCreateKind {
+    #[serde(rename = "create")]
+    Create,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum WorkflowReadKind {
+    #[serde(rename = "read")]
+    Read,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum WorkflowReadVersionKind {
+    #[serde(rename = "read_version")]
+    ReadVersion,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum WorkflowUpdateKind {
+    #[serde(rename = "update")]
+    Update,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum WorkflowListKind {
+    #[serde(rename = "list")]
+    List,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum WorkflowDeleteKind {
+    #[serde(rename = "delete")]
+    Delete,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -744,6 +901,86 @@ fn dispatch_result(
                 }
             }))
         }
+        Request::WorkflowCapabilities(request) => {
+            let _ = request.kind;
+            Ok(json!({
+                "kinds":["capabilities","create","read","read_version","update","list","delete"],
+                "executionAvailable":false
+            }))
+        }
+        Request::WorkflowCreate(request) => {
+            let _ = request.kind;
+            let document = parse_workflow_document(request.document)?;
+            let write = state
+                .create_workflow(document, current_time_ms()?)
+                .map_err(map_state_error)?;
+            Ok(json!({
+                "outcome": workflow_write_outcome(write.outcome),
+                "revision": workflow_revision_value(write.revision)?
+            }))
+        }
+        Request::WorkflowRead(request) => {
+            let _ = request.kind;
+            let revision = state
+                .read_latest_workflow(&request.workflow_id)
+                .map_err(map_state_error)?
+                .map(workflow_revision_value)
+                .transpose()?;
+            Ok(json!({"revision":revision}))
+        }
+        Request::WorkflowReadVersion(request) => {
+            let _ = request.kind;
+            let revision = state
+                .read_workflow_version(&request.workflow_id, request.version)
+                .map_err(map_state_error)?
+                .map(workflow_revision_value)
+                .transpose()?;
+            Ok(json!({"revision":revision}))
+        }
+        Request::WorkflowUpdate(request) => {
+            let _ = request.kind;
+            let document = parse_workflow_document(request.document)?;
+            let write = state
+                .update_workflow(document, request.expected_version, current_time_ms()?)
+                .map_err(map_state_error)?;
+            Ok(json!({
+                "outcome": workflow_write_outcome(write.outcome),
+                "revision": workflow_revision_value(write.revision)?
+            }))
+        }
+        Request::WorkflowList(request) => {
+            let _ = request.kind;
+            let workflows = state
+                .list_workflows()
+                .map_err(map_state_error)?
+                .into_iter()
+                .map(|summary| {
+                    json!({
+                        "workflowId":summary.workflow_id,
+                        "latestVersion":summary.latest_version,
+                        "createdAtMs":summary.created_at_ms,
+                        "updatedAtMs":summary.updated_at_ms
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({"workflows":workflows}))
+        }
+        Request::WorkflowDelete(request) => {
+            let _ = request.kind;
+            let outcome = state
+                .delete_workflow(
+                    &request.workflow_id,
+                    request.expected_version,
+                    current_time_ms()?,
+                )
+                .map_err(map_state_error)?;
+            Ok(json!({
+                "outcome": match outcome {
+                    WorkflowDeleteOutcome::Deleted => "deleted",
+                    WorkflowDeleteOutcome::AlreadyDeleted => "already_deleted",
+                }
+            }))
+        }
         Request::ClearAlias(request) => {
             let _ = request.kind;
             validate_identifier(&request.selector.source)?;
@@ -765,6 +1002,31 @@ fn dispatch_result(
             }))
         }
     }
+}
+
+fn parse_workflow_document(document: Value) -> Result<WorkflowDocument> {
+    let encoded = serde_json::to_string(&document).map_err(|_| ControlError::MalformedRequest)?;
+    WorkflowDocument::parse_json(&encoded).map_err(|_| ControlError::MalformedRequest)
+}
+
+const fn workflow_write_outcome(outcome: WorkflowWriteOutcome) -> &'static str {
+    match outcome {
+        WorkflowWriteOutcome::Created => "created",
+        WorkflowWriteOutcome::VersionCreated => "version_created",
+        WorkflowWriteOutcome::Unchanged => "unchanged",
+    }
+}
+
+fn workflow_revision_value(revision: WorkflowRevision) -> Result<Value> {
+    let document =
+        serde_json::to_value(revision.document).map_err(|_| ControlError::StateCorruption)?;
+    Ok(json!({
+        "workflowId":revision.workflow_id,
+        "version":revision.version,
+        "contentHash":revision.content_hash,
+        "document":document,
+        "createdAtMs":revision.created_at_ms
+    }))
 }
 
 impl WireProjectionDocument {
@@ -939,6 +1201,13 @@ fn dispatch_response(
         Request::DesktopOverview(_) => "overview",
         Request::SetAlias(_) => "set_alias",
         Request::ClearAlias(_) => "clear_alias",
+        Request::WorkflowCapabilities(_) => "capabilities",
+        Request::WorkflowCreate(_) => "create",
+        Request::WorkflowRead(_) => "read",
+        Request::WorkflowReadVersion(_) => "read_version",
+        Request::WorkflowUpdate(_) => "update",
+        Request::WorkflowList(_) => "list",
+        Request::WorkflowDelete(_) => "delete",
     };
     dispatch_result(request, state, freshness_window)
         .map(|result| success_response(schema, kind, result))

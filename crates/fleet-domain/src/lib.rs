@@ -11,6 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+pub mod workflow;
+
 /// The complete operation vocabulary already exposed by Python Hermes Fleet.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum FleetOperation {

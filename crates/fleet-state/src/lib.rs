@@ -16,16 +16,18 @@ use fleet_domain::{
     ApplyOutcome, FleetOperation, Generation, ManagedNodeState, ManagedOperation,
     ManagedProjectionRecord, NodeObservation, NodeReadiness, ObservationRecord, ProfilePresence,
     ProjectionApply, ProjectionDocument, ReadinessPolicy, RecoveryAction, ResourceObservation,
-    RunBindingState, apply_projection, evaluate_readiness,
+    RunBindingState, apply_projection, evaluate_readiness, workflow::WorkflowDocument,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+const WORKFLOW_DEFINITION_LIMIT: i64 = 256;
 const MIGRATION_1: &str = include_str!("../migrations/0001_fleet_state.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_node_observations.sql");
 const MIGRATION_3: &str = include_str!("../migrations/0003_admission_generation.sql");
 const MIGRATION_4: &str = include_str!("../migrations/0004_managed_node_aliases.sql");
+const MIGRATION_5: &str = include_str!("../migrations/0005_workflow_definitions.sql");
 const FLEET_STATE_SCHEMA_V1_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 1)
@@ -38,9 +40,13 @@ const FLEET_STATE_SCHEMA_V3_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 3)
 ) STRICT";
-const FLEET_STATE_SCHEMA_SQL: &str = "
+const FLEET_STATE_SCHEMA_V4_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 4)
+) STRICT";
+const FLEET_STATE_SCHEMA_SQL: &str = "
+CREATE TABLE fleet_state_schema (
+    version INTEGER PRIMARY KEY CHECK (version = 5)
 ) STRICT";
 const MANAGED_PROJECTIONS_SQL: &str = "
 CREATE TABLE managed_projections (
@@ -94,6 +100,27 @@ CREATE TABLE managed_node_aliases (
     FOREIGN KEY (source, network_id, device_id)
         REFERENCES managed_projections(source, network_id, device_id)
         ON UPDATE CASCADE ON DELETE CASCADE
+) STRICT";
+const WORKFLOW_DEFINITIONS_SQL: &str = "
+CREATE TABLE workflow_definitions (
+    workflow_id TEXT PRIMARY KEY,
+    latest_version INTEGER NOT NULL CHECK (latest_version >= 1),
+    deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms > 0)
+) STRICT";
+const WORKFLOW_VERSIONS_SQL: &str = "
+CREATE TABLE workflow_versions (
+    workflow_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK (version >= 1),
+    content_hash TEXT NOT NULL
+        CHECK (length(content_hash) = 64)
+        CHECK (content_hash = lower(content_hash)),
+    document_json TEXT NOT NULL CHECK (json_valid(document_json)),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0),
+    PRIMARY KEY (workflow_id, version),
+    FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(workflow_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT";
 const MAX_IDENTIFIER_CHARS: usize = 256;
 const MAX_OBSERVATION_FUTURE_SKEW_MS: u64 = 5_000;
@@ -168,6 +195,42 @@ pub struct ProjectionView {
 pub struct RunReservation {
     pub state: RunBindingState,
     pub created: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowWriteOutcome {
+    Created,
+    VersionCreated,
+    Unchanged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowDeleteOutcome {
+    Deleted,
+    AlreadyDeleted,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkflowRevision {
+    pub workflow_id: String,
+    pub version: u64,
+    pub content_hash: String,
+    pub document: WorkflowDocument,
+    pub created_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowSummary {
+    pub workflow_id: String,
+    pub latest_version: u64,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkflowWrite {
+    pub outcome: WorkflowWriteOutcome,
+    pub revision: WorkflowRevision,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -282,6 +345,268 @@ impl FleetStateStore {
     pub fn schema_version(&self) -> Result<i64> {
         let connection = self.connect()?;
         Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+    }
+
+    pub fn create_workflow(
+        &self,
+        document: WorkflowDocument,
+        now_ms: u64,
+    ) -> Result<WorkflowWrite> {
+        validate_workflow_timestamp(now_ms)?;
+        let workflow_id = document.id().to_owned();
+        let document_json = document
+            .canonical_json()
+            .map_err(|_| StateError::InvalidInput("workflow document cannot be serialized"))?;
+        let content_hash = document.content_hash();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM workflow_definitions WHERE workflow_id = ?1",
+                [&workflow_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if exists {
+            return Err(StateError::InvalidTransition("workflow already exists"));
+        }
+        let active_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM workflow_definitions WHERE deleted = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        if active_count >= WORKFLOW_DEFINITION_LIMIT {
+            return Err(StateError::InvalidTransition(
+                "active workflow definition limit reached",
+            ));
+        }
+        transaction.execute(
+            "INSERT INTO workflow_definitions
+             (workflow_id, latest_version, deleted, created_at_ms, updated_at_ms)
+             VALUES (?1, 1, 0, ?2, ?2)",
+            params![workflow_id, now_ms as i64],
+        )?;
+        transaction.execute(
+            "INSERT INTO workflow_versions
+             (workflow_id, version, content_hash, document_json, created_at_ms)
+             VALUES (?1, 1, ?2, ?3, ?4)",
+            params![workflow_id, content_hash, document_json, now_ms as i64],
+        )?;
+        transaction.commit()?;
+        Ok(WorkflowWrite {
+            outcome: WorkflowWriteOutcome::Created,
+            revision: WorkflowRevision {
+                workflow_id,
+                version: 1,
+                content_hash,
+                document,
+                created_at_ms: now_ms,
+            },
+        })
+    }
+
+    pub fn update_workflow(
+        &self,
+        document: WorkflowDocument,
+        expected_version: u64,
+        now_ms: u64,
+    ) -> Result<WorkflowWrite> {
+        validate_workflow_timestamp(now_ms)?;
+        if expected_version == 0 || expected_version > i64::MAX as u64 {
+            return Err(StateError::InvalidInput("workflow version is invalid"));
+        }
+        let workflow_id = document.id().to_owned();
+        let document_json = document
+            .canonical_json()
+            .map_err(|_| StateError::InvalidInput("workflow document cannot be serialized"))?;
+        let content_hash = document.content_hash();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = transaction
+            .query_row(
+                "SELECT latest_version, deleted FROM workflow_definitions
+                 WHERE workflow_id = ?1",
+                [&workflow_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .ok_or(StateError::InvalidTransition("workflow does not exist"))?;
+        if current.1 != 0 {
+            return Err(StateError::InvalidTransition("workflow is deleted"));
+        }
+        if current.0 <= 0 || current.0 as u64 != expected_version {
+            return Err(StateError::InvalidTransition("workflow version conflict"));
+        }
+        let current_revision =
+            load_workflow_revision(&transaction, &workflow_id, expected_version)?.ok_or(
+                StateError::CorruptState("workflow latest revision is missing"),
+            )?;
+        if current_revision.content_hash == content_hash {
+            transaction.commit()?;
+            return Ok(WorkflowWrite {
+                outcome: WorkflowWriteOutcome::Unchanged,
+                revision: current_revision,
+            });
+        }
+        let version = expected_version
+            .checked_add(1)
+            .filter(|version| *version <= i64::MAX as u64)
+            .ok_or(StateError::InvalidTransition(
+                "workflow version is exhausted",
+            ))?;
+        transaction.execute(
+            "INSERT INTO workflow_versions
+             (workflow_id, version, content_hash, document_json, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                workflow_id,
+                version as i64,
+                content_hash,
+                document_json,
+                now_ms as i64
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE workflow_definitions
+             SET latest_version = ?2, updated_at_ms = ?3
+             WHERE workflow_id = ?1 AND latest_version = ?4 AND deleted = 0",
+            params![
+                workflow_id,
+                version as i64,
+                now_ms as i64,
+                expected_version as i64
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(WorkflowWrite {
+            outcome: WorkflowWriteOutcome::VersionCreated,
+            revision: WorkflowRevision {
+                workflow_id,
+                version,
+                content_hash,
+                document,
+                created_at_ms: now_ms,
+            },
+        })
+    }
+
+    pub fn read_workflow_version(
+        &self,
+        workflow_id: &str,
+        version: u64,
+    ) -> Result<Option<WorkflowRevision>> {
+        if workflow_id.is_empty()
+            || workflow_id.len() > 128
+            || version == 0
+            || version > i64::MAX as u64
+        {
+            return Err(StateError::InvalidInput("workflow selector is invalid"));
+        }
+        let connection = self.connect()?;
+        load_workflow_revision(&connection, workflow_id, version)
+    }
+
+    pub fn read_latest_workflow(&self, workflow_id: &str) -> Result<Option<WorkflowRevision>> {
+        if workflow_id.is_empty() || workflow_id.len() > 128 {
+            return Err(StateError::InvalidInput("workflow selector is invalid"));
+        }
+        let connection = self.connect()?;
+        let version = connection
+            .query_row(
+                "SELECT latest_version FROM workflow_definitions
+                 WHERE workflow_id = ?1 AND deleted = 0",
+                [workflow_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        version
+            .map(|version| {
+                if version <= 0 {
+                    return Err(StateError::CorruptState("workflow version is invalid"));
+                }
+                load_workflow_revision(&connection, workflow_id, version as u64)?.ok_or(
+                    StateError::CorruptState("workflow latest revision is missing"),
+                )
+            })
+            .transpose()
+    }
+
+    pub fn list_workflows(&self) -> Result<Vec<WorkflowSummary>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT workflow_id, latest_version, created_at_ms, updated_at_ms
+             FROM workflow_definitions WHERE deleted = 0 ORDER BY workflow_id LIMIT 257",
+        )?;
+        let workflows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .map(|row| {
+                let (workflow_id, latest_version, created_at_ms, updated_at_ms) = row?;
+                if latest_version <= 0 || created_at_ms <= 0 || updated_at_ms <= 0 {
+                    return Err(StateError::CorruptState("workflow summary is invalid"));
+                }
+                Ok(WorkflowSummary {
+                    workflow_id,
+                    latest_version: latest_version as u64,
+                    created_at_ms: created_at_ms as u64,
+                    updated_at_ms: updated_at_ms as u64,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if workflows.len() > WORKFLOW_DEFINITION_LIMIT as usize {
+            return Err(StateError::CorruptState(
+                "active workflow definition limit exceeded",
+            ));
+        }
+        Ok(workflows)
+    }
+
+    pub fn delete_workflow(
+        &self,
+        workflow_id: &str,
+        expected_version: u64,
+        now_ms: u64,
+    ) -> Result<WorkflowDeleteOutcome> {
+        validate_workflow_timestamp(now_ms)?;
+        if workflow_id.is_empty()
+            || workflow_id.len() > 128
+            || expected_version == 0
+            || expected_version > i64::MAX as u64
+        {
+            return Err(StateError::InvalidInput("workflow selector is invalid"));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = transaction
+            .query_row(
+                "SELECT latest_version, deleted FROM workflow_definitions
+                 WHERE workflow_id = ?1",
+                [workflow_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .ok_or(StateError::InvalidTransition("workflow does not exist"))?;
+        if current.1 != 0 {
+            transaction.commit()?;
+            return Ok(WorkflowDeleteOutcome::AlreadyDeleted);
+        }
+        if current.0 <= 0 || current.0 as u64 != expected_version {
+            return Err(StateError::InvalidTransition("workflow version conflict"));
+        }
+        transaction.execute(
+            "UPDATE workflow_definitions SET deleted = 1, updated_at_ms = ?2
+             WHERE workflow_id = ?1 AND latest_version = ?3 AND deleted = 0",
+            params![workflow_id, now_ms as i64, expected_version as i64],
+        )?;
+        transaction.commit()?;
+        Ok(WorkflowDeleteOutcome::Deleted)
     }
 
     pub fn apply_projection(&self, desired: ProjectionDocument) -> Result<ProjectionApply> {
@@ -1069,6 +1394,9 @@ impl FleetStateStore {
                 require_v3_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_4)?;
                 transaction.pragma_update(None, "user_version", 4)?;
+                require_v4_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_5)?;
+                transaction.pragma_update(None, "user_version", 5)?;
             }
             1 => {
                 require_v1_schema(&transaction)?;
@@ -1080,6 +1408,9 @@ impl FleetStateStore {
                 require_v3_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_4)?;
                 transaction.pragma_update(None, "user_version", 4)?;
+                require_v4_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_5)?;
+                transaction.pragma_update(None, "user_version", 5)?;
             }
             2 => {
                 require_v2_schema(&transaction)?;
@@ -1088,11 +1419,22 @@ impl FleetStateStore {
                 require_v3_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_4)?;
                 transaction.pragma_update(None, "user_version", 4)?;
+                require_v4_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_5)?;
+                transaction.pragma_update(None, "user_version", 5)?;
             }
             3 => {
                 require_v3_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_4)?;
                 transaction.pragma_update(None, "user_version", 4)?;
+                require_v4_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_5)?;
+                transaction.pragma_update(None, "user_version", 5)?;
+            }
+            4 => {
+                require_v4_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_5)?;
+                transaction.pragma_update(None, "user_version", 5)?;
             }
             SCHEMA_VERSION => {}
             _ => return Err(StateError::UnsupportedSchema(version)),
@@ -1149,6 +1491,60 @@ pub fn recovery_decision(reservation: &RunReservation) -> RunRecoveryDecision {
         RecoveryAction::FailCancelled => RunRecoveryDecision::FailCancelled,
         RecoveryAction::FailClosedIndeterminate => RunRecoveryDecision::FailClosedIndeterminate,
     }
+}
+
+fn validate_workflow_timestamp(now_ms: u64) -> Result<()> {
+    if now_ms == 0 || now_ms > i64::MAX as u64 {
+        return Err(StateError::InvalidInput("workflow timestamp is invalid"));
+    }
+    Ok(())
+}
+
+fn load_workflow_revision(
+    connection: &Connection,
+    workflow_id: &str,
+    version: u64,
+) -> Result<Option<WorkflowRevision>> {
+    let stored = connection
+        .query_row(
+            "SELECT content_hash, document_json, created_at_ms
+             FROM workflow_versions WHERE workflow_id = ?1 AND version = ?2",
+            params![workflow_id, version as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    stored
+        .map(|(content_hash, document_json, created_at_ms)| {
+            if created_at_ms <= 0 {
+                return Err(StateError::CorruptState("workflow timestamp is invalid"));
+            }
+            let document = WorkflowDocument::parse_json(&document_json)
+                .map_err(|_| StateError::CorruptState("workflow document is invalid"))?;
+            if document.id() != workflow_id
+                || document.content_hash() != content_hash
+                || document.canonical_json().map_err(|_| {
+                    StateError::CorruptState("workflow document cannot be serialized")
+                })? != document_json
+            {
+                return Err(StateError::CorruptState(
+                    "workflow revision contradicts its document",
+                ));
+            }
+            Ok(WorkflowRevision {
+                workflow_id: workflow_id.to_owned(),
+                version,
+                content_hash,
+                document,
+                created_at_ms: created_at_ms as u64,
+            })
+        })
+        .transpose()
 }
 
 fn load_projection(
@@ -1441,6 +1837,10 @@ fn require_v3_schema(connection: &Connection) -> Result<()> {
     require_complete_schema(connection, 3, FLEET_STATE_SCHEMA_V3_SQL)
 }
 
+fn require_v4_schema(connection: &Connection) -> Result<()> {
+    require_complete_schema(connection, 4, FLEET_STATE_SCHEMA_V4_SQL)
+}
+
 fn require_ready_schema(connection: &Connection) -> Result<()> {
     require_complete_schema(connection, SCHEMA_VERSION, FLEET_STATE_SCHEMA_SQL)
 }
@@ -1457,7 +1857,18 @@ fn require_complete_schema(
     let tables = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let expected_tables = if expected_version >= 4 {
+    let expected_tables = if expected_version >= 5 {
+        vec![
+            "fleet_state_schema",
+            "managed_node_aliases",
+            "managed_projections",
+            "node_observations",
+            "operator_projection_denies",
+            "run_bindings",
+            "workflow_definitions",
+            "workflow_versions",
+        ]
+    } else if expected_version >= 4 {
         vec![
             "fleet_state_schema",
             "managed_node_aliases",
@@ -1521,6 +1932,30 @@ fn require_complete_schema(
             ],
         )?;
     }
+    if expected_version >= 5 {
+        require_table_shape(
+            connection,
+            "workflow_definitions",
+            &[
+                ("workflow_id", "TEXT", 1),
+                ("latest_version", "INTEGER", 0),
+                ("deleted", "INTEGER", 0),
+                ("created_at_ms", "INTEGER", 0),
+                ("updated_at_ms", "INTEGER", 0),
+            ],
+        )?;
+        require_table_shape(
+            connection,
+            "workflow_versions",
+            &[
+                ("workflow_id", "TEXT", 1),
+                ("version", "INTEGER", 2),
+                ("content_hash", "TEXT", 0),
+                ("document_json", "TEXT", 0),
+                ("created_at_ms", "INTEGER", 0),
+            ],
+        )?;
+    }
     require_table_shape(
         connection,
         "node_observations",
@@ -1579,6 +2014,8 @@ fn require_table_shape(
         "node_observations" => NODE_OBSERVATIONS_SQL,
         "operator_projection_denies" => OPERATOR_DENIES_SQL,
         "run_bindings" => RUN_BINDINGS_SQL,
+        "workflow_definitions" => WORKFLOW_DEFINITIONS_SQL,
+        "workflow_versions" => WORKFLOW_VERSIONS_SQL,
         _ => return Err(StateError::CorruptState("unknown fleet state table")),
     };
     require_table_shape_with_definition(connection, table, expected, expected_definition)

@@ -214,7 +214,7 @@ Current merged foundations include:
 - pinned Agency snapshot/package validation;
 - read-only profile placement candidates;
 - Fleet Desktop operator surfaces;
-- a local, non-executing workflow editor.
+- durable, backend-owned Workflow authoring revisions with execution unavailable.
 
 Do not present the following as current contracts unless the implementation, tests, and docs have been updated together:
 
