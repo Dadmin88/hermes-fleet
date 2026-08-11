@@ -184,4 +184,4 @@ For managed rows, Membership shows Fleet admission state, projection generation,
 
 For observed rows, Membership shows only provider evidence. Visibility never implies trust, Keryx binding, Fleet admission, scheduler readiness, or execution authority. The current Desktop contract also does not join provider observations to managed identities, so Membership does not infer that relationship from names, addresses, tags, or network placement.
 
-The exact live Nodescale trust/revocation and Keryx-binding control surface remains reserved for the authenticated Nodescale operator contract. Phase 3 adds no trust, membership, Keryx, scheduling, profile, or execution mutations.
+The exact live Nodescale trust/revocation and Keryx-binding control surface remains reserved for the authenticated Nodescale operator contract. The current Membership surface adds no trust, membership, Keryx, scheduling, profile, or execution mutations.

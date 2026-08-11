@@ -1,7 +1,6 @@
 # Rust managed-control proof
 
-This disposable harness proves the accepted local N7 boundary through the real
-Rust components:
+This disposable harness proves the managed-projection compatibility boundary through the real Rust components:
 
 ```text
 Nodescale nodescale-fleet-client
@@ -11,7 +10,7 @@ Nodescale nodescale-fleet-client
   -> process restart and authoritative inspect
 ```
 
-The Fleet CI job checks out the accepted Nodescale N7 tree at
+The Fleet CI job checks out a pinned contract-compatible Nodescale revision at
 `c0a9a7c873d7086375ac53245e6fd689a3686c7d` and runs:
 
 ```bash

@@ -18,7 +18,7 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
-  rust-f0:
+  rust-compatibility:
     name: Rust workspace compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -64,23 +64,23 @@ jobs:
 
       - name: Check out pinned Nodescale revision
         run: |
-          git init --quiet "$RUNNER_TEMP/nodescale-n7"
-          git -C "$RUNNER_TEMP/nodescale-n7" remote add origin https://github.com/Dadmin88/hermes-nodescale.git
-          git -C "$RUNNER_TEMP/nodescale-n7" fetch --depth 1 origin c0a9a7c873d7086375ac53245e6fd689a3686c7d
-          git -C "$RUNNER_TEMP/nodescale-n7" checkout --quiet --detach FETCH_HEAD
-          test "$(git -C "$RUNNER_TEMP/nodescale-n7" rev-parse HEAD)" = "c0a9a7c873d7086375ac53245e6fd689a3686c7d"
+          git init --quiet "$RUNNER_TEMP/nodescale-compat"
+          git -C "$RUNNER_TEMP/nodescale-compat" remote add origin https://github.com/Dadmin88/hermes-nodescale.git
+          git -C "$RUNNER_TEMP/nodescale-compat" fetch --depth 1 origin c0a9a7c873d7086375ac53245e6fd689a3686c7d
+          git -C "$RUNNER_TEMP/nodescale-compat" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/nodescale-compat" rev-parse HEAD)" = "c0a9a7c873d7086375ac53245e6fd689a3686c7d"
 
       - name: Prove real Nodescale Rust client to Rust Fleet service
         run: |
           python3 proofs/managed-control/run_nodescale_rust_e2e.py \
-            --nodescale-root "$RUNNER_TEMP/nodescale-n7" \
+            --nodescale-root "$RUNNER_TEMP/nodescale-compat" \
             --fleet-binary target/debug/fleet-managed-control \
             --cargo cargo
 
       - name: Prove layered node readiness and restart recovery
         run: |
           python3 proofs/node-readiness/run_readiness_e2e.py \
-            --nodescale-root "$RUNNER_TEMP/nodescale-n7" \
+            --nodescale-root "$RUNNER_TEMP/nodescale-compat" \
             --fleet-binary target/debug/fleet-managed-control \
             --cargo cargo
 
