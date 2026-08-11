@@ -214,11 +214,11 @@ Workflow Mode reuses the same Canvas engine and shell. It provides an editor-onl
 - serialization/deserialization;
 - shared pan, zoom, fit, node movement, keyboard navigation, minimap, and Inspector treatment.
 
-The workflow document schema is `fleet.workflow-editor.v1`. Clipboard data uses `fleet.workflow-clipboard.v1`.
+The workflow document schema is `fleet.workflow-editor.v1`. Clipboard data uses `fleet.workflow-clipboard.v1`. Fleet owns durable definitions in SQLite as immutable numbered revisions. Creates start at version 1; updates require the expected latest version and append a new revision when content changes. Soft deletion hides an active definition while retaining exact historical revisions, and a tombstoned identity cannot be recreated implicitly.
 
-Every node admitted to a workflow document carries `runtime: unavailable`; the production topology-only Machine descriptor cannot be serialized into Workflow Mode. The workflow metadata explicitly records that execution is unavailable. The editor defines no run, scheduler, reservation, admission, or remote-action endpoint.
+Every node admitted by the current Desktop editor carries `runtime: unavailable`; the production topology-only Machine descriptor cannot be authored in Workflow Mode. The workflow metadata explicitly records that execution is unavailable. The editor and backend define no run, scheduler, reservation, admission, or remote-action endpoint.
 
-Workflow documents, clipboard packets, configuration objects, connections, and exact-machine targets are normalized through exact bounded schemas. Unknown execution-, binding-, reservation-, or authority-looking fields are rejected. Observed targets preserve the complete provider kind/instance/node/network/observation identity tuple; managed targets preserve the managed source/network/device tuple.
+The durable Rust V1 contract is a bounded structural document envelope, not the current Desktop block registry. It validates identifiers, counts, references, unique connections, finite positions, bounded arbitrary configuration/target JSON, unavailable runtime metadata, and deterministic canonical hashing. Unknown syntactically valid namespaced block types and typed port/kind identifiers survive persistence without becoming executable. The current Desktop registry separately validates the blocks and port compatibility it can author. Managed and observed exact-machine target evidence remains strictly validated as a separate truth boundary; persisting observed evidence grants no managed authority.
 
 ### Connection authoring
 
@@ -232,9 +232,9 @@ Connections use static smooth routes with restrained semantic styling. There are
 
 Current truthful limitations:
 
-- workflow documents are local in-memory editor state;
-- no durable workflow backend exists;
-- no workflow execution engine exists;
+- the current Desktop exposes explicit Load/Save for its active workflow but does not yet provide a multi-workflow picker, rename flow, or deletion UI;
+- durable revisions are authoring state only; no workflow execution engine exists;
+- backend conflict rejection requires the operator to reload before retrying and never silently overwrites a newer version;
 - multiselect and box-select geometry have pure model foundations but are not yet a complete pointer interaction;
 - edge-of-viewport auto-pan during connection drag is deferred; core connection gestures remain bounded and stable without it;
 - contributed descriptors are accepted by the frontend registry factory but not yet loaded from a durable host extension point.

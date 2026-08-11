@@ -217,7 +217,7 @@ Implementation chronology, checkpoint hashes, machine-specific rollout notes, an
 - Automatic remote Agency profile installation and complete locate-or-place orchestration are not yet part of the current Fleet operation surface.
 - Cross-node running-task cancellation is not yet proven end to end and therefore remains unavailable.
 - Keryx relay offline mailbox durability is a Keryx concern; Fleet does not add a second mailbox or queue.
-- Cross-node artifact transfer, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, durable or executable workflow graphs, and multi-tenant control are outside the current Fleet surface. The Desktop includes only a local non-executing workflow-editor foundation.
+- Cross-node artifact transfer, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, executable workflow graphs, and multi-tenant control are outside the current Fleet surface. Desktop Workflow definitions are now durable, backend-owned, and immutably versioned authoring documents, but execution remains unavailable.
 - Disposable per-task containers and recipe-based execution environments are architectural direction, not a current Fleet contract.
 - A running Hermes gateway must be restarted after a plugin update before that process sees newly installed Fleet model tools.
 

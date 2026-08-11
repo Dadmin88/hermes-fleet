@@ -76,7 +76,7 @@ export const FLEET_SECTIONS = Object.freeze([
     label: 'Workflows',
     path: '/fleet/workflows',
     icon: 'git-merge',
-    description: 'Local non-executing workflow authoring.'
+    description: 'Durable versioned workflow authoring · execution unavailable.'
   }),
   Object.freeze({
     id: 'activity',
@@ -99,6 +99,7 @@ export function getFleetSection(value) {
 }
 
 let fleetWorkflowSessionHistory = null
+let fleetWorkflowPersistedVersion = null
 
 
 export const FLEET_NODE_TYPE_CATEGORIES = Object.freeze([
@@ -990,6 +991,27 @@ export function deserializeWorkflow(value) {
   return workflow
 }
 
+export function deserializeWorkflowRevision(value) {
+  if (
+    !hasExactKeys(value, ['workflowId', 'version', 'contentHash', 'document', 'createdAtMs']) ||
+    !validWorkflowId(value.workflowId) ||
+    !Number.isSafeInteger(value.version) ||
+    value.version < 1 ||
+    !/^[0-9a-f]{64}$/.test(value.contentHash) ||
+    !Number.isSafeInteger(value.createdAtMs) ||
+    value.createdAtMs < 1
+  ) throw new Error('invalid workflow revision')
+  const document = deserializeWorkflow(value.document)
+  if (document.id !== value.workflowId) throw new Error('invalid workflow revision')
+  return {
+    workflowId: value.workflowId,
+    version: value.version,
+    contentHash: value.contentHash,
+    document,
+    createdAtMs: value.createdAtMs
+  }
+}
+
 function normalizeWorkflowHistory(history) {
   if (
     !hasExactKeys(history, ['past', 'present', 'future']) ||
@@ -1044,7 +1066,7 @@ export function redoWorkflow(history) {
 function getFleetWorkflowSession() {
   if (!fleetWorkflowSessionHistory) {
     fleetWorkflowSessionHistory = createWorkflowHistory(
-      createEmptyWorkflow('local-workflow')
+      createEmptyWorkflow('default-workflow')
     )
   }
   return fleetWorkflowSessionHistory
@@ -1065,6 +1087,27 @@ function useFleetWorkflowSession() {
     setLocalHistory(next)
   }, [])
   return [history, setHistory]
+}
+
+export function getFleetWorkflowPersistedVersion() {
+  return fleetWorkflowPersistedVersion
+}
+
+export function commitFleetWorkflowPersistedVersion(value) {
+  if (value !== null && (!Number.isSafeInteger(value) || value < 1)) {
+    throw new Error('invalid persisted workflow version')
+  }
+  fleetWorkflowPersistedVersion = value
+  return value
+}
+
+function useFleetWorkflowPersistedVersion() {
+  const [version, setLocalVersion] = useState(() => getFleetWorkflowPersistedVersion())
+  const setVersion = useCallback(value => {
+    const next = commitFleetWorkflowPersistedVersion(value)
+    setLocalVersion(next)
+  }, [])
+  return [version, setVersion]
 }
 
 function workflowTargetFromTopology(node) {
@@ -4594,12 +4637,14 @@ function WorkflowInspectorDrawer({ node, onClose }) {
   })
 }
 
-function WorkflowModePanel({ history, setHistory }) {
+function WorkflowModePanel({ history, setHistory, ctx }) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState(null)
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [editorNotice, setEditorNotice] = useState(null)
+  const [persistedVersion, setPersistedVersion] = useFleetWorkflowPersistedVersion()
+  const [persistenceState, setPersistenceState] = useState('idle')
   const [positions, setPositions] = useState(() => Object.fromEntries(
     history.present.nodes.map(node => [node.id, node.position])
   ))
@@ -4640,6 +4685,77 @@ function WorkflowModePanel({ history, setHistory }) {
   const applyEdit = useCallback(next => {
     setHistory(current => applyWorkflowEdit(current, next))
   }, [setHistory])
+
+  const loadWorkflow = useCallback(async () => {
+    if (persistenceState === 'loading' || persistenceState === 'saving') return
+    if (
+      history.past.length > 0
+      && typeof globalThis.confirm === 'function'
+      && !globalThis.confirm('Discard unsaved workflow edits and load the latest durable revision?')
+    ) return
+    setPersistenceState('loading')
+    setEditorNotice('Loading durable workflow…')
+    try {
+      const listing = await ctx.rest('/workflows')
+      if (
+        !hasExactKeys(listing, ['workflows', 'executionAvailable']) ||
+        listing.executionAvailable !== false ||
+        !Array.isArray(listing.workflows)
+      ) throw new Error('invalid workflow listing')
+      const summary = listing.workflows.find(item => item?.workflowId === workflow.id)
+      if (!summary) {
+        setPersistedVersion(null)
+        setPersistenceState('ready')
+        setEditorNotice('This workflow has not been saved yet.')
+        return
+      }
+      const response = await ctx.rest(`/workflows/${encodeURIComponent(workflow.id)}`)
+      if (
+        !hasExactKeys(response, ['revision', 'executionAvailable']) ||
+        response.executionAvailable !== false
+      ) throw new Error('invalid workflow response')
+      const revision = deserializeWorkflowRevision(response.revision)
+      setHistory(createWorkflowHistory(revision.document))
+      setPersistedVersion(revision.version)
+      setPersistenceState('ready')
+      setEditorNotice(`Loaded durable version ${revision.version}. Execution unavailable.`)
+    } catch {
+      setPersistenceState('error')
+      setEditorNotice('Durable workflow state is unavailable or incompatible. Local edits were preserved.')
+    }
+  }, [ctx, history.past.length, persistenceState, setHistory, workflow.id])
+
+  const saveWorkflow = useCallback(async () => {
+    if (persistenceState === 'loading' || persistenceState === 'saving') return
+    setPersistenceState('saving')
+    setEditorNotice('Saving durable workflow…')
+    try {
+      const response = persistedVersion == null
+        ? await ctx.rest('/workflows', {
+            method: 'POST',
+            body: { document: deserializeWorkflow(workflow) }
+          })
+        : await ctx.rest(`/workflows/${encodeURIComponent(workflow.id)}`, {
+            method: 'PUT',
+            body: {
+              document: deserializeWorkflow(workflow),
+              expectedVersion: persistedVersion
+            }
+          })
+      if (
+        !hasExactKeys(response, ['outcome', 'revision']) ||
+        !['created', 'version_created', 'unchanged'].includes(response.outcome)
+      ) throw new Error('invalid workflow write')
+      const revision = deserializeWorkflowRevision(response.revision)
+      setHistory(createWorkflowHistory(revision.document))
+      setPersistedVersion(revision.version)
+      setPersistenceState('ready')
+      setEditorNotice(`Saved durable version ${revision.version}. Execution unavailable.`)
+    } catch {
+      setPersistenceState('error')
+      setEditorNotice('Workflow save was rejected. Reload durable state before retrying.')
+    }
+  }, [ctx, persistedVersion, persistenceState, setHistory, workflow])
 
   const createConnection = useCallback(input => {
     if (workflow.connections.length >= WORKFLOW_LIMIT_COUNT) {
@@ -4867,6 +4983,18 @@ function WorkflowModePanel({ history, setHistory }) {
             disabled: !selectedId,
             children: 'Inspect selection'
           }),
+          jsx(Button, {
+            type: 'button', size: 'sm', variant: 'outline',
+            onClick: () => loadWorkflow(),
+            disabled: persistenceState === 'loading' || persistenceState === 'saving',
+            children: persistenceState === 'loading' ? 'Loading…' : 'Load durable'
+          }),
+          jsx(Button, {
+            type: 'button', size: 'sm', variant: 'default',
+            onClick: saveWorkflow,
+            disabled: persistenceState === 'loading' || persistenceState === 'saving',
+            children: persistenceState === 'saving' ? 'Saving…' : 'Save durable'
+          }),
           jsx('span', {
             className: 'sr-only',
             role: 'status',
@@ -4877,7 +5005,7 @@ function WorkflowModePanel({ history, setHistory }) {
           jsx('span', {
             className: 'ml-auto text-[0.6875rem] text-muted-foreground',
             'aria-hidden': true,
-            children: editorNotice ?? `${workflow.nodes.length} node${workflow.nodes.length === 1 ? '' : 's'} · ${workflow.connections.length} connection${workflow.connections.length === 1 ? '' : 's'} · execution unavailable`
+            children: editorNotice ?? `${persistedVersion == null ? 'Unsaved' : `Durable v${persistedVersion}`} · ${workflow.nodes.length} node${workflow.nodes.length === 1 ? '' : 's'} · ${workflow.connections.length} connection${workflow.connections.length === 1 ? '' : 's'} · execution unavailable`
           })
         ]
       }),
@@ -4920,7 +5048,7 @@ function WorkflowModePanel({ history, setHistory }) {
       }),
       jsx('div', {
         className: 'px-4 pb-1 text-[0.6875rem] text-muted-foreground',
-        children: 'Editor only · typed connections serialize locally · no workflow execution runtime is present'
+        children: 'Editor only · typed connections persist in durable revisions · no workflow execution runtime is present'
       })
     ]
   })
@@ -5175,7 +5303,7 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
                     disabled: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT,
                     title: workflowHistory.present.nodes.length >= WORKFLOW_LIMIT_COUNT
                       ? 'Workflow node limit reached (256)'
-                      : 'Create or update the local workflow from this machine',
+                      : 'Create or update the current workflow from this machine',
                     children: 'Create workflow from selection'
                   })
                 ]
@@ -5231,7 +5359,8 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
       surface === 'workflows'
         ? jsx(WorkflowModePanel, {
             history: workflowHistory,
-            setHistory: setWorkflowHistory
+            setHistory: setWorkflowHistory,
+            ctx
           })
         : topologyPanel
     ]

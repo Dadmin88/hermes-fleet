@@ -366,6 +366,81 @@ def _stable_id(source: str, network_id: str, device_id: str) -> str:
     return f"fleet-node-{hashlib.sha256(material).hexdigest()}"
 
 
+def test_workflow_routes_delegate_durable_versioned_operations(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_api()
+    socket_path = tmp_path / "fleet.sock"
+    monkeypatch.setenv("FLEET_MANAGED_PROJECTION_SOCKET", str(socket_path))
+    captured: list[tuple[str, object]] = []
+    document = {
+        "schema": "fleet.workflow-editor.v1",
+        "id": "workflow-1",
+        "name": "Plugin workflow",
+        "nodes": [
+            {
+                "id": "custom-1",
+                "type": "third-party.example/custom-action",
+                "title": "Custom action",
+                "position": {"x": 1, "y": 2},
+                "configuration": {"plugin": {"opaque": True}},
+                "target": {"pluginTarget": "preserved"},
+                "runtime": "unavailable",
+            }
+        ],
+        "connections": [],
+        "metadata": {"executionAvailable": False},
+    }
+    revision = {
+        "workflowId": "workflow-1",
+        "version": 1,
+        "contentHash": "a" * 64,
+        "document": document,
+        "createdAtMs": 1_000,
+    }
+
+    class FakeClient:
+        def __init__(self, *, socket_path: Path) -> None:
+            captured.append(("socket", socket_path))
+
+        def create_workflow(self, value: dict) -> dict:
+            captured.append(("create", value))
+            return {"outcome": "created", "revision": revision}
+
+        def list_workflows(self) -> list[dict]:
+            captured.append(("list", None))
+            return [
+                {
+                    "workflowId": "workflow-1",
+                    "latestVersion": 1,
+                    "createdAtMs": 1_000,
+                    "updatedAtMs": 1_000,
+                }
+            ]
+
+        def update_workflow(self, value: dict, *, expected_version: int) -> dict:
+            captured.append(("update", (value, expected_version)))
+            return {"outcome": "unchanged", "revision": revision}
+
+    monkeypatch.setattr(module, "DesktopApiClient", FakeClient)
+    create_request = module.WorkflowCreateRequest(document=document)
+    assert asyncio.run(module.create_workflow(create_request))["outcome"] == "created"
+    assert asyncio.run(module.list_workflows())["executionAvailable"] is False
+    update_request = module.WorkflowUpdateRequest(document=document, expectedVersion=1)
+    assert (
+        asyncio.run(module.update_workflow("workflow-1", update_request))["outcome"]
+        == "unchanged"
+    )
+    assert captured == [
+        ("socket", socket_path),
+        ("create", document),
+        ("socket", socket_path),
+        ("list", None),
+        ("socket", socket_path),
+        ("update", (document, 1)),
+    ]
+
+
 def test_alias_routes_bind_stable_id_and_call_generation_fenced_client(
     monkeypatch, tmp_path
 ) -> None:

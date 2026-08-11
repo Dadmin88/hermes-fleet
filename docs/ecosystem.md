@@ -320,7 +320,7 @@ The ecosystem is being built in layers. Documentation must distinguish a merged 
 - general and exact ready-profile lookup;
 - pinned Agency snapshot/package validation;
 - read-only eligible placement-candidate lookup;
-- Fleet Desktop operator surfaces and a local non-executing workflow editor.
+- Fleet Desktop operator surfaces and durable backend-owned Workflow authoring revisions; execution remains unavailable.
 
 ### Not current Fleet contracts
 

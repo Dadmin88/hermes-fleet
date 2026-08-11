@@ -14,7 +14,9 @@ from .observation import normalize_readiness
 
 _SCHEMA = "fleet.desktop.v1"
 _ALIAS_SCHEMA = "fleet.desktop-alias.v1"
-_MAX_RESPONSE_BYTES = 262_144
+_WORKFLOW_SCHEMA = "fleet.workflow.v1"
+_MAX_FRAME_BYTES = 2_097_152
+_MAX_RESPONSE_BYTES = 2_097_152
 _MAX_NODES = 256
 _U64_MAX = (1 << 64) - 1
 _STABLE_ID = re.compile(r"^fleet-node-[0-9a-f]{64}$")
@@ -131,6 +133,117 @@ class DesktopApiClient:
         )
         return _alias_outcome(result, {"cleared", "already_clear"})
 
+    def workflow_capabilities(self) -> dict[str, Any]:
+        """Return the backend-owned Workflow surface without implying execution."""
+        result = self._request(
+            {"schema": _WORKFLOW_SCHEMA, "kind": "capabilities"},
+            expected_schema=_WORKFLOW_SCHEMA,
+            expected_kind="capabilities",
+        )
+        expected_kinds = [
+            "capabilities",
+            "create",
+            "read",
+            "read_version",
+            "update",
+            "list",
+            "delete",
+        ]
+        if result != {"kinds": expected_kinds, "executionAvailable": False}:
+            raise RuntimeError("Fleet returned invalid Workflow capabilities")
+        return result
+
+    def create_workflow(self, document: dict[str, Any]) -> dict[str, Any]:
+        """Create immutable Workflow version 1 from an editor document."""
+        result = self._request(
+            {
+                "schema": _WORKFLOW_SCHEMA,
+                "kind": "create",
+                "document": _workflow_document(document),
+            },
+            expected_schema=_WORKFLOW_SCHEMA,
+            expected_kind="create",
+        )
+        return _workflow_write(result, {"created"})
+
+    def read_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        result = self._request(
+            {
+                "schema": _WORKFLOW_SCHEMA,
+                "kind": "read",
+                "workflowId": _workflow_id(workflow_id),
+            },
+            expected_schema=_WORKFLOW_SCHEMA,
+            expected_kind="read",
+        )
+        return _optional_workflow_revision(result)
+
+    def read_workflow_version(
+        self, workflow_id: str, *, version: int
+    ) -> dict[str, Any] | None:
+        result = self._request(
+            {
+                "schema": _WORKFLOW_SCHEMA,
+                "kind": "read_version",
+                "workflowId": _workflow_id(workflow_id),
+                "version": _workflow_version(version),
+            },
+            expected_schema=_WORKFLOW_SCHEMA,
+            expected_kind="read_version",
+        )
+        return _optional_workflow_revision(result)
+
+    def update_workflow(
+        self, document: dict[str, Any], *, expected_version: int
+    ) -> dict[str, Any]:
+        result = self._request(
+            {
+                "schema": _WORKFLOW_SCHEMA,
+                "kind": "update",
+                "expectedVersion": _workflow_version(expected_version),
+                "document": _workflow_document(document),
+            },
+            expected_schema=_WORKFLOW_SCHEMA,
+            expected_kind="update",
+        )
+        return _workflow_write(result, {"version_created", "unchanged"})
+
+    def list_workflows(self) -> list[dict[str, Any]]:
+        result = self._request(
+            {"schema": _WORKFLOW_SCHEMA, "kind": "list"},
+            expected_schema=_WORKFLOW_SCHEMA,
+            expected_kind="list",
+        )
+        if type(result) is not dict or set(result) != {"workflows"}:
+            raise RuntimeError("Fleet returned an invalid Workflow list")
+        workflows = result["workflows"]
+        if type(workflows) is not list or len(workflows) > _MAX_NODES:
+            raise RuntimeError("Fleet returned an invalid Workflow list")
+        normalized = [_workflow_summary(value) for value in workflows]
+        ids = [value["workflowId"] for value in normalized]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise RuntimeError("Fleet returned an invalid Workflow list")
+        return normalized
+
+    def delete_workflow(self, workflow_id: str, *, expected_version: int) -> str:
+        result = self._request(
+            {
+                "schema": _WORKFLOW_SCHEMA,
+                "kind": "delete",
+                "workflowId": _workflow_id(workflow_id),
+                "expectedVersion": _workflow_version(expected_version),
+            },
+            expected_schema=_WORKFLOW_SCHEMA,
+            expected_kind="delete",
+        )
+        if (
+            type(result) is not dict
+            or set(result) != {"outcome"}
+            or result["outcome"] not in {"deleted", "already_deleted"}
+        ):
+            raise RuntimeError("Fleet returned an invalid Workflow delete outcome")
+        return result["outcome"]
+
     def _request(
         self,
         payload: dict[str, Any],
@@ -144,6 +257,8 @@ class DesktopApiClient:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
+        if not 1 <= len(encoded) <= _MAX_FRAME_BYTES:
+            raise ValueError("Desktop request exceeds the bounded Fleet frame")
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(self._timeout_seconds)
             connection.connect(str(self._socket_path))
@@ -177,6 +292,126 @@ class DesktopApiClient:
         ):
             raise RuntimeError("Fleet rejected or malformed the Desktop request")
         return document["result"]
+
+
+def _workflow_document(value: object) -> dict[str, Any]:
+    if (
+        type(value) is not dict
+        or value.get("schema") != "fleet.workflow-editor.v1"
+        or set(value) != {"schema", "id", "name", "nodes", "connections", "metadata"}
+        or type(value.get("nodes")) is not list
+        or type(value.get("connections")) is not list
+        or len(value["nodes"]) > _MAX_NODES
+        or len(value["connections"]) > _MAX_NODES
+        or type(value.get("metadata")) is not dict
+        or value["metadata"] != {"executionAvailable": False}
+    ):
+        raise ValueError("Workflow document envelope is invalid")
+    _workflow_id(value.get("id"))
+    if (
+        type(value.get("name")) is not str
+        or not value["name"]
+        or value["name"] != value["name"].strip()
+        or len(value["name"]) > 128
+    ):
+        raise ValueError("Workflow document name is invalid")
+    return value
+
+
+def _workflow_id(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 128
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", value) is None
+    ):
+        raise ValueError("Workflow ID is invalid")
+    return value
+
+
+def _workflow_version(value: object) -> int:
+    if type(value) is not int or not 1 <= value <= _U64_MAX:
+        raise ValueError("Workflow version is invalid")
+    return value
+
+
+def _workflow_timestamp(value: object) -> int:
+    if type(value) is not int or not 1 <= value <= _U64_MAX:
+        raise RuntimeError("Fleet returned an invalid Workflow timestamp")
+    return value
+
+
+def _workflow_revision(value: object) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != {
+        "workflowId",
+        "version",
+        "contentHash",
+        "document",
+        "createdAtMs",
+    }:
+        raise RuntimeError("Fleet returned an invalid Workflow revision")
+    try:
+        workflow_id = _workflow_id(value["workflowId"])
+        version = _workflow_version(value["version"])
+        document = _workflow_document(value["document"])
+    except ValueError as error:
+        raise RuntimeError("Fleet returned an invalid Workflow revision") from error
+    content_hash = value["contentHash"]
+    if (
+        type(content_hash) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
+        or document["id"] != workflow_id
+    ):
+        raise RuntimeError("Fleet returned an invalid Workflow revision")
+    return {
+        "workflowId": workflow_id,
+        "version": version,
+        "contentHash": content_hash,
+        "document": document,
+        "createdAtMs": _workflow_timestamp(value["createdAtMs"]),
+    }
+
+
+def _optional_workflow_revision(result: object) -> dict[str, Any] | None:
+    if type(result) is not dict or set(result) != {"revision"}:
+        raise RuntimeError("Fleet returned an invalid Workflow read")
+    if result["revision"] is None:
+        return None
+    return _workflow_revision(result["revision"])
+
+
+def _workflow_write(result: object, allowed: set[str]) -> dict[str, Any]:
+    if type(result) is not dict or set(result) != {"outcome", "revision"}:
+        raise RuntimeError("Fleet returned an invalid Workflow write")
+    outcome = result["outcome"]
+    if type(outcome) is not str or outcome not in allowed:
+        raise RuntimeError("Fleet returned an invalid Workflow write")
+    return {"outcome": outcome, "revision": _workflow_revision(result["revision"])}
+
+
+def _workflow_summary(value: object) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != {
+        "workflowId",
+        "latestVersion",
+        "createdAtMs",
+        "updatedAtMs",
+    }:
+        raise RuntimeError("Fleet returned an invalid Workflow summary")
+    try:
+        workflow_id = _workflow_id(value["workflowId"])
+        latest_version = _workflow_version(value["latestVersion"])
+    except ValueError as error:
+        raise RuntimeError("Fleet returned an invalid Workflow summary") from error
+    created_at_ms = _workflow_timestamp(value["createdAtMs"])
+    updated_at_ms = _workflow_timestamp(value["updatedAtMs"])
+    if updated_at_ms < created_at_ms:
+        raise RuntimeError("Fleet returned an invalid Workflow summary")
+    return {
+        "workflowId": workflow_id,
+        "latestVersion": latest_version,
+        "createdAtMs": created_at_ms,
+        "updatedAtMs": updated_at_ms,
+    }
 
 
 def _selector(source: object, network_id: object, device_id: object) -> dict[str, str]:
