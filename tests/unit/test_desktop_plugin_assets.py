@@ -300,6 +300,12 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
         "export function deserializeWorkflow",
         "export function deserializeWorkflowRevision",
         "export function normalizeWorkflowListing",
+        "export function workflowPersistenceCanReplaceHistory",
+        "export function commitFleetWorkflowEditorMutation",
+        "export async function loadWorkflowPersistenceControl",
+        "export async function saveWorkflowPersistenceControl",
+        "export async function deleteWorkflowPersistenceControl",
+        "export function createWorkflowDraftAfterDeletion",
         "export function createWorkflowFromTopology",
         "export function createWorkflowHistory",
         "export function applyWorkflowEdit",
@@ -321,6 +327,8 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
     assert "Delete durable" in source
     assert "Workflow name" in source
     assert "method: 'DELETE'" in source
+    assert "'aria-busy': persistenceBusy" in source
+    assert "pointer-events-none opacity-70" in source
     assert "Workflow save was rejected. Reload durable state before retrying." in source
     assert "loadWorkflow({ quiet: true })" not in source
     assert (
@@ -679,6 +687,171 @@ const malformedWorkflowListingRejected = rejects(() =>
     }]
   })
 )
+const matchingWorkflowGenerationAccepted = mod.workflowPersistenceCanReplaceHistory(
+  4,
+  4
+)
+const staleWorkflowGenerationRejected = mod.workflowPersistenceCanReplaceHistory(4, 5)
+const invalidWorkflowGenerationRejected = rejects(() =>
+  mod.workflowPersistenceCanReplaceHistory(-1, 0)
+)
+const rejectsAsync = async operation => {
+  try { await operation(); return false } catch { return true }
+}
+const deferred = () => {
+  let resolve
+  let reject
+  const promise = new Promise((accept, decline) => {
+    resolve = accept
+    reject = decline
+  })
+  return { promise, resolve, reject }
+}
+const revision = (version, document = workflow) => ({
+  workflowId: document.id,
+  version,
+  contentHash: 'a'.repeat(64),
+  document: JSON.parse(mod.serializeWorkflow(document)),
+  createdAtMs: version
+})
+const listing = {
+  executionAvailable: false,
+  workflows: [{
+    workflowId: workflow.id,
+    latestVersion: 2,
+    createdAtMs: 1,
+    updatedAtMs: 2
+  }]
+}
+
+let mutationHistory = mod.createWorkflowHistory(workflow)
+const generationStart = mod.getFleetWorkflowEditorGeneration()
+mutationHistory = mod.commitFleetWorkflowEditorMutation(
+  mutationHistory,
+  current => mod.applyWorkflowEdit(current, duplicated)
+)
+const generationAfterApply = mod.getFleetWorkflowEditorGeneration()
+mutationHistory = mod.commitFleetWorkflowEditorMutation(
+  mutationHistory,
+  current => mod.undoWorkflow(current)
+)
+const generationAfterUndo = mod.getFleetWorkflowEditorGeneration()
+mutationHistory = mod.commitFleetWorkflowEditorMutation(
+  mutationHistory,
+  current => mod.redoWorkflow(current)
+)
+const generationAfterRedo = mod.getFleetWorkflowEditorGeneration()
+mutationHistory = mod.commitFleetWorkflowEditorMutation(
+  mutationHistory,
+  mod.createWorkflowHistory(mod.createEmptyWorkflow('new-draft'))
+)
+const generationAfterNew = mod.getFleetWorkflowEditorGeneration()
+
+const loadDeferred = deferred()
+let staleLoadHistory = mod.createWorkflowHistory(workflow)
+const staleLoadPromise = mod.loadWorkflowPersistenceControl({
+  targetId: workflow.id,
+  request: path => path === '/workflows'
+    ? Promise.resolve(listing)
+    : loadDeferred.promise
+})
+await Promise.resolve()
+await Promise.resolve()
+const newerLoadDocument = { ...workflow, name: 'newer local load edit' }
+staleLoadHistory = mod.applyWorkflowEdit(staleLoadHistory, newerLoadDocument)
+mod.markFleetWorkflowEditorMutation()
+loadDeferred.resolve({
+  executionAvailable: false,
+  revision: revision(2)
+})
+const staleLoadResult = await staleLoadPromise
+const staleLoadUnlocked = !mod.isFleetWorkflowPersistenceLocked()
+
+const saveDeferred = deferred()
+const staleSavePromise = mod.saveWorkflowPersistenceControl({
+  request: () => saveDeferred.promise,
+  workflow,
+  persistedVersion: 2
+})
+const newerSaveDocument = { ...workflow, name: 'newer local save edit' }
+mod.markFleetWorkflowEditorMutation()
+saveDeferred.resolve({
+  outcome: 'version_created',
+  revision: revision(3)
+})
+const staleSaveResult = await staleSavePromise
+let nextSaveExpectedVersion = null
+const nextSaveResult = await mod.saveWorkflowPersistenceControl({
+  request: (_path, options) => {
+    nextSaveExpectedVersion = options.body.expectedVersion
+    return Promise.resolve({
+      outcome: 'version_created',
+      revision: revision(4, newerSaveDocument)
+    })
+  },
+  workflow: newerSaveDocument,
+  persistedVersion: staleSaveResult.revision.version
+})
+
+let deleteRequestCount = 0
+let dirtyDeletePrompt = null
+const cancelledDelete = await mod.deleteWorkflowPersistenceControl({
+  request: () => { deleteRequestCount += 1 },
+  workflowId: workflow.id,
+  persistedVersion: 4,
+  hasUnsavedEdits: true,
+  confirmDelete: message => {
+    dirtyDeletePrompt = message
+    return false
+  }
+})
+const deleteDeferred = deferred()
+const staleDeletePromise = mod.deleteWorkflowPersistenceControl({
+  request: () => deleteDeferred.promise,
+  workflowId: workflow.id,
+  persistedVersion: 4,
+  hasUnsavedEdits: true,
+  confirmDelete: () => true
+})
+const newerDeleteDocument = { ...workflow, name: 'preserved after delete' }
+const newerDeleteHistory = mod.applyWorkflowEdit(
+  mod.createWorkflowHistory(workflow),
+  newerDeleteDocument
+)
+mod.markFleetWorkflowEditorMutation()
+deleteDeferred.resolve({ outcome: 'deleted' })
+const staleDeleteResult = await staleDeletePromise
+const preservedDeleteDraft = mod.createWorkflowDraftAfterDeletion(
+  newerDeleteHistory,
+  ['other-workflow'],
+  'workflow-after-delete'
+)
+
+const failedLoadRejected = await rejectsAsync(() =>
+  mod.loadWorkflowPersistenceControl({
+    targetId: workflow.id,
+    request: async () => { throw new Error('load failed') }
+  })
+)
+const loadFailureUnlocked = !mod.isFleetWorkflowPersistenceLocked()
+const failedSaveRejected = await rejectsAsync(() =>
+  mod.saveWorkflowPersistenceControl({
+    request: async () => { throw new Error('save failed') },
+    workflow,
+    persistedVersion: 4
+  })
+)
+const saveFailureUnlocked = !mod.isFleetWorkflowPersistenceLocked()
+const failedDeleteRejected = await rejectsAsync(() =>
+  mod.deleteWorkflowPersistenceControl({
+    request: async () => { throw new Error('delete failed') },
+    workflowId: workflow.id,
+    persistedVersion: 4,
+    hasUnsavedEdits: false,
+    confirmDelete: () => true
+  })
+)
+const deleteFailureUnlocked = !mod.isFleetWorkflowPersistenceLocked()
 console.log(JSON.stringify({
   ids,
   descriptor: mod.FLEET_NODE_TYPES['manual-trigger'],
@@ -753,6 +926,36 @@ console.log(JSON.stringify({
   workflowListing,
   executableWorkflowListingRejected,
   malformedWorkflowListingRejected,
+  matchingWorkflowGenerationAccepted,
+  staleWorkflowGenerationRejected,
+  invalidWorkflowGenerationRejected,
+  mutationGenerationDeltas: [
+    generationAfterApply - generationStart,
+    generationAfterUndo - generationAfterApply,
+    generationAfterRedo - generationAfterUndo,
+    generationAfterNew - generationAfterRedo
+  ],
+  staleLoadKind: staleLoadResult.kind,
+  staleLoadName: staleLoadHistory.present.name,
+  staleLoadUnlocked,
+  staleSaveKind: staleSaveResult.kind,
+  staleSaveVersion: staleSaveResult.revision.version,
+  nextSaveKind: nextSaveResult.kind,
+  nextSaveExpectedVersion,
+  cancelledDeleteKind: cancelledDelete.kind,
+  dirtyDeletePrompt,
+  deleteRequestCount,
+  staleDeleteKind: staleDeleteResult.kind,
+  preservedDeleteDraft: {
+    id: preservedDeleteDraft.id,
+    name: preservedDeleteDraft.name,
+    nodeCount: preservedDeleteDraft.nodes.length
+  },
+  failedRequests: [
+    failedLoadRejected, loadFailureUnlocked,
+    failedSaveRejected, saveFailureUnlocked,
+    failedDeleteRejected, deleteFailureUnlocked
+  ],
   boxed,
   nonFiniteBoxed,
   indexedDuplicate,
@@ -884,6 +1087,27 @@ console.log(JSON.stringify({
     ]
     assert loaded["executableWorkflowListingRejected"] is True
     assert loaded["malformedWorkflowListingRejected"] is True
+    assert loaded["matchingWorkflowGenerationAccepted"] is True
+    assert loaded["staleWorkflowGenerationRejected"] is False
+    assert loaded["invalidWorkflowGenerationRejected"] is True
+    assert loaded["mutationGenerationDeltas"] == [1, 1, 1, 1]
+    assert loaded["staleLoadKind"] == "stale"
+    assert loaded["staleLoadName"] == "newer local load edit"
+    assert loaded["staleLoadUnlocked"] is True
+    assert loaded["staleSaveKind"] == "saved_stale"
+    assert loaded["staleSaveVersion"] == 3
+    assert loaded["nextSaveKind"] == "saved"
+    assert loaded["nextSaveExpectedVersion"] == 3
+    assert loaded["cancelledDeleteKind"] == "cancelled"
+    assert "Unsaved local edits will be discarded" in loaded["dirtyDeletePrompt"]
+    assert loaded["deleteRequestCount"] == 0
+    assert loaded["staleDeleteKind"] == "deleted_stale"
+    assert loaded["preservedDeleteDraft"] == {
+        "id": "workflow-after-delete",
+        "name": "preserved after delete",
+        "nodeCount": 2,
+    }
+    assert loaded["failedRequests"] == [True, True, True, True, True, True]
     assert "execution" not in loaded["topology"]
     assert loaded["boxed"] == ["a"]
     assert loaded["nonFiniteBoxed"] == []
