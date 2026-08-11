@@ -1,8 +1,8 @@
 # Hermes Fleet Architecture
 
-Hermes Fleet is an application-level coordination layer built on Hermes Keryx. Keryx supplies authenticated peer transport and durable task/result delivery; Fleet adds stable operator identity, exact-node selection, authorization, operation dispatch, managed-state reconciliation, current readiness, profile-placement facts, and the narrow state required to coordinate deliberate Hermes execution.
+Hermes Fleet is an application-level coordination layer built on Hermes Keryx. Keryx supplies authenticated peer transport and durable task/result delivery; Fleet adds stable operator identity, exact-node selection, authorization, operation dispatch, managed-state reconciliation, current readiness, profile/locality facts, and the narrow state required to coordinate deliberate Hermes execution.
 
-Fleet does not implement a parallel relay, task ledger, workflow engine, or mailbox.
+Fleet does not implement a parallel relay, task ledger, workflow engine, mailbox, or container runtime.
 
 For the cross-repository view before reading Fleet internals, see [Ecosystem map](ecosystem.md).
 
@@ -11,7 +11,7 @@ For the cross-repository view before reading Fleet internals, see [Ecosystem map
 Four systems form the authority chain for managed remote execution:
 
 1. **Nodescale** owns managed device membership, device trust, Keryx identity binding, and desired managed Fleet state.
-2. **Keryx** owns authenticated transport peer identity, routing, task/result durability, claims, leases, and relay behavior.
+2. **Keryx** owns authenticated transport peer identity, routing, task/result durability, claims, leases, artifacts, and relay behavior.
 3. **Fleet** owns application-level node identity, local authorization, operation dispatch, managed-state reconciliation, current readiness/placement truth, and execution correlation.
 4. **Hermes** owns local agent execution and its models, tools, profiles, skills, credentials, permissions, memory, and sessions.
 
@@ -41,7 +41,7 @@ connected
 
 ## Operation model
 
-Fleet exposes a small versioned operation vocabulary:
+Fleet exposes a small current versioned operation vocabulary:
 
 | Operation | Class | Creates a Hermes run | Description |
 | --- | --- | ---: | --- |
@@ -54,11 +54,11 @@ Every request uses the same bounded Fleet envelope over Keryx. The worker valida
 
 Direct operations never enter the Hermes execution path.
 
-There is currently no shipped `fleet.profile.install` operation. Automatic remote profile mutation remains outside the current operation vocabulary.
+There is currently no shipped `fleet.profile.install` operation. Persistent automatic remote host-profile mutation is outside the current operation vocabulary and is not the default planned mechanism for future distributed profile availability.
 
 ## Request flow
 
-A typical cross-node request follows this path:
+A typical current cross-node request follows this path:
 
 ```text
 Fleet controller
@@ -82,9 +82,11 @@ Fleet preserves Keryx submission facts such as task ID, routed peer, and deliver
 
 Operator inventory maps a friendly Fleet node name to an immutable Keryx peer ID. Selection is exact and deterministic. Inventory configuration may express operator policy and presentation metadata, but it does not prove current reachability.
 
-Reachability and routing are determined from Keryx state and the actual submission receipt. Fleet does not silently retarget a request to a different node when the selected node is unavailable.
+Reachability and routing are determined from Keryx state and the actual submission receipt. Fleet does not silently retarget a current exact-node request to a different node when the selected node is unavailable.
 
-Read-only profile-placement queries that return more than one eligible node are deliberately separate from exact operator selection. A placement-candidate query reports candidates; it does not make an implicit winner-selection decision.
+Read-only candidate queries that return more than one eligible node are deliberately separate from exact operator selection. A candidate query reports facts; it does not make an implicit winner-selection decision.
+
+Future automatic scheduling is a separate operation model and must define its own deterministic, explainable selection and retry/admission semantics rather than changing exact-node behavior implicitly.
 
 ## Authorization
 
@@ -103,7 +105,7 @@ Locally configured deny policy remains authoritative over generated managed gran
 
 Managed projection can generate only the bounded baseline operations defined by the local contract. It cannot generate `fleet.hermes.run` authority.
 
-Future privileged profile installation must remain separately authorizable and must not become implicit Nodescale baseline authority merely because a node is trusted or managed.
+Future Recipe execution, environment materialization, profile-sensitive work, or other privileged execution capabilities must remain separately authorizable and must not become implicit Nodescale baseline authority merely because a node is trusted or managed.
 
 ## Managed projection
 
@@ -132,9 +134,9 @@ See [Node observations and scheduler readiness](node-readiness.md) for fields, f
 
 ## Profile identity and Agency source
 
-Hermes Agency defines versioned professional profile distributions. Hermes owns installing those distributions locally. Fleet owns the live distributed evidence of where they are installed and whether those nodes are currently eligible.
+Hermes Agency defines versioned professional profile distributions. Hermes owns current native profile installation. Fleet owns live distributed evidence of where those profiles are installed and whether those nodes are currently eligible for the current native execution path.
 
-Fleet's current profile-placement foundation has several distinct stages.
+Fleet's current profile-awareness foundation has several distinct layers.
 
 ### Installed profile presence
 
@@ -152,21 +154,74 @@ For Agency packages with a known content digest, exact lookup requires the reque
 
 Fleet can acquire an approved Agency repository at an exact full git object ID, validate the bounded supported runtime catalog, resolve one exact profile package, verify safe distribution identity/path data, and independently recompute the selected Agency V1 content digest.
 
-The result is an immutable package identity bound to a specific snapshot. It is source validation, not installation.
+The result is an immutable package identity bound to a specific snapshot. It is source validation, not installation or execution authority.
 
 The current merged snapshot implementation invokes the pinned Agency catalog generator under bounded execution while validating the approved exact checkout. It must not be generalized into an arbitrary repository execution surface.
 
-### Placement candidates
+### Candidate discovery
 
-When exact lookup finds no ready carrier, `fleet-state` can return every currently scheduler-ready admitted node that could be considered as a placement target. The result includes the current admission generation, available Fleet worker slots, resource observations, same-name installed profile presence when any, and readiness explanation.
+`fleet-state` can return currently scheduler-ready admitted nodes that may be considered by a later placement policy. The result includes the current admission generation, available Fleet worker slots, resource observations, same-name installed profile presence when any, and readiness explanation.
 
 The query is deterministic but intentionally does not rank or choose a winner.
 
-### What is not yet current
+### Persistent host installation is not the default future completion path
 
-Fleet does not yet expose the privileged remote profile-install operation or the coordinator that chooses a target, performs installation, waits for exact fresh post-install observation proof on the same admission, and only then allows routing to proceed.
+An earlier design proposed completing profile placement by adding a privileged remote operation that installed a missing Agency profile into the destination host's native Hermes profile directory, then waited for exact fresh post-install observation proof.
 
-See [Profile identity and placement](profile-placement.md).
+That mutation path is not current and is superseded as the default planned architecture by runtime-neutral Fleet Recipes and execution-environment materialization.
+
+Existing native profile observation, exact package identity, and candidate discovery remain useful current contracts. They can inform native execution compatibility and future cache/locality decisions without becoming a requirement that every destination host be preconfigured with a profile.
+
+See [Profile identity, presence, and execution locality](profile-placement.md).
+
+## Planned execution fabric
+
+The following is **planned architecture, not a current Fleet runtime contract**.
+
+The execution-fabric direction introduces a runtime-neutral layer above any specific environment backend:
+
+```text
+Fleet Recipe
+    declared agent/profile/environment/resource/security requirements
+        ↓
+ResolvedRecipe
+    immutable references resolved
+        ↓
+ExecutionPlan
+    validated backend/platform-specific materialization plan
+        ↓
+Fleet scheduler
+    hard eligibility + explainable scoring
+        ↓
+destination local admission
+    authoritative current capacity/policy check
+        ↓
+ExecutionBackend
+    materialize a fresh worker using mature runtime primitives
+        ↓
+Hermes task
+        ↓
+Keryx result/artifacts
+        ↓
+cleanup
+```
+
+Important planned invariants:
+
+- a Fleet node is defined by trusted identity plus advertised execution capabilities, not by Docker availability;
+- Docker/OCI is a preferred initial backend on suitable Linux hosts, not Fleet's domain model;
+- heterogeneous nodes such as Android/ARM64 workers may use a different backend with explicitly weaker guarantees;
+- backends must advertise actual isolation/resource guarantees and must never pretend weaker mechanisms are equivalent to stronger ones;
+- the same logical Recipe can resolve to different platform/backend ExecutionPlans;
+- exact Agency package identity can be a Recipe input rather than a prerequisite persistent host installation;
+- the destination performs authoritative local admission after controller-side scheduling;
+- disposable workers are subordinate environments, not new Nodescale devices or permanent Keryx peers;
+- Keryx continues to own durable work/result/artifact transport;
+- Fleet orchestrates mature runtime primitives instead of implementing its own container runtime, OCI format, VPN, artifact transport, registry, package manager, or task queue;
+- scheduler decisions remain deterministic/explainable where possible;
+- time-to-useful-work is a product requirement, with immutable environment/cache reuse preferred over reusing dirty task state.
+
+These statements guide future implementation but must not be exposed as shipped capability until the corresponding contracts and proofs are merged.
 
 ## Deliberate Hermes execution
 
@@ -202,7 +257,7 @@ Fleet-owned durable records generated from Nodescale projections, including gene
 
 One current typed operational observation per managed node. It preserves last-known facts across restart, rejects out-of-order replacement, and provides the inputs for time-dependent liveness, readiness, resource inspection, and installed profile presence. It is not a telemetry history or a replacement for Keryx state.
 
-Profile lookup and placement-candidate queries are derived from this same durable current state. Fleet does not maintain a second Agency-side or scheduler-side presence registry.
+Profile lookup and candidate queries are derived from this same durable current state. Fleet does not maintain a second Agency-side or scheduler-side presence registry.
 
 ### Execution binding state
 
@@ -239,14 +294,14 @@ Fleet therefore does not claim successful remote cancellation until Keryx and th
 Hermes Fleet remains one product while the implementation evolves.
 
 - The **Python implementation** is the proven Hermes plugin/runtime and compatibility reference and currently owns several integration surfaces, including local installed-profile scanning and Agency snapshot acquisition.
-- The **Rust implementation** provides permanent domain, durable state, managed-control, observation/readiness, profile-presence, and placement-query foundations and will progressively assume additional runtime responsibilities.
+- The **Rust implementation** provides permanent domain, durable state, managed-control, observation/readiness, profile-presence, and candidate-query foundations and will progressively assume additional runtime responsibilities.
 - Language-neutral fixtures capture behavior that must remain compatible between implementations.
 
 Compatibility is defined by externally meaningful contracts and tests, not by importing Python internals into Rust or vice versa.
 
 ## Deployment boundary
 
-A typical deployment keeps:
+A typical current deployment keeps:
 
 - Keryx daemons and Hermes Runs APIs on loopback;
 - relay/control services on explicitly secured private interfaces;
@@ -255,21 +310,25 @@ A typical deployment keeps:
 - Fleet worker state private to its service account;
 - `fleet-node` as the local owner of Fleet operation dispatch and skill registration.
 
-Agency profile packages are installed into Hermes through Hermes-supported profile tooling. Fleet observes the resulting local installation rather than treating an upstream catalog as live runtime state.
+Agency profile packages used by the current native execution path are installed into Hermes through Hermes-supported profile tooling. Fleet observes the resulting local installation rather than treating an upstream catalog as live runtime state.
 
-See [Deployment](deployment.md) for a generic service layout.
+Future Recipe materialization will require its own explicitly documented backend/deployment contract before it becomes current behavior.
 
-## Non-goals
+See [Deployment](deployment.md) for the current generic service layout.
+
+## Non-goals and non-claims
 
 Fleet does not currently attempt to provide:
 
 - a second message transport or durable mailbox;
-- a general workflow engine;
+- a general executable workflow engine;
 - implicit role-to-execution authorization;
 - broadcast or pub/sub semantics;
 - multi-node consensus;
 - automatic trust promotion from hostnames, addresses, tags, or mesh membership;
-- a replacement for Hermes local execution state or profile installer;
+- a replacement for Hermes local execution state;
 - a second live profile registry separate from Fleet observations;
-- automatic remote profile installation or complete locate-or-place orchestration before that privileged path is explicitly implemented and proven;
-- disposable task containers or environment recipes as a current runtime contract.
+- persistent automatic remote host-profile installation as the default placement mechanism;
+- Fleet Recipe execution as a current runtime contract;
+- disposable task environments as a current runtime contract;
+- a homegrown container runtime, OCI format, VPN, artifact transport, package manager, or registry.

@@ -33,7 +33,7 @@ Those are **not the same question**, and they should not have the same source of
 
 Fleet sits in the middle and coordinates the answers.
 
-A useful high-level analogy is **a control plane for Hermes workers**. Fleet has some of the same concerns people associate with cluster orchestrators: node inventory, placement facts, readiness, policy, dispatch, and observability. But Fleet is intentionally not a container platform, not a second network, and not a second task transport.
+A useful high-level analogy is **a control plane for Hermes workers**. Fleet has some of the same concerns people associate with cluster orchestrators: node inventory, placement facts, readiness, policy, dispatch, and observability. Fleet is intentionally not a second network, not a second task transport, and not its own container runtime. Planned execution-fabric work is designed to orchestrate mature runtime backends rather than reimplement them.
 
 ## The ecosystem
 
@@ -74,7 +74,7 @@ flowchart TB
 | **[Hermes Keryx](https://github.com/Dadmin88/hermes-keryx)** | Authenticated peer identity, routing, durable tasks/results, claims, leases, relay delivery, artifacts | Moving Fleet work and results between machines |
 | **Hermes Fleet** | Fleet authorization, exact-node addressing, readiness, dispatch, profile presence, placement facts, operator surfaces | Coordinating the distributed system |
 | **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | Local models, tools, skills, profiles, permissions, memory, sessions, Runs execution | Actually doing the AI work on a machine |
-| **[Hermes Agency](https://github.com/Dadmin88/hermes-agency)** | Versioned professional Hermes profile distributions and bundled skills | Defining the professional worker packages Fleet can observe and locate |
+| **[Hermes Agency](https://github.com/Dadmin88/hermes-agency)** | Versioned professional Hermes profile distributions and bundled skills | Defining the professional worker packages Fleet can identify and observe |
 | **Hermes Desktop + Fleet plugin** | Human-facing Fleet presentation and bounded operator actions | Seeing and operating the fleet visually |
 
 The architectural rule is simple:
@@ -132,16 +132,17 @@ Fleet currently provides:
 
 These are not current Fleet contracts:
 
-- automatic remote Agency profile installation;
-- complete automatic `locate-or-place` orchestration;
+- runtime-neutral Fleet Recipe execution;
 - automatic placement winner selection;
+- disposable per-task worker environments;
+- Docker, PRoot/OCI, or other execution backends as Fleet runtime contracts;
 - a general CPU/GPU workload scheduler;
-- disposable per-task containers or environment recipes;
 - executable distributed workflow graphs;
+- persistent automatic remote Agency profile installation;
 - a second mailbox, relay, or transport system;
 - proven end-to-end cancellation of an already-running remote Hermes run.
 
-Several of those are intentional architectural directions. They become product claims only after their contracts, implementation, tests, and operational proofs are merged.
+The planned execution-fabric direction is to make agent/environment requirements portable through validated Fleet Recipes and materialize them on compatible trusted nodes using mature backend runtimes. Persistent host profile installation is not the default planned way to make a professional agent available remotely. Planned capabilities become product claims only after their contracts, implementation, tests, and operational proofs are merged.
 
 ---
 
@@ -221,9 +222,9 @@ See **[Node observations and scheduler readiness](docs/node-readiness.md)**.
 
 [Hermes Agency](https://github.com/Dadmin88/hermes-agency) supplies professional Hermes profile distributions: engineers, designers, researchers, reviewers, operators, writers, and other specialized roles with bundled skills.
 
-Hermes installs and runs those profiles locally. Fleet answers the distributed question:
+For the current native execution path, Hermes installs and runs those profiles locally. Fleet can answer the distributed observation question:
 
-> **Which admitted, ready machines actually have the profile package I need?**
+> **Which admitted, ready machines currently report the exact profile package I need?**
 
 Fleet can observe installed profile distributions and, for supported Agency packages, prove an exact content identity:
 
@@ -238,23 +239,27 @@ That lets Fleet distinguish:
 - the exact approved package;
 - the same profile name with different content;
 - a legacy or generic installation without a provable exact Agency digest;
-- no installation of that profile at all.
+- no current installation of that profile at all.
 
-### Locate versus place
+### Native presence versus planned Recipe materialization
 
-Fleet already has the read-only foundations for placement:
+Fleet already has read-only foundations for exact native-profile locality:
 
 ```text
 requested Agency package
         ↓
-find exact ready carriers
+find exact ready native carriers
         ↓
-if none exist, find eligible ready placement candidates
+inspect other eligible ready candidates
 ```
 
-The next privileged step, remotely installing the package and proving fresh exact post-install presence before routing work, is **not yet a shipped Fleet operation**.
+Those facts remain useful, but the older plan to complete availability by persistently installing a missing profile onto the destination host is superseded as the default architectural direction.
 
-See **[Profile identity and placement](docs/profile-placement.md)** for the precise boundary.
+The planned execution fabric instead treats the exact Agency package as an input to a runtime-neutral Fleet Recipe. Fleet resolves the Recipe, chooses a trusted node whose platform/backend capabilities satisfy it, and materializes a fresh worker environment using that node's supported backend. A compatible node therefore does not need the professional profile permanently installed on the host beforehand.
+
+Recipe execution, heterogeneous execution backends, automatic scheduling, and environment materialization are **planned architecture, not shipped Fleet behavior**.
+
+See **[Profile identity, presence, and execution locality](docs/profile-placement.md)** for the precise current and planned boundary.
 
 ---
 
@@ -393,7 +398,7 @@ New to Fleet? Read these in order:
 | --- | --- |
 | **[Ecosystem map](docs/ecosystem.md)** | You want to understand the whole Hermes system and how the repositories fit together |
 | **[Architecture](docs/architecture.md)** | You need Fleet's internal trust, state, request, and execution boundaries |
-| **[Profile identity and placement](docs/profile-placement.md)** | You are working with Hermes Agency profiles, exact package identity, or placement |
+| **[Profile identity and locality](docs/profile-placement.md)** | You are working with Hermes Agency profiles, exact package identity, native presence, or future Recipe placement |
 | **[Node readiness](docs/node-readiness.md)** | You need to understand liveness, freshness, capacity, resources, or scheduler readiness |
 | **[Managed projection V1](docs/managed-projection-v1.md)** | You are integrating Nodescale-managed device state into Fleet |
 | **[Deployment](docs/deployment.md)** | You are setting up controller, worker, Keryx, and Hermes services |
@@ -444,6 +449,7 @@ Fleet tries to preserve a few boring-but-powerful rules:
 - **Authorization stays local to the application boundary.** Transport authentication is not Fleet permission.
 - **Readiness is evidence, not optimism.** Missing or stale facts fail closed.
 - **No duplicate infrastructure for convenience.** Keryx owns transport and durable task state.
+- **Orchestrate mature runtime primitives instead of recreating them.** Planned execution backends should wrap proven infrastructure rather than turn Fleet into a homegrown runtime.
 - **Do not trust acknowledgements as proof of side effects.** Durable observed state should prove important mutations.
 - **Current product and future architecture are documented separately.** A roadmap idea is not a shipped capability.
 
