@@ -5105,123 +5105,502 @@ function FleetSectionHeader({ section, actions = null, meta = null }) {
   })
 }
 
-function FleetMetricCard({ label, value, detail }) {
-  return jsxs('div', {
-    className: 'rounded-xl border border-border bg-muted/10 p-4',
+const READINESS_REASON_PRESENTATION = Object.freeze({
+  node_unknown: Object.freeze({
+    label: 'Readiness unknown',
+    description: 'Fleet does not have an authoritative readiness record for this node.'
+  }),
+  node_not_active: Object.freeze({
+    label: 'Node not active',
+    description: 'The managed node is not active in the current Fleet admission.'
+  }),
+  observation_missing: Object.freeze({
+    label: 'Observation missing',
+    description: 'No current readiness observation is available for this managed node.'
+  }),
+  observation_stale: Object.freeze({
+    label: 'Observation stale',
+    description: 'The latest managed-node observation is too old for scheduler readiness.'
+  }),
+  observation_time_invalid: Object.freeze({
+    label: 'Observation time invalid',
+    description: 'Fleet could not trust the latest managed-node observation timestamp.'
+  }),
+  network_unreachable: Object.freeze({
+    label: 'Network unreachable',
+    description: 'The managed node reported that its required network path is unreachable.'
+  }),
+  keryx_unavailable: Object.freeze({
+    label: 'Keryx unavailable',
+    description: 'The managed node cannot currently satisfy the Keryx availability gate.'
+  }),
+  hermes_unavailable: Object.freeze({
+    label: 'Hermes unavailable',
+    description: 'The managed node cannot currently satisfy the Hermes availability gate.'
+  }),
+  worker_unavailable: Object.freeze({
+    label: 'Worker unavailable',
+    description: 'The managed node has no available Hermes worker runtime.'
+  }),
+  no_worker_capacity: Object.freeze({
+    label: 'No worker capacity',
+    description: 'The managed node has no worker slots available for new work.'
+  })
+})
+
+export function formatFleetObservationAge(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return 'Freshness unavailable'
+  if (value < 1_000) return 'just now'
+  const seconds = Math.floor(value / 1_000)
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+function providerObservationStatus(overview) {
+  const state = overview.observations?.state ?? 'unknown'
+  const truncated = overview.observations?.truncated === true
+  if (state === 'available') {
+    return truncated ? 'Provider observations live · truncated' : 'Provider observations live'
+  }
+  if (state === 'unavailable') return 'Provider observations unavailable'
+  if (state === 'disabled') return 'Provider observations disabled'
+  return 'Provider observation status unknown'
+}
+
+function overviewMetric(id, label, value, detail, tone = 'muted') {
+  return Object.freeze({ id, label, value, detail, tone })
+}
+
+export function buildFleetOverviewCommandCenterModel(overview) {
+  if (
+    !isPlainRecord(overview) ||
+    !isPlainRecord(overview.summary) ||
+    !Array.isArray(overview.nodes)
+  ) throw new Error('invalid Fleet overview command-center input')
+
+  const summary = overview.summary
+  const integer = value => Number.isSafeInteger(value) && value >= 0 ? value : 0
+  const managed = integer(summary.managed)
+  const active = integer(summary.active)
+  const alive = integer(summary.alive)
+  const ready = integer(summary.ready)
+  const observed = integer(summary.observed_unmanaged)
+  const attention = overview.nodes
+    .filter(node => node?.managed?.active === true && node?.readiness?.scheduler_ready === false)
+    .map(node => {
+      const reasons = Array.isArray(node.readiness?.reasons)
+        ? node.readiness.reasons.filter(reason => typeof reason === 'string')
+        : []
+      const primary = READINESS_REASON_PRESENTATION[reasons[0]] ?? {
+        label: 'Readiness unavailable',
+        description: 'The node is not scheduler ready and no supported blocker was reported.'
+      }
+      return Object.freeze({
+        stable_id: typeof node.stable_id === 'string' ? node.stable_id : '',
+        label: node.naming?.display_name || node.stable_id || 'Managed node',
+        reason: reasons[0] ?? null,
+        reasonLabel: primary.label,
+        explanation: primary.description,
+        reasons: Object.freeze([...reasons]),
+        ageLabel: formatFleetObservationAge(node.readiness?.observation_age_ms),
+        managedState: node.managed?.state ?? 'unknown'
+      })
+    })
+
+  let capacityReporting = 0
+  let activeWorkers = 0
+  let maxWorkers = 0
+  let availableWorkerSlots = 0
+  let ramReporting = 0
+  let ramTotalBytes = 0
+  let ramAvailableBytes = 0
+  const profiles = new Set()
+  const ages = []
+
+  for (const node of overview.nodes) {
+    if (Number.isSafeInteger(node?.readiness?.observation_age_ms)) {
+      ages.push(node.readiness.observation_age_ms)
+    }
+    if (node?.managed?.active !== true) continue
+    const capacity = node.readiness?.capacity
+    if (
+      isPlainRecord(capacity) &&
+      [capacity.active_workers, capacity.max_workers, capacity.available_worker_slots]
+        .every(Number.isSafeInteger)
+    ) {
+      capacityReporting += 1
+      activeWorkers += capacity.active_workers
+      maxWorkers += capacity.max_workers
+      availableWorkerSlots += capacity.available_worker_slots
+    }
+    const ram = node.readiness?.resources?.ram
+    if (
+      isPlainRecord(ram) &&
+      Number.isSafeInteger(ram.total_bytes) &&
+      Number.isSafeInteger(ram.available_bytes) &&
+      ram.total_bytes > 0 &&
+      ram.available_bytes >= 0 &&
+      ram.available_bytes <= ram.total_bytes
+    ) {
+      ramReporting += 1
+      ramTotalBytes += ram.total_bytes
+      ramAvailableBytes += ram.available_bytes
+    }
+    if (Array.isArray(node.readiness?.profiles)) {
+      for (const profile of node.readiness.profiles) {
+        if (typeof profile?.name === 'string') profiles.add(profile.name)
+      }
+    }
+  }
+
+  const ramUsedBytes = Math.max(0, ramTotalBytes - ramAvailableBytes)
+  const ramUsedPercent = ramTotalBytes > 0
+    ? Math.round((ramUsedBytes / ramTotalBytes) * 100)
+    : null
+  const oldestAge = ages.length ? Math.max(...ages) : null
+  const freshness = oldestAge == null
+    ? managed
+      ? 'Managed sample freshness unavailable'
+      : 'No managed nodes'
+    : `Oldest managed sample ${formatFleetObservationAge(oldestAge)}`
+
+  return Object.freeze({
+    metrics: Object.freeze([
+      overviewMetric('managed', 'Managed', managed, 'Fleet-authorized managed nodes'),
+      overviewMetric('active', 'Active', active, 'Current active Fleet admissions', active ? 'good' : 'muted'),
+      overviewMetric('alive', 'Alive', alive, 'Managed nodes with fresh observations', alive < active ? 'warn' : 'good'),
+      overviewMetric('ready', 'Ready', ready, 'Managed nodes scheduler ready', ready < active ? 'warn' : 'good'),
+      overviewMetric('observed', 'Observed', observed, 'Provider evidence without Fleet authority', observed ? 'info' : 'muted'),
+      overviewMetric('attention', 'Needs attention', attention.length, 'Active managed nodes blocked from readiness', attention.length ? 'warn' : 'good')
+    ]),
+    attention: Object.freeze(attention),
+    capacity: Object.freeze({
+      reportingNodes: capacityReporting,
+      activeWorkers,
+      maxWorkers,
+      availableWorkerSlots
+    }),
+    memory: Object.freeze({
+      reportingNodes: ramReporting,
+      totalBytes: ramTotalBytes,
+      availableBytes: ramAvailableBytes,
+      usedBytes: ramUsedBytes,
+      usedPercent: ramUsedPercent
+    }),
+    profileCount: profiles.size,
+    freshness,
+    observationStatus: providerObservationStatus(overview)
+  })
+}
+
+function FleetMetricCard({ metric }) {
+  return jsxs('button', {
+    type: 'button',
+    className: 'group rounded-xl border border-border bg-muted/10 p-4 text-left transition-colors hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    onClick: () => host.navigate('/fleet/network'),
+    'aria-label': `${metric.label}: ${metric.value}. Open Network`,
     children: [
-      jsx('div', {
-        className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground',
-        children: label
+      jsxs('div', {
+        className: 'flex items-center justify-between gap-2',
+        children: [
+          jsx('span', {
+            className: 'text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground',
+            children: metric.label
+          }),
+          jsx(StatusDot, { tone: metric.tone })
+        ]
       }),
       jsx('div', {
         className: 'mt-1 text-2xl font-semibold tabular-nums text-foreground',
-        children: value
+        children: metric.value
       }),
       jsx('div', {
-        className: 'mt-1 text-xs text-muted-foreground',
-        children: detail
+        className: 'mt-1 text-xs leading-5 text-muted-foreground',
+        children: metric.detail
       })
     ]
   })
 }
 
-function FleetOverviewHome({ overview, connection }) {
+const FLEET_OVERVIEW_QUICK_ACTIONS = Object.freeze([
+  Object.freeze({
+    id: 'search', label: 'Search Fleet', icon: 'search', path: '/fleet/network',
+    detail: 'Find managed machines and provider observations.', availability: 'available'
+  }),
+  Object.freeze({
+    id: 'ready', label: 'Ready machines', icon: 'pass', path: '/fleet/network',
+    detail: 'Inspect scheduler readiness and worker capacity.', availability: 'available'
+  }),
+  Object.freeze({
+    id: 'message', label: 'Message a node', icon: 'comment', path: '/fleet/network',
+    detail: 'Select a managed node and use only its reported operations.', availability: 'available'
+  }),
+  Object.freeze({
+    id: 'workflows', label: 'Workflow editor', icon: 'git-merge', path: '/fleet/workflows',
+    detail: 'Open the local non-executing workflow editor.', availability: 'available'
+  }),
+  Object.freeze({
+    id: 'profiles', label: 'Profiles', icon: 'account', path: '/fleet/profiles',
+    detail: 'Profile operator controls await a Fleet-owned contract.', availability: 'reserved'
+  }),
+  Object.freeze({
+    id: 'members', label: 'Members', icon: 'organization', path: '/fleet/members',
+    detail: 'Membership controls await an authenticated operator contract.', availability: 'reserved'
+  }),
+  Object.freeze({
+    id: 'invitations', label: 'Invitations', icon: 'mail', path: '/fleet/invitations',
+    detail: 'Invitation lifecycle controls are not connected yet.', availability: 'reserved'
+  }),
+  Object.freeze({
+    id: 'diagnostics', label: 'Diagnostics', icon: 'pulse', path: '/fleet/settings',
+    detail: 'Backend diagnostic/settings controls are reserved.', availability: 'reserved'
+  })
+])
+
+function FleetQuickActions() {
+  return jsx('div', {
+    className: 'grid gap-2 sm:grid-cols-2',
+    children: FLEET_OVERVIEW_QUICK_ACTIONS.map(action => jsxs('button', {
+      type: 'button',
+      className: 'rounded-lg border border-border bg-muted/10 p-3 text-left hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      onClick: () => host.navigate(action.path),
+      children: [
+        jsxs('div', {
+          className: 'flex items-center gap-2 text-xs font-medium text-foreground',
+          children: [
+            jsx(Codicon, { name: action.icon, size: '0.85rem' }),
+            jsx('span', { children: action.label }),
+            action.availability === 'reserved'
+              ? jsx('span', {
+                  className: 'ml-auto text-[0.625rem] font-normal uppercase tracking-wide text-muted-foreground',
+                  children: 'Reserved'
+                })
+              : null
+          ]
+        }),
+        jsx('p', {
+          className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground',
+          children: action.detail
+        })
+      ]
+    }, action.id))
+  })
+}
+
+function FleetNeedsAttention({ items }) {
+  if (!items.length) {
+    return jsxs('div', {
+      className: 'flex min-h-32 items-center gap-3 rounded-xl border border-border bg-muted/10 p-4',
+      children: [
+        jsx(StatusDot, { tone: 'good' }),
+        jsxs('div', {
+          children: [
+            jsx('div', {
+              className: 'text-sm font-medium text-foreground',
+              children: 'No active readiness blockers'
+            }),
+            jsx('p', {
+              className: 'mt-1 text-xs text-muted-foreground',
+              children: 'Every active managed node is currently scheduler ready.'
+            })
+          ]
+        })
+      ]
+    })
+  }
+  return jsx('ol', {
+    className: 'grid gap-2',
+    children: items.map(item => jsx('li', {
+      className: 'rounded-xl border border-border bg-muted/10 p-4',
+      children: jsxs('div', {
+        className: 'flex flex-wrap items-start gap-3',
+        children: [
+          jsx('span', { className: 'pt-1', children: jsx(StatusDot, { tone: 'warn' }) }),
+          jsxs('div', {
+            className: 'min-w-0 flex-1',
+            children: [
+              jsxs('div', {
+                className: 'flex flex-wrap items-baseline gap-x-2 gap-y-1',
+                children: [
+                  jsx('span', {
+                    className: 'truncate text-sm font-medium text-foreground',
+                    children: item.label
+                  }),
+                  jsx('span', {
+                    className: 'text-[0.6875rem] font-medium text-muted-foreground',
+                    children: item.reasonLabel
+                  })
+                ]
+              }),
+              jsx('p', {
+                className: 'mt-1 text-xs leading-5 text-muted-foreground',
+                children: item.explanation
+              }),
+              jsx('div', {
+                className: 'mt-2 text-[0.6875rem] text-muted-foreground',
+                children: `${item.ageLabel} · ${item.reasons.length} readiness blocker${item.reasons.length === 1 ? '' : 's'}`
+              })
+            ]
+          }),
+          jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: 'outline',
+            onClick: () => host.navigate('/fleet/network'),
+            children: 'Inspect in Network'
+          })
+        ]
+      })
+    }, item.stable_id))
+  })
+}
+
+function FleetEvidenceSummary({ model }) {
+  const capacity = model.capacity.reportingNodes
+    ? `${model.capacity.availableWorkerSlots}/${model.capacity.maxWorkers} worker slots available across ${model.capacity.reportingNodes} reporting node${model.capacity.reportingNodes === 1 ? '' : 's'}`
+    : 'Worker capacity samples unavailable'
+  const memory = model.memory.usedPercent == null
+    ? 'RAM samples unavailable'
+    : `${model.memory.usedPercent}% RAM used across ${model.memory.reportingNodes} reporting node${model.memory.reportingNodes === 1 ? '' : 's'}`
+  return jsxs('div', {
+    className: 'grid gap-3 sm:grid-cols-2',
+    children: [
+      jsxs('div', {
+        className: 'rounded-xl border border-border bg-muted/10 p-4',
+        children: [
+          jsx('div', { className: 'text-xs font-medium text-foreground', children: 'Readiness evidence' }),
+          jsx('p', { className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground', children: model.freshness }),
+          jsx('p', { className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground', children: capacity }),
+          jsx('p', { className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground', children: memory }),
+          jsx('p', {
+            className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground',
+            children: `${model.profileCount} distinct profile name${model.profileCount === 1 ? '' : 's'} observed`
+          })
+        ]
+      }),
+      jsxs('div', {
+        className: 'rounded-xl border border-border bg-muted/10 p-4',
+        children: [
+          jsx('div', { className: 'text-xs font-medium text-foreground', children: 'Authority and availability' }),
+          jsx('p', { className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground', children: model.observationStatus }),
+          jsx('p', {
+            className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground',
+            children: 'Provider visibility, Nodescale trust, Keryx identity, Fleet authorization, and scheduler readiness remain separate gates.'
+          }),
+          jsx('p', {
+            className: 'mt-1 text-[0.6875rem] leading-4 text-muted-foreground',
+            children: 'Task and run counts are unavailable in the current authoritative Desktop contract.'
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function FleetOverviewHome({ overview, connection, refresh }) {
   const section = getFleetSection('overview')
+  const model = useMemo(() => buildFleetOverviewCommandCenterModel(overview), [overview])
+  const headerMeta = `${model.metrics.find(metric => metric.id === 'ready').value}/${model.metrics.find(metric => metric.id === 'managed').value} ready · ${model.freshness}`
   return jsxs('div', {
     className: 'flex min-h-0 flex-1 flex-col overflow-auto',
     children: [
       jsx(FleetSectionHeader, {
         section,
+        meta: headerMeta,
         actions: [
           jsx(ConnectionChip, { state: connection }, 'connection'),
           jsx(Button, {
             type: 'button',
             size: 'sm',
             variant: 'outline',
-            onClick: () => host.navigate('/fleet/network'),
-            children: 'Open Network'
-          }, 'network'),
+            disabled: true,
+            title: 'Invitation creation unavailable until an authenticated operator contract exists.',
+            children: 'Invite someone'
+          }, 'invite'),
           jsx(Button, {
             type: 'button',
             size: 'sm',
             variant: 'outline',
-            onClick: () => host.navigate('/fleet/workflows'),
-            children: 'Open Workflows'
-          }, 'workflows')
+            onClick: () => host.navigate('/fleet/network'),
+            children: 'Search Fleet'
+          }, 'search'),
+          jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: 'outline',
+            onClick: refresh,
+            children: 'Refresh'
+          }, 'refresh'),
+          jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: 'ghost',
+            title: 'Open reserved Fleet settings and diagnostics.',
+            onClick: () => host.navigate('/fleet/settings'),
+            children: 'More'
+          }, 'more')
         ]
       }),
       jsxs('div', {
         className: 'grid gap-5 p-5',
         children: [
           jsx('section', {
-            className: 'grid gap-3 sm:grid-cols-2 xl:grid-cols-4',
-            'aria-label': 'Fleet summary',
-            children: [
-              jsx(FleetMetricCard, {
-                label: 'Managed',
-                value: overview.summary.managed,
-                detail: `${overview.summary.active} active admission${overview.summary.active === 1 ? '' : 's'}`
-              }, 'managed'),
-              jsx(FleetMetricCard, {
-                label: 'Observed',
-                value: overview.summary.observed_unmanaged,
-                detail: 'Provider evidence without Fleet authority'
-              }, 'observed'),
-              jsx(FleetMetricCard, {
-                label: 'Ready',
-                value: overview.summary.ready,
-                detail: `${overview.summary.alive} alive managed node${overview.summary.alive === 1 ? '' : 's'}`
-              }, 'ready'),
-              jsx(FleetMetricCard, {
-                label: 'Needs attention',
-                value: overview.summary.not_ready,
-                detail: 'Active managed nodes that are not scheduler ready'
-              }, 'attention')
-            ]
+            className: 'grid gap-3 sm:grid-cols-2 xl:grid-cols-3',
+            'aria-label': 'Fleet command-center summary',
+            children: model.metrics.map(metric => jsx(FleetMetricCard, { metric }, metric.id))
           }),
           jsxs('section', {
-            className: 'grid gap-4 lg:grid-cols-2',
+            className: 'grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(18rem,0.75fr)]',
             children: [
               jsxs('div', {
-                className: 'rounded-xl border border-border p-4',
+                className: 'grid content-start gap-3',
                 children: [
-                  jsx('h2', {
-                    className: 'text-sm font-semibold text-foreground',
-                    children: 'Operator console'
+                  jsxs('div', {
+                    className: 'flex flex-wrap items-end justify-between gap-2',
+                    children: [
+                      jsxs('div', {
+                        children: [
+                          jsx('h2', { className: 'text-sm font-semibold text-foreground', children: 'Needs attention' }),
+                          jsx('p', {
+                            className: 'mt-1 text-xs text-muted-foreground',
+                            children: 'Active managed nodes blocked from scheduler readiness.'
+                          })
+                        ]
+                      }),
+                      jsx(Button, {
+                        type: 'button', size: 'sm', variant: 'ghost',
+                        onClick: () => host.navigate('/fleet/network'),
+                        children: 'Open Network'
+                      })
+                    ]
                   }),
-                  jsx('p', {
-                    className: 'mt-1 text-xs leading-5 text-muted-foreground',
-                    children: 'Fleet now has one internal operator shell. Membership, invitations, profiles, activity, and settings have stable destinations before their mutation contracts are connected.'
-                  }),
-                  jsx('div', {
-                    className: 'mt-3 flex flex-wrap gap-2',
-                    children: ['members', 'invitations', 'profiles', 'settings'].map(id => {
-                      const target = getFleetSection(id)
-                      return jsx(Button, {
-                        type: 'button',
-                        size: 'sm',
-                        variant: 'outline',
-                        onClick: () => host.navigate(target.path),
-                        children: target.label
-                      }, id)
-                    })
-                  })
+                  jsx(FleetNeedsAttention, { items: model.attention })
                 ]
               }),
               jsxs('div', {
-                className: 'rounded-xl border border-border p-4',
+                className: 'grid content-start gap-3',
                 children: [
-                  jsx('h2', {
-                    className: 'text-sm font-semibold text-foreground',
-                    children: 'Authority stays layered'
+                  jsxs('div', {
+                    children: [
+                      jsx('h2', { className: 'text-sm font-semibold text-foreground', children: 'Quick actions' }),
+                      jsx('p', {
+                        className: 'mt-1 text-xs text-muted-foreground',
+                        children: 'Available actions route to real surfaces; reserved actions explain their contract boundary.'
+                      })
+                    ]
                   }),
-                  jsx('p', {
-                    className: 'mt-1 text-xs leading-5 text-muted-foreground',
-                    children: 'Provider visibility, Nodescale trust, Keryx identity, Fleet authorization, and scheduler readiness remain separate gates. This Desktop shell does not infer one from another.'
-                  })
+                  jsx(FleetQuickActions, {})
                 ]
               })
             ]
+          }),
+          jsx('section', {
+            'aria-label': 'Fleet evidence summary',
+            children: jsx(FleetEvidenceSummary, { model })
           })
         ]
       })
@@ -5351,7 +5730,8 @@ function FleetOperationalPage({ ctx, sectionId }) {
   if (sectionId === 'overview') {
     return jsx(FleetOverviewHome, {
       overview,
-      connection: events.connection
+      connection: events.connection,
+      refresh: query.refetch
     })
   }
 

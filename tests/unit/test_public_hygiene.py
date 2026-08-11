@@ -45,3 +45,45 @@ def test_public_hygiene_allows_generic_fixtures_and_documentation_addresses(
     )
 
     assert checker.find_candidates(tmp_path, [source]) == []
+
+
+def test_public_hygiene_flags_operator_specific_public_residue(tmp_path) -> None:
+    checker = _load_checker()
+    fixture_dir = tmp_path / "tests"
+    fixture_dir.mkdir()
+    source = fixture_dir / "candidate.py"
+    source.write_text(
+        "hostname='phoenix'\n"
+        "given_name='phoenix.acme.dev'\n"
+        "endpoint=8.8.8.8\n"
+        "mesh='fd12:3456:789a::42'\n"
+        "owner=operator@acme.dev\n",
+        encoding="utf-8",
+    )
+
+    candidates = checker.find_candidates(tmp_path, [source])
+
+    assert {(item.category, item.line) for item in candidates} == {
+        ("operator-fixture-identity", 1),
+        ("operator-fixture-identity", 2),
+        ("operator-address", 3),
+        ("operator-address", 4),
+        ("email-address", 5),
+    }
+
+
+def test_public_hygiene_allows_reserved_operator_agnostic_fixtures(tmp_path) -> None:
+    checker = _load_checker()
+    fixture_dir = tmp_path / "tests"
+    fixture_dir.mkdir()
+    source = fixture_dir / "generic.py"
+    source.write_text(
+        "hostname='compute-a'\n"
+        "given_name='compute-a.example.invalid'\n"
+        "ipv4=198.51.100.2\n"
+        "ipv6=2001:db8::2\n"
+        "owner=operator@example.com\n",
+        encoding="utf-8",
+    )
+
+    assert checker.find_candidates(tmp_path, [source]) == []

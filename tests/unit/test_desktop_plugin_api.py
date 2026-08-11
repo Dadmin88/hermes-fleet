@@ -393,7 +393,7 @@ def test_alias_routes_bind_stable_id_and_call_generation_fenced_client(
         network_id="network-1",
         device_id="node-a",
         binding_generation="7",
-        alias="Workstation",
+        alias="compute-a",
     )
     assert asyncio.run(module.set_alias(stable_id, set_request)) == {
         "outcome": "created"
@@ -416,7 +416,7 @@ def test_alias_routes_bind_stable_id_and_call_generation_fenced_client(
                 "network_id": "network-1",
                 "device_id": "node-a",
                 "binding_generation": "7",
-                "alias": "Workstation",
+                "alias": "compute-a",
             },
         ),
         ("socket", socket_path),
@@ -447,7 +447,7 @@ def test_alias_route_rejects_stable_id_mismatch_before_control_call(
         network_id="network-1",
         device_id="node-a",
         binding_generation="1",
-        alias="Workstation",
+        alias="compute-a",
     )
     with pytest.raises(HTTPException) as error:
         asyncio.run(module.set_alias("fleet-node-" + "0" * 64, request))
@@ -473,7 +473,7 @@ def test_alias_route_reports_generation_conflict_without_leaking_details(
         network_id="network-1",
         device_id="node-a",
         binding_generation="1",
-        alias="Workstation",
+        alias="compute-a",
     )
     with pytest.raises(HTTPException) as error:
         asyncio.run(
