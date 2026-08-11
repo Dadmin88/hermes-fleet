@@ -5,6 +5,7 @@ on:
     branches: [feat/desktop-membership-center]
     paths:
       - scripts/phase3_membership_patch.py
+      - scripts/phase3_membership_test_fix.py
       - .github/workflows/phase3-membership-guard.yml
 
 permissions:
@@ -38,7 +39,9 @@ jobs:
           python -m pip install -e ".[dev]" build
 
       - name: Apply deterministic Phase 3 patch
-        run: python scripts/phase3_membership_patch.py
+        run: |
+          python scripts/phase3_membership_patch.py
+          python scripts/phase3_membership_test_fix.py
 
       - name: Format changed Python tests
         run: ruff format tests/unit/test_desktop_plugin_assets.py
@@ -59,11 +62,13 @@ jobs:
         run: >-
           ruff check hermes_fleet dashboard scripts tests
           --exclude scripts/phase3_membership_patch.py
+          --exclude scripts/phase3_membership_test_fix.py
 
       - name: Check production and test formatting
         run: >-
           ruff format --check hermes_fleet dashboard scripts tests
           --exclude scripts/phase3_membership_patch.py
+          --exclude scripts/phase3_membership_test_fix.py
 
       - name: Check public repository hygiene
         run: python scripts/check_public_hygiene.py
