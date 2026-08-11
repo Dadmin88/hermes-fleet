@@ -240,11 +240,15 @@ def test_local_control_rejects_non_matching_peer_before_reading_json(tmp_path) -
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(2)
             client.connect(str(path))
-            client.sendall(b"{not a framed JSON request}")
             try:
-                assert client.recv(1) == b""
-            except ConnectionResetError:
+                client.sendall(b"{not a framed JSON request}")
+            except (BrokenPipeError, ConnectionResetError):
                 pass
+            else:
+                try:
+                    assert client.recv(1) == b""
+                except ConnectionResetError:
+                    pass
     finally:
         server.close()
 
