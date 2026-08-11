@@ -30,7 +30,7 @@ An observed machine is:
 - **not schedulable**;
 - **not executable**.
 
-Visibility never grants N5 trust, N6 binding, N7 projection, reservation, scheduling, alias mutation, managed readiness, operations, or execution authority. Those transitions require separate versioned authority contracts.
+Visibility never grants explicit device trust, authenticated Keryx identity binding, managed Fleet projection, reservation, scheduling, alias mutation, managed readiness, operations, or execution authority. Those transitions require separate versioned authority contracts.
 
 Topology edges are `[]` until a versioned Fleet relationship contract supplies authoritative relationship evidence. Provider/network grouping is presentation structure only; it is not a relationship edge.
 
@@ -50,7 +50,7 @@ Provider SaaS API
 
 The graph never reads Nodescale SQLite in normal operation. REST is authoritative. Authenticated WebSocket messages are invalidation signals only, and the 15-second REST fallback remains enabled.
 
-The strict provider-neutral client accepts `fake`, Headscale, and Tailscale observation kinds. Product/runtime acceptance for this milestone uses real Tailscale observations; fake records must not be used for operator-facing acceptance. Device names and inventory count are never hardcoded. A six-device result is runtime acceptance evidence, not a UI contract.
+The strict provider-neutral client accepts `fake`, Headscale, and Tailscale observation kinds. Operator-facing verification uses real Tailscale observations; fake records must not be used as operator-facing evidence. Device names and inventory count are never hardcoded. Any observed inventory size is verification evidence, not a UI contract.
 
 ## Shared graph projection
 
@@ -266,7 +266,7 @@ It is not adopted directly in the current runtime plugin because:
 - React Flow is not installed or SDK-exported, and its React/React DOM peer contract cannot resolve through the current runtime import map;
 - the official integration requires package CSS with controlled ordering;
 - bundling an independent graph/runtime path into `plugin.js` would weaken the host’s single-React and clean-install contract;
-- exposing it safely would require a host-owned Desktop package plus an approved loader/import-map capability or SDK re-export, stylesheet ownership, compatibility tests, and a Desktop rebuild, outside this Fleet-only checkpoint.
+- exposing it safely would require a host-owned Desktop package plus an approved loader/import-map capability or SDK re-export, stylesheet ownership, compatibility tests, and a Desktop rebuild, which requires Hermes Desktop host/runtime changes beyond Fleet's current plugin contract.
 
 The provider-neutral graph adapter, registry, and node shell isolate the future migration. A renderer adapter would map canonical `x`/`y` to React Flow `position`, presentation/source records to renderer `data`, and explicit canonical edges to React Flow edges. Selection, viewport, and change callbacks remain renderer-local. This lets a host-provided React Flow capability replace the render/interaction layer without changing topology truth or workflow documents.
 
