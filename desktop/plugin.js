@@ -1053,6 +1053,16 @@ export function commitFleetWorkflowEditorMutation(history, updater) {
   return next
 }
 
+export function commitTopologySelectionToWorkflow(history, selectedNode) {
+  const current = normalizeWorkflowHistory(history)
+  const workflow = appendTopologyTargetsToWorkflow(current.present, [selectedNode])
+  if (workflow === current.present) return current
+  return commitFleetWorkflowEditorMutation(
+    current,
+    value => applyWorkflowEdit(value, workflow)
+  )
+}
+
 function beginFleetWorkflowPersistence() {
   if (fleetWorkflowPersistenceLocked) throw new Error('workflow persistence is active')
   fleetWorkflowPersistenceLocked = true
@@ -1155,7 +1165,7 @@ export function createWorkflowDraftAfterDeletion(history, existingWorkflowIds, s
   const current = normalizeWorkflowHistory(history).present
   return {
     ...current,
-    id: allocateWorkflowId(seedId, new Set(existingWorkflowIds))
+    id: allocateWorkflowId(seedId, new Set([...existingWorkflowIds, current.id]))
   }
 }
 
@@ -5586,12 +5596,17 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
   }, [])
   const createFromSelection = useCallback(() => {
     if (!selectedNode) return
-    setWorkflowHistory(current => {
-      const workflow = appendTopologyTargetsToWorkflow(current.present, [selectedNode])
-      if (workflow === current.present) return current
-      return applyWorkflowEdit(current, workflow)
-    })
-    host.navigate('/fleet/workflows')
+    try {
+      setWorkflowHistory(current =>
+        commitTopologySelectionToWorkflow(current, selectedNode)
+      )
+      host.navigate('/fleet/workflows')
+    } catch {
+      host.notify({
+        kind: 'info',
+        message: 'Wait for the durable Workflow request to finish before editing.'
+      })
+    }
   }, [selectedNode, setWorkflowHistory])
   const clearNetworkFilters = useCallback(() => {
     setQuery('')

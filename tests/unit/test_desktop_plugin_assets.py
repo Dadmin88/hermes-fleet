@@ -302,6 +302,7 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
         "export function normalizeWorkflowListing",
         "export function workflowPersistenceCanReplaceHistory",
         "export function commitFleetWorkflowEditorMutation",
+        "export function commitTopologySelectionToWorkflow",
         "export async function loadWorkflowPersistenceControl",
         "export async function saveWorkflowPersistenceControl",
         "export async function deleteWorkflowPersistenceControl",
@@ -767,6 +768,29 @@ loadDeferred.resolve({
 const staleLoadResult = await staleLoadPromise
 const staleLoadUnlocked = !mod.isFleetWorkflowPersistenceLocked()
 
+const crossRouteLoadDeferred = deferred()
+const crossRouteLoadPromise = mod.loadWorkflowPersistenceControl({
+  targetId: workflow.id,
+  request: path => path === '/workflows'
+    ? Promise.resolve(listing)
+    : crossRouteLoadDeferred.promise
+})
+await Promise.resolve()
+await Promise.resolve()
+const crossRouteGenerationBefore = mod.getFleetWorkflowEditorGeneration()
+const crossRouteMutationBlocked = rejects(() =>
+  mod.commitTopologySelectionToWorkflow(
+    mod.createWorkflowHistory(workflow),
+    observedSource
+  )
+)
+const crossRouteGenerationAfter = mod.getFleetWorkflowEditorGeneration()
+crossRouteLoadDeferred.resolve({
+  executionAvailable: false,
+  revision: revision(2)
+})
+const crossRouteLoadResult = await crossRouteLoadPromise
+
 const saveDeferred = deferred()
 const staleSavePromise = mod.saveWorkflowPersistenceControl({
   request: () => saveDeferred.promise,
@@ -825,6 +849,11 @@ const preservedDeleteDraft = mod.createWorkflowDraftAfterDeletion(
   newerDeleteHistory,
   ['other-workflow'],
   'workflow-after-delete'
+)
+const tombstonedIdReserved = mod.createWorkflowDraftAfterDeletion(
+  newerDeleteHistory,
+  [],
+  workflow.id
 )
 
 const failedLoadRejected = await rejectsAsync(() =>
@@ -938,6 +967,10 @@ console.log(JSON.stringify({
   staleLoadKind: staleLoadResult.kind,
   staleLoadName: staleLoadHistory.present.name,
   staleLoadUnlocked,
+  crossRouteMutationBlocked,
+  crossRouteGenerationUnchanged:
+    crossRouteGenerationAfter === crossRouteGenerationBefore,
+  crossRouteLoadKind: crossRouteLoadResult.kind,
   staleSaveKind: staleSaveResult.kind,
   staleSaveVersion: staleSaveResult.revision.version,
   nextSaveKind: nextSaveResult.kind,
@@ -951,6 +984,7 @@ console.log(JSON.stringify({
     name: preservedDeleteDraft.name,
     nodeCount: preservedDeleteDraft.nodes.length
   },
+  tombstonedIdReserved: tombstonedIdReserved.id !== workflow.id,
   failedRequests: [
     failedLoadRejected, loadFailureUnlocked,
     failedSaveRejected, saveFailureUnlocked,
@@ -1094,6 +1128,9 @@ console.log(JSON.stringify({
     assert loaded["staleLoadKind"] == "stale"
     assert loaded["staleLoadName"] == "newer local load edit"
     assert loaded["staleLoadUnlocked"] is True
+    assert loaded["crossRouteMutationBlocked"] is True
+    assert loaded["crossRouteGenerationUnchanged"] is True
+    assert loaded["crossRouteLoadKind"] == "loaded"
     assert loaded["staleSaveKind"] == "saved_stale"
     assert loaded["staleSaveVersion"] == 3
     assert loaded["nextSaveKind"] == "saved"
@@ -1107,6 +1144,7 @@ console.log(JSON.stringify({
         "name": "preserved after delete",
         "nodeCount": 2,
     }
+    assert loaded["tombstonedIdReserved"] is True
     assert loaded["failedRequests"] == [True, True, True, True, True, True]
     assert "execution" not in loaded["topology"]
     assert loaded["boxed"] == ["a"]
