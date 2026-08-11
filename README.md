@@ -1,135 +1,280 @@
 # Hermes Fleet
 
-Hermes Fleet is the coordination and control layer for a network of Hermes-capable nodes. It gives operators stable node identity, exact-node selection, bounded communication envelopes, local authorization policy, remote status, deliberate Hermes execution, readiness awareness, and a growing profile-placement foundation while delegating authenticated transport and durable task/result delivery to [Hermes Keryx](https://github.com/Dadmin88/hermes-keryx).
+> **The control plane for distributed Hermes.**
+>
+> Hermes Fleet turns a collection of Hermes-capable machines into an operator-controlled fleet: one place to understand the network, address exact nodes, enforce Fleet policy, inspect readiness, discover professional profiles, and deliberately run Hermes work across machines.
 
-Fleet is intentionally not a second transport system. Keryx moves and persists authenticated work; Fleet decides what a named node may do with that work, whether it is currently ready, and how operators and agents interact with the distributed system.
+[![CI](https://github.com/Dadmin88/hermes-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Dadmin88/hermes-fleet/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-> Remote Hermes execution is an explicit Fleet capability. Receiving a Fleet message never implies permission to start Hermes.
+Hermes already knows how to run an agent on one machine. The surrounding Hermes ecosystem adds private networking, trusted device membership, authenticated transport, professional profiles, and operator UI.
 
-## Where Fleet fits
+**Fleet is the layer that makes those pieces act like one system without collapsing their responsibilities into one giant service.**
 
-Fleet sits in the middle of a deliberately layered Hermes ecosystem:
+If you want the full architecture first, start with the **[Hermes Fleet ecosystem map](docs/ecosystem.md)**.
 
-```text
-Headscale / Tailscale   private connectivity
-        ↓
-Hermes Nodescale        device identity, trust, admission
-        ↓
-Hermes Fleet            control, authorization, readiness, selection
-        ↓
-Hermes Keryx            authenticated transport + durable tasks/results
-        ↓
-fleet-node              operation validation and dispatch on each machine
-        ↓
-Hermes Agent             local profiles, tools, sessions, Runs execution
+---
 
-Hermes Agency           versioned professional profile packages
-        ↓
-Hermes Agent installs them; Fleet observes where they are actually present
+## Why Fleet exists
+
+A distributed Hermes setup has several different questions to answer:
+
+- Which devices belong to the network?
+- Which devices have actually been trusted?
+- Which authenticated application peer belongs to each device?
+- Which machine should an operator address?
+- Is that machine alive and ready for another Fleet-owned run?
+- Which Hermes professional profiles are installed there?
+- Is the requested Fleet operation allowed?
+- How does work move to that machine and return durably?
+- What actually starts and executes the local agent run?
+
+Those are **not the same question**, and they should not have the same source of truth.
+
+Fleet sits in the middle and coordinates the answers.
+
+A useful high-level analogy is **a control plane for Hermes workers**. Fleet has some of the same concerns people associate with cluster orchestrators: node inventory, placement facts, readiness, policy, dispatch, and observability. But Fleet is intentionally not a container platform, not a second network, and not a second task transport.
+
+## The ecosystem
+
+```mermaid
+flowchart TB
+    operator["Operator / calling agent"]
+    surfaces["Fleet surfaces<br/>Desktop · CLI · Hermes model tools"]
+    fleet["Hermes Fleet<br/>control · policy · readiness · selection"]
+
+    network["Headscale / Tailscale<br/>private connectivity"]
+    nodescale["Hermes Nodescale<br/>device identity · trust · admission"]
+    keryx["Hermes Keryx<br/>authenticated transport · durable tasks/results"]
+    worker["fleet-node<br/>operation validation · dispatch"]
+    hermes["Hermes Agent<br/>models · tools · profiles · sessions · Runs"]
+    agency["Hermes Agency<br/>professional profile distributions"]
+
+    operator --> surfaces --> fleet
+    network --> nodescale
+    nodescale -->|"managed state"| fleet
+    fleet -->|"bounded Fleet request"| keryx
+    keryx -->|"authenticated delivery"| worker
+    worker -->|"explicit execution operation"| hermes
+    hermes --> worker
+    worker -->|"durable result"| keryx
+    keryx --> fleet
+
+    agency -->|"profile packages"| hermes
+    worker -. "readiness + installed profile observations" .-> fleet
+    agency -. "catalog + exact package identity" .-> fleet
 ```
 
-The order above is a map of responsibility, not a statement that every control path is physically chained through every layer. For example, Nodescale projects managed state into Fleet through a local authenticated control interface, while Keryx carries cross-node Fleet work.
+### What each project owns
 
-For the full map, including diagrams, trust gates, task flow, profile placement, and current-versus-planned boundaries, start with the [Hermes Fleet ecosystem map](docs/ecosystem.md).
+| Project | Owns | Fleet uses it for |
+| --- | --- | --- |
+| **Headscale / Tailscale** | Private network membership and reachability | Getting machines onto a private network |
+| **[Hermes Nodescale](https://github.com/Dadmin88/hermes-nodescale)** | Device identity, explicit trust, lifecycle, Keryx identity binding, managed Fleet projection | Knowing which devices are admitted and which Keryx peer belongs to them |
+| **[Hermes Keryx](https://github.com/Dadmin88/hermes-keryx)** | Authenticated peer identity, routing, durable tasks/results, claims, leases, relay delivery, artifacts | Moving Fleet work and results between machines |
+| **Hermes Fleet** | Fleet authorization, exact-node addressing, readiness, dispatch, profile presence, placement facts, operator surfaces | Coordinating the distributed system |
+| **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | Local models, tools, skills, profiles, permissions, memory, sessions, Runs execution | Actually doing the AI work on a machine |
+| **[Hermes Agency](https://github.com/Dadmin88/hermes-agency)** | Versioned professional Hermes profile distributions and bundled skills | Defining the professional worker packages Fleet can observe and locate |
+| **Hermes Desktop + Fleet plugin** | Human-facing Fleet presentation and bounded operator actions | Seeing and operating the fleet visually |
 
-## Capabilities
+The architectural rule is simple:
+
+> **Fleet coordinates these systems through their contracts. It does not reimplement them.**
+
+Keryx remains the transport. Nodescale remains the device-trust authority. Hermes remains the local execution runtime. Agency remains the professional profile source.
+
+---
+
+## The trust chain
+
+Fleet is deliberately built around separate gates:
+
+```text
+network reachable
+    != device trusted
+    != Keryx identity bound
+    != Fleet operation authorized
+    != node scheduler-ready
+    != exact requested profile present
+    != permission for arbitrary execution
+```
+
+That distinction matters even on a private network.
+
+A machine being connected does not make it trusted. A Keryx-authenticated peer is not automatically authorized for every Fleet operation. A node being scheduler-ready does not grant `fleet.hermes.run`. A same-name profile does not prove that the expected Agency package is installed.
+
+Fleet fails closed rather than promoting convenient signals into authority.
+
+---
+
+## What Fleet does today
 
 Fleet currently provides:
 
-- friendly operator-managed names mapped to immutable Keryx peer identities;
-- deterministic exact-node selection;
-- bounded, versioned request envelopes and deadlines;
-- default-deny per-node operation policy;
-- direct health, inventory, and message operations;
-- deliberate remote Hermes execution through the local Hermes Runs API;
-- durable task-to-run binding so reclaimed work does not silently create duplicate Hermes runs;
-- durable task status reattachment through Keryx;
-- local managed-state projection from Nodescale with operator deny precedence;
-- persisted layered node observations with freshness, Hermes worker capacity, resources, and explainable scheduler readiness;
-- observed installed Hermes profile distributions as part of current node state;
-- exact `hermes-agency-profile-content.v1` package digests when a profile's Agency identity can be safely proven;
-- deterministic ready-node lookup for requested profiles, including exact package lookup;
-- pinned immutable Hermes Agency snapshot/package validation and read-only eligible placement-candidate discovery;
-- CLI commands, Hermes model tools, an operator skill, Hermes Desktop surfaces, and systemd deployment units.
+- **Stable operator-facing node identity** mapped to immutable Keryx peer identities.
+- **Deterministic exact-node selection** for operator-directed work.
+- **Bounded, versioned Fleet request envelopes** with absolute deadlines and payload limits.
+- **Default-deny per-node authorization** for Fleet operations.
+- **Direct node operations** for health, inventory, and bounded messaging.
+- **Deliberate remote Hermes execution** through the explicit `fleet.hermes.run` operation.
+- **Durable task-to-run binding** so reclaimed Keryx work does not silently create duplicate Hermes runs.
+- **Durable status reattachment** through Keryx task/result state.
+- **Nodescale-managed Fleet projection** with Fleet-local deny precedence.
+- **Current node observations** with freshness, worker capacity, resource facts, and explainable scheduler readiness.
+- **Installed Hermes profile observation** as part of current node state.
+- **Exact Agency V1 profile content identity** when Fleet can safely prove it.
+- **Ready-node lookup by profile**, including exact `{name, version, content_digest}` lookup.
+- **Pinned immutable Hermes Agency package validation** at an exact repository revision.
+- **Read-only placement-candidate discovery** for eligible scheduler-ready nodes.
+- **CLI, Hermes model tools, an operator skill, Hermes Desktop integration, and deployment assets.**
 
-Automatic remote Agency profile installation and complete locate-or-place orchestration are **not yet current Fleet operations**. Fleet has the read-only identity, presence, source-validation, and candidate-selection foundations without pretending the privileged mutation path is already shipped.
+### What Fleet does not pretend to do yet
 
-## Responsibility boundaries
+These are not current Fleet contracts:
 
-| Component | Responsibility |
-| --- | --- |
-| **Hermes Fleet** | Friendly node identity, Fleet authorization, exact-node selection, request envelopes, dispatch, readiness, observed profile presence, execution binding, operator tools, and presentation. |
-| **Hermes Keryx** | Authenticated peer identity, discovery, routing, durable task/result state, claims, leases, result delivery, cancellation records, artifacts, and relay behavior. |
-| **Hermes Nodescale** | Provider-device identity, explicit device trust, Keryx identity binding, managed membership, and desired managed Fleet state. |
-| **Hermes Agent** | Local agent execution, profile installation, models, tools, skills, permissions, memory, and sessions. |
-| **Hermes Agency** | Versioned professional Hermes profile distributions, role definitions, bundled skills, and package/catalog metadata. |
-| **Headscale / Tailscale** | Private network membership and reachability underneath Nodescale-managed device workflows. |
+- automatic remote Agency profile installation;
+- complete automatic `locate-or-place` orchestration;
+- automatic placement winner selection;
+- a general CPU/GPU workload scheduler;
+- disposable per-task containers or environment recipes;
+- executable distributed workflow graphs;
+- a second mailbox, relay, or transport system;
+- proven end-to-end cancellation of an already-running remote Hermes run.
 
-A useful trust rule is:
+Several of those are intentional architectural directions. They become product claims only after their contracts, implementation, tests, and operational proofs are merged.
 
-```text
-connected
-!= trusted
-!= Keryx-bound
-!= Fleet-authorized
-!= scheduler-ready
-!= exact-profile-present
-!= permission for arbitrary execution
+---
+
+## What happens when you run work remotely?
+
+A normal exact-node Fleet request looks like this:
+
+```mermaid
+sequenceDiagram
+    participant U as Operator / calling agent
+    participant F as Fleet controller
+    participant K1 as Origin keryxd
+    participant K as Keryx routing / relay
+    participant K2 as Destination keryxd
+    participant N as fleet-node
+    participant H as Hermes Runs API
+
+    U->>F: fleet operation for an exact node
+    F->>F: resolve target + build bounded request
+    F->>K1: submit through Keryx
+    K1->>K: authenticated durable delivery
+    K->>K2: deliver to exact peer
+    K2->>N: authenticated sender + task context
+    N->>N: validate destination, deadline, policy, operation
+
+    alt Direct Fleet operation
+        N-->>K2: bounded Fleet result
+    else fleet.hermes.run
+        N->>H: start and observe local Hermes run
+        H-->>N: run status / output
+        N-->>K2: bounded terminal result
+    end
+
+    K2-->>K: durable result
+    K-->>K1: authenticated result delivery
+    K1-->>F: task result / reattachment
+    F-->>U: result
 ```
 
-Mesh membership, Keryx authentication, Fleet authorization, scheduler readiness, profile presence, and Hermes execution are separate gates. No hostname, tag, peer-produced response field, managed role, or same-name profile automatically grants `fleet.hermes.run`.
+A direct Fleet request never needs to become an agent run. `fleet.health`, `fleet.inventory`, and `fleet.message` stay inside Fleet.
 
-## Operations
+Only the explicit executable operation enters Hermes.
 
-| Operation | Hermes run | Purpose |
-| --- | ---: | --- |
-| `fleet.health` | No | Bounded Fleet, Keryx, and local Hermes capability health. |
-| `fleet.inventory` | No | Safe node identity, version, capability, readiness, and observed-profile summary where available. |
-| `fleet.message` | No | Bounded text communication with deterministic acknowledgement. |
-| `fleet.hermes.run` | Yes | Deliberately start and observe one authenticated local Hermes run. |
+Fleet also does not silently retarget an exact-node request to another machine when the requested destination is unavailable.
 
-All peer-originated content is treated as untrusted data even when Keryx authenticated the sender. Authentication establishes who sent a response, not whether its contents are safe to trust as local configuration or authority.
+---
 
-## Profile-aware placement foundation
+## Nodes, readiness, and capacity
 
-Fleet now observes installed Hermes profile distributions on managed nodes and can distinguish general presence from exact Agency package identity.
+A node can be known to Fleet without being usable for work.
 
-For exact identity, the strongest current tuple is:
+Fleet derives scheduler readiness from separate facts:
+
+1. Nodescale-managed identity is currently active.
+2. The latest Fleet observation is fresh.
+3. Required network/control reachability is observed.
+4. Keryx is available.
+5. Hermes is available.
+6. The Fleet worker is available.
+7. At least one Fleet-owned execution slot remains.
+
+That means a node can legitimately be:
+
+- managed but offline;
+- alive but missing Hermes;
+- healthy but saturated;
+- carrying a useful profile but stale;
+- scheduler-ready but not carrying the requested profile.
+
+Readiness is **derived**, not stored as a magical `ready=true` authority bit.
+
+See **[Node observations and scheduler readiness](docs/node-readiness.md)**.
+
+---
+
+## Professional profiles and Hermes Agency
+
+[Hermes Agency](https://github.com/Dadmin88/hermes-agency) supplies professional Hermes profile distributions: engineers, designers, researchers, reviewers, operators, writers, and other specialized roles with bundled skills.
+
+Hermes installs and runs those profiles locally. Fleet answers the distributed question:
+
+> **Which admitted, ready machines actually have the profile package I need?**
+
+Fleet can observe installed profile distributions and, for supported Agency packages, prove an exact content identity:
 
 ```text
-profile name + distribution version + Agency V1 content digest
+profile name
++ distribution version
++ hermes-agency-profile-content.v1 SHA-256 digest
 ```
 
-Fleet can query ready nodes already carrying a requested profile, require an exact digest when needed, validate a profile package from an approved Agency repository at an exact pinned revision, and return the currently ready admitted nodes that could be considered as placement targets.
+That lets Fleet distinguish:
 
-The current placement-candidate query deliberately does **not** rank or choose a winner, and Fleet does not yet expose the privileged remote install operation required to complete automatic locate-or-place.
+- the exact approved package;
+- the same profile name with different content;
+- a legacy or generic installation without a provable exact Agency digest;
+- no installation of that profile at all.
 
-See [Profile identity and placement](docs/profile-placement.md).
+### Locate versus place
 
-## Implementation
-
-Hermes Fleet currently contains both the proven Python plugin/runtime and the growing Rust implementation under the same product and repository.
-
-The Python implementation remains the operational integration surface and behavioral compatibility reference. The Rust workspace currently provides durable domain, state, readiness, profile-presence, and control foundations and is intended to assume more of the permanent runtime over time without changing the product identity or external contracts.
-
-Repository layout:
+Fleet already has the read-only foundations for placement:
 
 ```text
-hermes_fleet/           Python Fleet plugin/runtime and integration surfaces
-crates/fleet-domain/    Rust domain types, authorization, observations, readiness
-crates/fleet-state/     Rust durable Fleet state and state queries
-crates/fleet-control/   Rust local managed-state/observation control service
-desktop/                Hermes Desktop Fleet plugin
-fixtures/               language-neutral compatibility fixtures
-ops/                    service and deployment assets
-docs/                   ecosystem, architecture, operations, and contract docs
-AGENTS.md                coding-agent architecture and repository guidance
-SKILL.md                 Hermes operator skill
+requested Agency package
+        ↓
+find exact ready carriers
+        ↓
+if none exist, find eligible ready placement candidates
 ```
 
-## Install as a Hermes plugin
+The next privileged step, remotely installing the package and proving fresh exact post-install presence before routing work, is **not yet a shipped Fleet operation**.
 
-Git must already be authorized to access this repository.
+See **[Profile identity and placement](docs/profile-placement.md)** for the precise boundary.
+
+---
+
+## Fleet Desktop
+
+Fleet includes a Hermes Desktop integration for operating the system visually.
+
+The Desktop surface is intentionally backed by validated Fleet state rather than frontend guesses. It can present managed and observed machines, readiness evidence, worker capacity, resources, profile presence, operator-facing topology, and supported actions without turning UI layout into authority.
+
+Provider-visible machines remain visibly different from trusted/admitted managed machines.
+
+The local Workflow editor is currently an authoring surface only. A line drawn in the UI is not a durable distributed execution graph.
+
+See **[Fleet Desktop](docs/desktop.md)** and **[Fleet Canvas topology](docs/canvas.md)**.
+
+---
+
+## Install Fleet as a Hermes plugin
+
+Fleet is a Hermes plugin. This quick start assumes Git is authorized for the repository and that the supporting Keryx/runtime services required by your deployment are available.
 
 ```bash
 hermes plugins install Dadmin88/hermes-fleet --enable
@@ -137,13 +282,17 @@ hermes fleet init
 hermes plugins list --plain --no-bundled
 ```
 
-Restart an already-running Hermes gateway after installing or updating the plugin so that process loads the current Fleet model tools:
+If a Hermes gateway is already running, restart it after installing or updating Fleet so the process loads the current Fleet tools:
 
 ```bash
 hermes gateway restart
 ```
 
 `hermes fleet init` creates missing Fleet state without overwriting valid operator-managed state.
+
+For a real multi-machine deployment, follow **[Deployment](docs/deployment.md)** rather than treating plugin installation as the entire stack.
+
+---
 
 ## Operator CLI
 
@@ -159,7 +308,29 @@ hermes fleet status TASK_ID
 hermes fleet cancel TASK_ID
 ```
 
-Model tools:
+Examples:
+
+```bash
+# Inspect the fleet
+hermes fleet list
+hermes fleet show compute-a
+
+# Check a node
+hermes fleet health compute-a
+hermes fleet inventory compute-a
+
+# Send a bounded Fleet message
+hermes fleet message compute-a "ready for the next task?"
+
+# Deliberately start Hermes work on that exact node
+hermes fleet run compute-a "Review the current branch and summarize the risks."
+```
+
+Cross-node running-task cancellation currently fails closed because Fleet cannot yet prove that the destination worker observed cancellation and stopped an already-bound Hermes run.
+
+### Hermes model tools
+
+Fleet also exposes model-callable tools:
 
 - `fleet_list_nodes`
 - `fleet_get_node`
@@ -169,18 +340,85 @@ Model tools:
 - `fleet_get_task`
 - `fleet_cancel_task`
 
-Cross-node cancellation currently fails closed because Fleet cannot yet prove that the destination worker observed cancellation and stopped an already-bound Hermes run.
+The same authorization and trust boundaries apply whether a human or another agent initiated the operation.
+
+---
+
+## Fleet operation vocabulary
+
+| Operation | Starts Hermes? | Purpose |
+| --- | ---: | --- |
+| `fleet.health` | No | Bounded Fleet, Keryx, and local Hermes capability health |
+| `fleet.inventory` | No | Safe node identity, capability, readiness, resource, and observed-profile summary where available |
+| `fleet.message` | No | Bounded text communication with deterministic acknowledgement |
+| `fleet.hermes.run` | **Yes** | Deliberately start and observe one authenticated local Hermes run |
+
+Receiving a Fleet message never implies permission to start Hermes.
+
+Peer-originated content remains untrusted data even when Keryx authenticated the sender. Authentication proves **who delivered it**, not that returned text, fields, or model-generated content should become local authority.
+
+---
+
+## Repository layout
+
+Fleet currently includes both the proven Python plugin/runtime and a growing Rust implementation under one product contract.
+
+```text
+hermes_fleet/           Python Fleet plugin/runtime and integration surfaces
+crates/fleet-domain/    Rust domain types, authorization, observations, readiness
+crates/fleet-state/     Rust durable Fleet-owned state and placement/read queries
+crates/fleet-control/   Rust local managed-state / observation control service
+desktop/                Hermes Desktop Fleet plugin
+dashboard/              dashboard integration surface
+fixtures/               language-neutral compatibility fixtures
+ops/                    service and deployment assets
+proofs/                 bounded cross-component proof harnesses
+docs/                   durable public documentation
+tests/                  Python/unit/integration contract coverage
+AGENTS.md                coding-agent architecture and repository guidance
+SKILL.md                 Hermes operator skill
+```
+
+The Python implementation remains an operational integration and compatibility reference while Rust owns an increasing share of the permanent domain, state, and control foundation.
+
+Externally meaningful contracts matter more than which language currently implements them.
+
+---
+
+## Documentation map
+
+New to Fleet? Read these in order:
+
+| Document | Use it when... |
+| --- | --- |
+| **[Ecosystem map](docs/ecosystem.md)** | You want to understand the whole Hermes system and how the repositories fit together |
+| **[Architecture](docs/architecture.md)** | You need Fleet's internal trust, state, request, and execution boundaries |
+| **[Profile identity and placement](docs/profile-placement.md)** | You are working with Hermes Agency profiles, exact package identity, or placement |
+| **[Node readiness](docs/node-readiness.md)** | You need to understand liveness, freshness, capacity, resources, or scheduler readiness |
+| **[Managed projection V1](docs/managed-projection-v1.md)** | You are integrating Nodescale-managed device state into Fleet |
+| **[Deployment](docs/deployment.md)** | You are setting up controller, worker, Keryx, and Hermes services |
+| **[Fleet Desktop](docs/desktop.md)** | You are operating or developing the Desktop integration |
+| **[Fleet Canvas](docs/canvas.md)** | You are working on topology or the local workflow authoring surface |
+| **[Integration verification](docs/smoke-test.md)** | You need repeatable real two-node verification |
+| **[AGENTS.md](AGENTS.md)** | You are a coding agent or maintainer changing cross-repository contracts |
+| **[SKILL.md](SKILL.md)** | You are operating Fleet from Hermes |
+| **[CHANGELOG.md](CHANGELOG.md)** | You need release history |
+
+The complete documentation index is in **[docs/README.md](docs/README.md)**.
+
+---
 
 ## Development
 
-Python checks:
+Python:
 
 ```bash
 python -m pytest
 python -m ruff check .
+python -m ruff format --check .
 ```
 
-Rust checks:
+Rust:
 
 ```bash
 cargo fmt --all -- --check
@@ -189,37 +427,29 @@ cargo test --workspace
 cargo build --workspace
 ```
 
-Use the language-neutral fixtures when changing behavior shared by the Python and Rust implementations.
+Use the language-neutral fixtures when changing behavior shared by Python and Rust.
 
-Coding agents should start with [`AGENTS.md`](AGENTS.md) before changing cross-repository contracts.
+For changes that cross repository boundaries, run the relevant real integration/proof path rather than considering isolated unit tests sufficient.
 
-## Documentation
+Coding agents should read **[AGENTS.md](AGENTS.md)** before changing architecture or cross-component contracts.
 
-Start with the [documentation index](docs/README.md).
+---
 
-- [Ecosystem map](docs/ecosystem.md)
-- [Architecture](docs/architecture.md)
-- [Profile identity and placement](docs/profile-placement.md)
-- [Deployment](docs/deployment.md)
-- [Managed projection V1](docs/managed-projection-v1.md)
-- [Node observations and scheduler readiness](docs/node-readiness.md)
-- [Fleet Desktop](docs/desktop.md)
-- [Fleet Canvas topology](docs/canvas.md)
-- [Integration verification](docs/smoke-test.md)
-- [Coding-agent guide](AGENTS.md)
-- [Operator skill](SKILL.md)
-- [Changelog](CHANGELOG.md)
+## Design principles
 
-Implementation chronology, checkpoint hashes, machine-specific rollout notes, and agent plans belong in pull requests, issues, releases, CI artifacts, or local workspace state rather than durable product documentation.
+Fleet tries to preserve a few boring-but-powerful rules:
 
-## Known limitations
+- **Exact identities over convenient names.** Friendly names are presentation; immutable identities carry authority.
+- **Explicit trust over network proximity.** Connected is not trusted.
+- **Authorization stays local to the application boundary.** Transport authentication is not Fleet permission.
+- **Readiness is evidence, not optimism.** Missing or stale facts fail closed.
+- **No duplicate infrastructure for convenience.** Keryx owns transport and durable task state.
+- **Do not trust acknowledgements as proof of side effects.** Durable observed state should prove important mutations.
+- **Current product and future architecture are documented separately.** A roadmap idea is not a shipped capability.
 
-- Automatic remote Agency profile installation and complete locate-or-place orchestration are not yet part of the current Fleet operation surface.
-- Cross-node running-task cancellation is not yet proven end to end and therefore remains unavailable.
-- Keryx relay offline mailbox durability is a Keryx concern; Fleet does not add a second mailbox or queue.
-- Cross-node artifact transfer, fan-out, pub/sub, broadcast, persistent inboxes, multi-node chat, executable workflow graphs, and multi-tenant control are outside the current Fleet surface. Desktop Workflow definitions are now durable, backend-owned, and immutably versioned authoring documents, but execution remains unavailable.
-- Disposable per-task containers and recipe-based execution environments are architectural direction, not a current Fleet contract.
-- A running Hermes gateway must be restarted after a plugin update before that process sees newly installed Fleet model tools.
+Those rules are what keep Fleet a control plane instead of letting it slowly become a distributed monolith.
+
+---
 
 ## License
 
