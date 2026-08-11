@@ -137,9 +137,9 @@ def test_desktop_client_projects_authoritative_nodes_into_bounded_summary(
         _node(active=False, alive=False, ready=False, device_id="node-c"),
     ]
     nodes[0]["naming"] = {
-        "display_name": "Upstairs Workstation",
-        "provider_name": "build-server",
-        "alias": "Upstairs Workstation",
+        "display_name": "compute-a",
+        "provider_name": "provider-node-a",
+        "alias": "compute-a",
         "has_alias": True,
     }
     thread = _serve_once(
@@ -264,7 +264,7 @@ def test_desktop_alias_client_sends_generation_fenced_set_and_clear(tmp_path):
             network_id="network-1",
             device_id="node-a",
             binding_generation="7",
-            alias="Workstation",
+            alias="compute-a",
         )
         == "created"
     )
@@ -279,7 +279,7 @@ def test_desktop_alias_client_sends_generation_fenced_set_and_clear(tmp_path):
                 "device_id": "node-a",
             },
             "binding_generation": "7",
-            "alias": "Workstation",
+            "alias": "compute-a",
         }
     ]
 

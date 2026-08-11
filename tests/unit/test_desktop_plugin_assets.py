@@ -221,8 +221,8 @@ const observed = {
   provider_kind: 'tailscale',
   provider_instance_id: 'instance-1',
   provider_node_id: 'node-1',
-  hostname: 'katana',
-  given_name: 'katana.example.ts.net',
+  hostname: 'compute-a',
+  given_name: 'compute-a.example.invalid',
   addresses: ['provider-address-1'],
   tags: ['tag:machine'],
   online: null,
@@ -270,8 +270,8 @@ console.log(JSON.stringify({
     assert len(loaded["registryKeys"]) == 47
     assert loaded["machineType"]["icon"] == "server-process"
     assert loaded["unknownType"] is None
-    assert loaded["title"] == "katana"
-    assert loaded["technicalName"] == "katana.example.ts.net"
+    assert loaded["title"] == "compute-a"
+    assert loaded["technicalName"] == "compute-a.example.invalid"
     assert loaded["nodeType"] == "machine"
     assert loaded["status"] == {
         "key": "observed",
@@ -523,7 +523,10 @@ history = mod.redoWorkflow(history)
 const observedSource = {
   stable_id: 'observed-node-' + 'a'.repeat(64),
   kind: 'observed', node_type: 'machine',
-  naming: { display_name: 'katana', technical_name: 'katana.example.ts.net' },
+  naming: {
+    display_name: 'compute-observed',
+    technical_name: 'compute-observed.example.invalid'
+  },
   provider: {
     kind: 'tailscale', label: 'Tailscale', node_id: 'node-1',
     network_id: 'network-1', instance_id: 'instance-1'
@@ -1093,11 +1096,11 @@ const node = (id, options = {}) => ({
 })
 const nodes = [
   node('node-c', { active: false, alive: false }),
-  node('node-a', { name: 'Worker One', ready: true }),
-  node('node-b', { alias: 'Upstairs Workstation' })
+  node('node-a', { name: 'compute-a', ready: true }),
+  node('node-b', { alias: 'compute-b' })
 ]
 const graph = mod.buildFleetGraph(nodes, { 'node-b': { x: 900, y: 700 } })
-const filtered = mod.filterFleetGraph(graph, 'upstairs', 'all')
+const filtered = mod.filterFleetGraph(graph, 'compute-b', 'all')
 const attention = mod.filterFleetGraph(graph, '', 'attention')
 const fit = mod.fitFleetGraph(graph.nodes.slice(0, 1), 400, 300, 40)
 const zoomed = mod.zoomFleetViewport({ x: 10, y: 20, scale: 1 }, 2, 100, 80)
@@ -1137,8 +1140,8 @@ const observed = {
   provider_kind: 'headscale',
   provider_instance_id: 'instance-1',
   provider_node_id: 'provider-node-1',
-  hostname: 'observed-host',
-  given_name: 'Observed Worker',
+  hostname: 'compute-observed',
+  given_name: 'compute-observed.example.invalid',
   addresses: ['provider-address-1'],
   tags: ['tag:worker'],
   online: true,
@@ -1151,7 +1154,7 @@ const observed = {
 observed.managed = { active: true }
 observed.readiness = { scheduler_ready: true }
 observed.operations = ['fleet.hermes.run']
-observed.alias = 'Injected alias'
+observed.alias = 'compute-observed'
 observed.reservation = { id: 'reservation-1' }
 observed.binding = { id: 'binding-1' }
 observed.execution = { run: 'run-1' }
@@ -1284,7 +1287,7 @@ console.log(JSON.stringify({
             },
             {
                 "id": "observed-node-" + "a" * 64,
-                "label": "observed-host",
+                "label": "compute-observed",
                 "kind": "observed",
                 "status": "OBSERVED · UNMANAGED",
                 "detail": "Headscale",
@@ -1453,7 +1456,7 @@ console.log(JSON.stringify({
   unknownReason: mod.describeReadinessReason('future_reason'),
   age: mod.formatFleetAge(2500),
   bytes: mod.formatFleetBytes(17179869184),
-  mutation: mod.aliasMutationBody(base, 'Workstation'),
+  mutation: mod.aliasMutationBody(base, 'compute-a'),
   activity: mod
     .diffFleetOverview({ nodes: [stale] }, { nodes: [base] }, 3)
     .map(item => [item.kind, item.node_id]),
@@ -1509,7 +1512,7 @@ console.log(JSON.stringify({
             "network_id": "network-1",
             "device_id": "device-1",
             "binding_generation": "7",
-            "alias": "Workstation",
+            "alias": "compute-a",
         },
         "activity": [["recovered", "fleet-node-" + "1" * 64]],
         "staleResource": "Last observed 2.5s ago: 1 / 3 active · 2 free",
@@ -1568,3 +1571,190 @@ def test_fleet_app_shell_has_stable_internal_routes_without_sidebar_sprawl() -> 
     )
     assert "No invitation secret is read, cached, or simulated by this shell." in source
     assert "This shell does not mutate backend configuration." in source
+
+
+def test_phase1_overview_command_center_derives_truthful_operator_state() -> None:
+    source = PLUGIN.read_text(encoding="utf-8")
+    for contract in (
+        "export function buildFleetOverviewCommandCenterModel",
+        "export function formatFleetObservationAge",
+        "Fleet command-center summary",
+        "Needs attention",
+        "Quick actions",
+        "Readiness evidence",
+        "Authority and availability",
+        "Invite someone",
+        "Search Fleet",
+        (
+            "Invitation creation unavailable until an authenticated "
+            "operator contract exists."
+        ),
+        (
+            "Task and run counts are unavailable in the current "
+            "authoritative Desktop contract."
+        ),
+    ):
+        assert contract in source
+    assert "pending invitations" not in source.lower()
+    assert "pending members" not in source.lower()
+
+    script = r"""
+import fs from 'node:fs'
+const dataUrl = source =>
+  `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+const sdkUrl = dataUrl(`
+  export const ROUTES_AREA = 'app.routes'
+  export const SIDEBAR_NAV_AREA = 'app.sidebar.nav'
+  export const Button = 'Button'
+  export const Codicon = 'Codicon'
+  export const ContextMenu = 'ContextMenu'
+  export const ContextMenuContent = 'ContextMenuContent'
+  export const ContextMenuItem = 'ContextMenuItem'
+  export const ContextMenuSeparator = 'ContextMenuSeparator'
+  export const ContextMenuTrigger = 'ContextMenuTrigger'
+  export const ScrollArea = 'ScrollArea'
+  export const SearchField = 'SearchField'
+  export const EmptyState = 'EmptyState'
+  export const ErrorState = 'ErrorState'
+  export const Loader = 'Loader'
+  export const StatusDot = 'StatusDot'
+  export const PALETTE_AREA = 'palette'
+  export const STATUSBAR_AREAS = { right: 'status:right' }
+  export const host = { navigate: () => undefined, notify: () => undefined }
+  export const queryClient = {
+    getQueryData: () => undefined,
+    setQueryData: () => undefined,
+    invalidateQueries: () => Promise.resolve()
+  }
+  export const useQuery = () => { throw new Error('render was not expected') }
+`)
+const reactUrl = dataUrl(`
+  export const memo = value => value
+  export const useCallback = value => value
+  export const useEffect = () => undefined
+  export const useMemo = factory => factory()
+  export const useRef = value => ({ current: value })
+  export const useState = value => [
+    typeof value === 'function' ? value() : value,
+    () => {}
+  ]
+`)
+const jsxUrl = dataUrl(`
+  export const jsx = (type, props, key) => ({ type, props, key })
+  export const jsxs = jsx
+`)
+let source = fs.readFileSync(process.argv[1], 'utf8')
+source = source.replaceAll("'@hermes/plugin-sdk'", `'${sdkUrl}'`)
+source = source.replaceAll("'react/jsx-runtime'", `'${jsxUrl}'`)
+source = source.replaceAll("'react'", `'${reactUrl}'`)
+const mod = await import(dataUrl(source))
+const gib = 1024 * 1024 * 1024
+const node = (hex, name, options) => ({
+  stable_id: 'fleet-node-' + hex.repeat(64),
+  naming: { display_name: name },
+  managed: { state: options.active ? 'active' : 'disabled', active: options.active },
+  readiness: {
+    scheduler_ready: options.ready,
+    observation_age_ms: options.age,
+    reasons: options.reasons,
+    capacity: options.capacity,
+    profiles: options.profiles,
+    resources: { ram: options.ram }
+  }
+})
+const overview = {
+  summary: {
+    managed: 3,
+    active: 2,
+    alive: 2,
+    ready: 1,
+    not_ready: 1,
+    observed_unmanaged: 2
+  },
+  nodes: [
+    node('a', 'Compute Alpha', {
+      active: true,
+      ready: true,
+      age: 3000,
+      reasons: [],
+      capacity: { active_workers: 1, max_workers: 2, available_worker_slots: 1 },
+      profiles: [{ name: 'general', version: '1' }],
+      ram: { total_bytes: 8 * gib, available_bytes: 4 * gib }
+    }),
+    node('b', 'Compute Beta', {
+      active: true,
+      ready: false,
+      age: 12000,
+      reasons: ['network_unreachable'],
+      capacity: { active_workers: 2, max_workers: 4, available_worker_slots: 2 },
+      profiles: [
+        { name: 'general', version: '1' },
+        { name: 'research', version: '1' }
+      ],
+      ram: { total_bytes: 4 * gib, available_bytes: 2 * gib }
+    }),
+    node('c', 'Compute Reserve', {
+      active: false,
+      ready: false,
+      age: null,
+      reasons: ['node_not_active'],
+      capacity: null,
+      profiles: null,
+      ram: null
+    })
+  ],
+  observed_nodes: [{}, {}],
+  observations: { state: 'available', truncated: false }
+}
+const model = mod.buildFleetOverviewCommandCenterModel(overview)
+console.log(JSON.stringify({
+  metrics: model.metrics,
+  attention: model.attention,
+  capacity: model.capacity,
+  memory: model.memory,
+  profileCount: model.profileCount,
+  freshness: model.freshness,
+  observationStatus: model.observationStatus,
+  age: mod.formatFleetObservationAge(12000)
+}))
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(PLUGIN)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    loaded = json.loads(completed.stdout)
+    assert [metric["id"] for metric in loaded["metrics"]] == [
+        "managed",
+        "active",
+        "alive",
+        "ready",
+        "observed",
+        "attention",
+    ]
+    assert [metric["value"] for metric in loaded["metrics"]] == [3, 2, 2, 1, 2, 1]
+    assert len(loaded["attention"]) == 1
+    assert loaded["attention"][0]["label"] == "Compute Beta"
+    assert loaded["attention"][0]["reason"] == "network_unreachable"
+    assert loaded["attention"][0]["reasonLabel"] == "Network unreachable"
+    assert loaded["attention"][0]["ageLabel"] == "12s ago"
+    assert loaded["capacity"] == {
+        "reportingNodes": 2,
+        "activeWorkers": 3,
+        "maxWorkers": 6,
+        "availableWorkerSlots": 3,
+    }
+    assert loaded["memory"] == {
+        "reportingNodes": 2,
+        "totalBytes": 12 * 1024 * 1024 * 1024,
+        "availableBytes": 6 * 1024 * 1024 * 1024,
+        "usedBytes": 6 * 1024 * 1024 * 1024,
+        "usedPercent": 50,
+    }
+    assert loaded["profileCount"] == 2
+    assert loaded["freshness"] == "Oldest managed sample 12s ago"
+    assert loaded["observationStatus"] == "Provider observations live"
+    assert loaded["age"] == "12s ago"

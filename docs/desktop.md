@@ -86,6 +86,17 @@ The responsive internal navigation collapses from a left rail to a horizontally 
 
 Workflow documents remain process-memory-only in this phase. Internal Fleet route changes preserve the current workflow editing session, including exact-machine targets created from Network selection, but a Desktop plugin reload still resets that session. This does not create a durable workflow backend or execution runtime.
 
+
+### Overview command center
+
+`/fleet` is the operator command center for the state Fleet can currently prove. It is intentionally derived from the existing validated Desktop overview contract rather than a parallel dashboard data model.
+
+The Overview shows clickable **Managed**, **Active**, **Alive**, **Ready**, **Observed**, and **Needs attention** summaries. Managed-node readiness blockers are derived directly from the authoritative readiness reason list and include the node's presentation label plus bounded observation-age context. Disabled or removed nodes do not inflate the active needs-attention count, and provider observations remain explicitly unmanaged.
+
+The Overview also summarizes reporting worker-slot capacity, aggregate RAM usage when managed nodes report it, distinct observed profile names, provider-observation availability, and managed-sample freshness. Active task/run counts are deliberately not shown because the current Desktop contract does not expose authoritative task state.
+
+Quick actions route only to existing Fleet surfaces. Search, managed-node inspection, reported node operations, and the local workflow editor are available through their current routes. Membership, invitation, profile operator controls, diagnostics/settings, and authoritative activity history remain reserved until their dedicated contracts exist. The **Invite someone** header action is visibly unavailable instead of simulating invitation creation.
+
 ## Runtime behavior
 
 Open **Fleet** from the Hermes Desktop sidebar. The Fleet entry opens **Overview**; use the internal navigation for Network, Members, Invitations, Profiles, Workflows, Activity, and Settings.
