@@ -126,7 +126,7 @@ impl WorkflowDocument {
         format!("{:x}", Sha256::digest(canonical.as_bytes()))
     }
 
-    fn validate(&self) -> Result<(), WorkflowValidationError> {
+    pub fn validate(&self) -> Result<(), WorkflowValidationError> {
         if self.schema != WORKFLOW_SCHEMA {
             return Err(WorkflowValidationError::UnsupportedSchema);
         }
