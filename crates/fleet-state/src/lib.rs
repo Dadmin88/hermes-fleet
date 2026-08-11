@@ -352,6 +352,9 @@ impl FleetStateStore {
         document: WorkflowDocument,
         now_ms: u64,
     ) -> Result<WorkflowWrite> {
+        document
+            .validate()
+            .map_err(|_| StateError::InvalidInput("workflow document is invalid"))?;
         validate_workflow_timestamp(now_ms)?;
         let workflow_id = document.id().to_owned();
         let document_json = document
@@ -412,6 +415,9 @@ impl FleetStateStore {
         expected_version: u64,
         now_ms: u64,
     ) -> Result<WorkflowWrite> {
+        document
+            .validate()
+            .map_err(|_| StateError::InvalidInput("workflow document is invalid"))?;
         validate_workflow_timestamp(now_ms)?;
         if expected_version == 0 || expected_version > i64::MAX as u64 {
             return Err(StateError::InvalidInput("workflow version is invalid"));

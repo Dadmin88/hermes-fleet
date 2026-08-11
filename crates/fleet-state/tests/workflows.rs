@@ -29,6 +29,18 @@ fn document_with_id(id: &str, name: &str) -> WorkflowDocument {
     .unwrap()
 }
 
+fn unchecked_executable_document() -> WorkflowDocument {
+    serde_json::from_value(serde_json::json!({
+        "schema": "fleet.workflow-editor.v1",
+        "id": "unchecked-workflow",
+        "name": "Unchecked",
+        "nodes": [],
+        "connections": [],
+        "metadata": {"executionAvailable": true}
+    }))
+    .unwrap()
+}
+
 #[test]
 fn workflow_revisions_are_durable_immutable_and_soft_deletable() {
     let temporary = tempdir().unwrap();
@@ -136,5 +148,24 @@ fn active_workflow_definition_count_is_owner_bounded() {
     assert!(matches!(
         store.create_workflow(document_with_id("workflow-overflow", "Overflow"), 300),
         Err(StateError::InvalidTransition(_))
+    ));
+}
+
+#[test]
+fn state_write_boundary_rejects_deserialized_unvalidated_documents() {
+    let temporary = tempdir().unwrap();
+    let store = FleetStateStore::open(temporary.path().join("fleet.sqlite3")).unwrap();
+
+    assert!(matches!(
+        store.create_workflow(unchecked_executable_document(), 1_000),
+        Err(StateError::InvalidInput("workflow document is invalid"))
+    ));
+
+    store
+        .create_workflow(document_with_id("unchecked-workflow", "Valid"), 2_000)
+        .unwrap();
+    assert!(matches!(
+        store.update_workflow(unchecked_executable_document(), 1, 3_000),
+        Err(StateError::InvalidInput("workflow document is invalid"))
     ));
 }
