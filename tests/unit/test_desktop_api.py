@@ -242,6 +242,137 @@ def test_desktop_client_rejects_lone_surrogate_display_text(tmp_path):
     thread.join(timeout=2)
 
 
+def test_workflow_client_round_trips_versioned_backend_documents(tmp_path) -> None:
+    from hermes_fleet.desktop_api import DesktopApiClient
+
+    document = {
+        "schema": "fleet.workflow-editor.v1",
+        "id": "workflow-1",
+        "name": "Deploy safely",
+        "nodes": [],
+        "connections": [],
+        "metadata": {"executionAvailable": False},
+    }
+    revision = {
+        "workflowId": "workflow-1",
+        "version": 1,
+        "contentHash": "a" * 64,
+        "document": document,
+        "createdAtMs": 1_000,
+    }
+    captured: list[dict] = []
+    socket_path = tmp_path / "workflow-create.sock"
+    thread = _serve_once(
+        socket_path,
+        {
+            "schema": "fleet.workflow.v1",
+            "kind": "create",
+            "ok": True,
+            "result": {"outcome": "created", "revision": revision},
+        },
+        captured,
+    )
+    client = DesktopApiClient(socket_path=socket_path)
+    assert client.create_workflow(document) == {
+        "outcome": "created",
+        "revision": revision,
+    }
+    thread.join(timeout=2)
+    assert captured == [
+        {"schema": "fleet.workflow.v1", "kind": "create", "document": document}
+    ]
+
+    captured = []
+    list_socket_path = tmp_path / "workflow-list.sock"
+    thread = _serve_once(
+        list_socket_path,
+        {
+            "schema": "fleet.workflow.v1",
+            "kind": "list",
+            "ok": True,
+            "result": {
+                "workflows": [
+                    {
+                        "workflowId": "workflow-1",
+                        "latestVersion": 1,
+                        "createdAtMs": 1_000,
+                        "updatedAtMs": 1_000,
+                    }
+                ]
+            },
+        },
+        captured,
+    )
+    workflows = DesktopApiClient(socket_path=list_socket_path).list_workflows()
+    thread.join(timeout=2)
+    assert workflows[0]["latestVersion"] == 1
+    assert captured == [{"schema": "fleet.workflow.v1", "kind": "list"}]
+
+
+def test_workflow_client_keeps_execution_unavailable_and_uses_version_fences(
+    tmp_path,
+) -> None:
+    from hermes_fleet.desktop_api import DesktopApiClient
+
+    captured: list[dict] = []
+    socket_path = tmp_path / "workflow-delete.sock"
+    thread = _serve_once(
+        socket_path,
+        {
+            "schema": "fleet.workflow.v1",
+            "kind": "delete",
+            "ok": True,
+            "result": {"outcome": "deleted"},
+        },
+        captured,
+    )
+    assert (
+        DesktopApiClient(socket_path=socket_path).delete_workflow(
+            "workflow-1", expected_version=7
+        )
+        == "deleted"
+    )
+    thread.join(timeout=2)
+    assert captured == [
+        {
+            "schema": "fleet.workflow.v1",
+            "kind": "delete",
+            "workflowId": "workflow-1",
+            "expectedVersion": 7,
+        }
+    ]
+
+    capabilities_socket = tmp_path / "workflow-capabilities.sock"
+    thread = _serve_once(
+        capabilities_socket,
+        {
+            "schema": "fleet.workflow.v1",
+            "kind": "capabilities",
+            "ok": True,
+            "result": {
+                "kinds": [
+                    "capabilities",
+                    "create",
+                    "read",
+                    "read_version",
+                    "update",
+                    "list",
+                    "delete",
+                ],
+                "executionAvailable": False,
+            },
+        },
+        [],
+    )
+    assert (
+        DesktopApiClient(socket_path=capabilities_socket).workflow_capabilities()[
+            "executionAvailable"
+        ]
+        is False
+    )
+    thread.join(timeout=2)
+
+
 def test_desktop_alias_client_sends_generation_fenced_set_and_clear(tmp_path):
     from hermes_fleet.desktop_api import DesktopApiClient
 

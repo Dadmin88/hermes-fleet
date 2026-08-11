@@ -487,7 +487,7 @@ fn desktop_overview_supports_a_bounded_many_node_response() {
     assert_eq!(response["ok"], true);
     assert_eq!(response["result"]["nodes"].as_array().unwrap().len(), 50);
     let length = serde_json::to_vec(&response).unwrap().len();
-    assert!(length > fleet_control::MAX_FRAME_BYTES);
+    assert!(length > 32_768);
     assert!(length <= fleet_control::MAX_RESPONSE_BYTES);
 }
 

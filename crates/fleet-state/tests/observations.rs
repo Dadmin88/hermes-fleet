@@ -588,7 +588,7 @@ fn concurrent_v1_migration_opens_once_and_preserves_projection() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -745,7 +745,7 @@ fn accepted_v1_database_migrates_in_place_and_preserves_managed_projection() {
     drop(connection);
 
     let migrated = FleetStateStore::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 4);
+    assert_eq!(migrated.schema_version().unwrap(), 5);
     assert_eq!(
         migrated
             .inspect_projection("nodescale", "network-1", "device-1")
@@ -785,6 +785,8 @@ fn accepted_v1_database_migrates_in_place_and_preserves_managed_projection() {
             "node_observations",
             "operator_projection_denies",
             "run_bindings",
+            "workflow_definitions",
+            "workflow_versions",
         ]
     );
 }
@@ -841,7 +843,7 @@ fn accepted_v2_database_discards_unbound_observation_during_upgrade() {
     drop(connection);
 
     let migrated = FleetStateStore::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 4);
+    assert_eq!(migrated.schema_version().unwrap(), 5);
     let view = migrated
         .inspect_node(
             "nodescale",

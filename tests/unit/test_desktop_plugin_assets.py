@@ -298,6 +298,7 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
         "export function pasteWorkflowClipboard",
         "export function serializeWorkflow",
         "export function deserializeWorkflow",
+        "export function deserializeWorkflowRevision",
         "export function createWorkflowFromTopology",
         "export function createWorkflowHistory",
         "export function applyWorkflowEdit",
@@ -309,6 +310,15 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
         assert symbol in source
     assert "Editor only · execution unavailable" in source
     assert "surface === 'workflows'" in source
+    assert "ctx.rest('/workflows')" in source
+    assert "expectedVersion: persistedVersion" in source
+    assert "Load durable" in source
+    assert "Save durable" in source
+    assert "Workflow save was rejected. Reload durable state before retrying." in source
+    assert "loadWorkflow({ quiet: true })" not in source
+    assert (
+        "Discard unsaved workflow edits and load the latest durable revision?" in source
+    )
 
     for interaction_contract in (
         "function WorkflowPortHandle",
@@ -639,6 +649,11 @@ const indexedOccupied = mod.workflowConnectionCompatibilityFromIndex(
     target: 'delay-1', targetPort: 'control'
   }
 )
+mod.commitFleetWorkflowPersistedVersion(7)
+const persistedWorkflowVersion = mod.getFleetWorkflowPersistedVersion()
+const invalidPersistedWorkflowVersionRejected = rejects(() =>
+  mod.commitFleetWorkflowPersistedVersion(0)
+)
 console.log(JSON.stringify({
   ids,
   descriptor: mod.FLEET_NODE_TYPES['manual-trigger'],
@@ -708,6 +723,8 @@ console.log(JSON.stringify({
   invalidHistoryRejected: rejects(() =>
     mod.createWorkflowHistory({ ...workflow, execution: { run: 'x' } })
   ),
+  persistedWorkflowVersion,
+  invalidPersistedWorkflowVersionRejected,
   boxed,
   nonFiniteBoxed,
   indexedDuplicate,
@@ -831,6 +848,8 @@ console.log(JSON.stringify({
     assert loaded["contradictoryTargetRejected"] is True
     assert loaded["configurationCanonical"] is True
     assert loaded["invalidHistoryRejected"] is True
+    assert loaded["persistedWorkflowVersion"] == 7
+    assert loaded["invalidPersistedWorkflowVersionRejected"] is True
     assert "execution" not in loaded["topology"]
     assert loaded["boxed"] == ["a"]
     assert loaded["nonFiniteBoxed"] == []
