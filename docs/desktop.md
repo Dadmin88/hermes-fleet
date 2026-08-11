@@ -71,11 +71,11 @@ The gateway only needs that variable when the socket is not at the conventional 
 
 Fleet keeps exactly one global Hermes Desktop sidebar entry and owns its navigation inside the Fleet application shell. The internal routes are stable operator destinations rather than separate top-level Desktop plugins:
 
-| Section | Route | Phase 0 behavior |
+| Section | Route | Current behavior |
 | --- | --- | --- |
 | Overview | `/fleet` | Existing validated Fleet summary plus operator entry points. |
 | Network | `/fleet/network` | Live managed/observed Canvas and node inspection. |
-| Members | `/fleet/members` | Truthful shell; no membership mutation contract is inferred. |
+| Members | `/fleet/members` | Read-only Membership Center for managed admission, projection evidence, readiness, and distinct provider observations. |
 | Invitations | `/fleet/invitations` | Truthful shell; no invitation secrets or mutations are exposed yet. |
 | Profiles | `/fleet/profiles` | Truthful shell reserved for Fleet-owned profile presence/placement contracts. |
 | Workflows | `/fleet/workflows` | Existing local editor, explicitly non-executing. |
@@ -95,7 +95,7 @@ The Overview shows clickable **Managed**, **Active**, **Alive**, **Ready**, **Ob
 
 The Overview also summarizes reporting worker-slot capacity, aggregate RAM usage when managed nodes report it, distinct observed profile names, provider-observation availability, and managed-sample freshness. Active task/run counts are deliberately not shown because the current Desktop contract does not expose authoritative task state.
 
-Quick actions route only to existing Fleet surfaces. Search, managed-node inspection, reported node operations, and the local workflow editor are available through their current routes. Membership, invitation, profile operator controls, diagnostics/settings, and authoritative activity history remain reserved until their dedicated contracts exist. The **Invite someone** header action is visibly unavailable instead of simulating invitation creation.
+Quick actions route only to existing Fleet surfaces. Search, managed-node inspection, reported node operations, the read-only Membership Center, and the local workflow editor are available through their current routes. Membership mutation controls, invitation and profile operator controls, diagnostics/settings, and authoritative activity history remain reserved until their dedicated contracts exist. The **Invite someone** header action is visibly unavailable instead of simulating invitation creation.
 
 ## Runtime behavior
 
@@ -107,8 +107,9 @@ The validated operational surfaces render:
 - **Unavailable:** an explicit backend error with Retry while the Fleet navigation remains available;
 - **Overview:** Managed, Observed, Alive, Ready, and Needs Attention counts;
 - **Network:** real managed Fleet nodes with readiness/worker capacity plus distinct observed provider evidence;
+- **Membership:** read-only managed admission, projection-generation, readiness, and provider-only observation evidence;
 - **Workflows:** the existing local non-executing workflow editor on its own route;
-- **Reserved operator sections:** explicit explanatory shells that do not fabricate membership, invitation, profile, activity-history, or settings authority.
+- **Reserved operator sections:** explicit explanatory shells that do not fabricate invitation, profile, activity-history, or settings authority.
 
 No fake nodes or scheduler metrics are seeded. Observed nodes have no rename, run, reservation, scheduler, readiness, or other authority-mutating controls. A selected observation may be copied into local Workflow Mode as an editor-only exact-machine target; that transition preserves `authority: observed`, remains runtime-unavailable, and grants no Fleet control or execution capability. Relationship edges remain absent because neither API supplies provenance-bearing relationship evidence.
 
@@ -173,3 +174,14 @@ The Network workspace provides:
 The current Desktop contract still exposes no authoritative relationship edges. Network therefore renders a truthful relationship count of zero and never infers links from addresses, provider membership, naming, proximity, shared profiles, or any other heuristic.
 
 Provider visibility, Nodescale trust, Keryx identity, Fleet authorization, scheduler readiness, and operation permission remain separate gates. Network filtering or deep-link presentation never promotes observed evidence or changes backend authority.
+
+
+## Membership Center
+
+`/fleet/members` is a read-only membership and admission surface over the same validated `fleet.desktop.v2` overview used by Overview and Network. It combines managed Fleet projection rows with separate provider observations while preserving their authority boundaries.
+
+For managed rows, Membership shows Fleet admission state, projection generation, membership generation, binding generation, current readiness/freshness evidence, capacity/resources, and explicitly advertised operations. Membership and binding generation numbers are accepted projection-version evidence. They are not a live trust check and do not prove a currently healthy authenticated Keryx peer binding.
+
+For observed rows, Membership shows only provider evidence. Visibility never implies trust, Keryx binding, Fleet admission, scheduler readiness, or execution authority. The current Desktop contract also does not join provider observations to managed identities, so Membership does not infer that relationship from names, addresses, tags, or network placement.
+
+The exact live Nodescale trust/revocation and Keryx-binding control surface remains reserved for the authenticated Nodescale operator contract. Phase 3 adds no trust, membership, Keryx, scheduling, profile, or execution mutations.
