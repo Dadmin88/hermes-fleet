@@ -299,6 +299,7 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
         "export function serializeWorkflow",
         "export function deserializeWorkflow",
         "export function deserializeWorkflowRevision",
+        "export function normalizeWorkflowListing",
         "export function createWorkflowFromTopology",
         "export function createWorkflowHistory",
         "export function applyWorkflowEdit",
@@ -314,6 +315,12 @@ def test_workflow_editor_foundation_is_complete_serializable_and_non_executing()
     assert "expectedVersion: persistedVersion" in source
     assert "Load durable" in source
     assert "Save durable" in source
+    assert "Workflow library" in source
+    assert "Refresh workflows" in source
+    assert "New workflow" in source
+    assert "Delete durable" in source
+    assert "Workflow name" in source
+    assert "method: 'DELETE'" in source
     assert "Workflow save was rejected. Reload durable state before retrying." in source
     assert "loadWorkflow({ quiet: true })" not in source
     assert (
@@ -654,6 +661,24 @@ const persistedWorkflowVersion = mod.getFleetWorkflowPersistedVersion()
 const invalidPersistedWorkflowVersionRejected = rejects(() =>
   mod.commitFleetWorkflowPersistedVersion(0)
 )
+const workflowListing = mod.normalizeWorkflowListing({
+  executionAvailable: false,
+  workflows: [
+    { workflowId: 'alpha', latestVersion: 2, createdAtMs: 10, updatedAtMs: 20 },
+    { workflowId: 'beta', latestVersion: 1, createdAtMs: 30, updatedAtMs: 30 }
+  ]
+})
+const executableWorkflowListingRejected = rejects(() =>
+  mod.normalizeWorkflowListing({ executionAvailable: true, workflows: [] })
+)
+const malformedWorkflowListingRejected = rejects(() =>
+  mod.normalizeWorkflowListing({
+    executionAvailable: false,
+    workflows: [{
+      workflowId: 'alpha', latestVersion: 0, createdAtMs: 10, updatedAtMs: 5
+    }]
+  })
+)
 console.log(JSON.stringify({
   ids,
   descriptor: mod.FLEET_NODE_TYPES['manual-trigger'],
@@ -725,6 +750,9 @@ console.log(JSON.stringify({
   ),
   persistedWorkflowVersion,
   invalidPersistedWorkflowVersionRejected,
+  workflowListing,
+  executableWorkflowListingRejected,
+  malformedWorkflowListingRejected,
   boxed,
   nonFiniteBoxed,
   indexedDuplicate,
@@ -850,6 +878,12 @@ console.log(JSON.stringify({
     assert loaded["invalidHistoryRejected"] is True
     assert loaded["persistedWorkflowVersion"] == 7
     assert loaded["invalidPersistedWorkflowVersionRejected"] is True
+    assert [item["workflowId"] for item in loaded["workflowListing"]] == [
+        "alpha",
+        "beta",
+    ]
+    assert loaded["executableWorkflowListingRejected"] is True
+    assert loaded["malformedWorkflowListingRejected"] is True
     assert "execution" not in loaded["topology"]
     assert loaded["boxed"] == ["a"]
     assert loaded["nonFiniteBoxed"] == []

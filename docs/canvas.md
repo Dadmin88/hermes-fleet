@@ -232,7 +232,7 @@ Connections use static smooth routes with restrained semantic styling. There are
 
 Current truthful limitations:
 
-- the current Desktop exposes explicit Load/Save for its active workflow but does not yet provide a multi-workflow picker, rename flow, or deletion UI;
+- the current Desktop exposes a refreshable durable Workflow library, explicit selection/Load, new drafts, name editing through immutable revision updates, and version-fenced soft deletion; it does not yet expose historical-version browsing or restoration;
 - durable revisions are authoring state only; no workflow execution engine exists;
 - backend conflict rejection requires the operator to reload before retrying and never silently overwrites a newer version;
 - multiselect and box-select geometry have pure model foundations but are not yet a complete pointer interaction;
