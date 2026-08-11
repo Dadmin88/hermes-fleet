@@ -1194,6 +1194,16 @@ const FLEET_CANVAS_STYLES = `
   border-color: var(--fleet-selected);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--fleet-selected) 36%, transparent), 0 14px 32px color-mix(in srgb, var(--ui-bg-editor) 58%, transparent);
 }
+.fleet-node-shell[data-authority='managed'] {
+  border-left: 3px solid var(--fleet-managed);
+}
+.fleet-node-shell[data-authority='observed'] {
+  border-style: dashed;
+  border-left: 3px dashed var(--fleet-observed);
+}
+.fleet-node-shell[data-authority='editor'] {
+  border-left: 3px solid var(--ui-text-quaternary);
+}
 .fleet-node-shell[data-disabled='true'] { opacity: 0.82; }
 .fleet-node-enter { animation: fleet-node-enter 220ms ease-out both; }
 .fleet-node-icon {
@@ -1963,11 +1973,91 @@ export function buildFleetGraph(nodes, storedPositions = {}) {
   return { nodes: graphNodes, edges: [], groups: buildFleetGroups(graphNodes) }
 }
 
-export function filterFleetGraph(graph, query = '', statusFilter = 'all') {
+function networkSourceFacet(node) {
+  if (node.source.kind === 'observed') {
+    return {
+      id: `provider:${node.source.provider.kind}`,
+      label: providerLabel(node.source.provider.kind)
+    }
+  }
+  return {
+    id: `managed:${node.source.identity.source}`,
+    label: node.source.identity.source
+  }
+}
+
+function networkIdFacet(node) {
+  return node.source.kind === 'observed'
+    ? node.source.provider.network_id
+    : node.source.identity.network_id
+}
+
+function networkStatusMatches(node, statusFilter) {
+  if (statusFilter === 'all') return true
+  if (statusFilter === 'observed') return node.source.kind === 'observed'
+  if (node.source.kind === 'observed') return false
+  if (statusFilter === 'managed') return true
+  if (statusFilter === 'active') return node.source.managed.active === true
+  if (statusFilter === 'alive') return node.source.readiness.alive === true
+  return node.status.key === statusFilter
+}
+
+function networkFacetRows(nodes, selector) {
+  const counts = new Map()
+  for (const node of nodes) {
+    const facet = selector(node)
+    if (!facet?.id) continue
+    const current = counts.get(facet.id) ?? { ...facet, count: 0 }
+    current.count += 1
+    counts.set(facet.id, current)
+  }
+  return [...counts.values()].sort((left, right) =>
+    compareIds(normalizedSearch(left.label), normalizedSearch(right.label)) ||
+    compareIds(left.id, right.id)
+  )
+}
+
+export function buildFleetNetworkWorkspaceModel(graph) {
+  if (!isPlainRecord(graph) || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+    throw new Error('invalid Fleet Network graph')
+  }
+  const managedNodes = graph.nodes.filter(node => node.source.kind !== 'observed')
+  const observedNodes = graph.nodes.filter(node => node.source.kind === 'observed')
+  const networks = networkFacetRows(graph.nodes, node => {
+    const id = networkIdFacet(node)
+    return id ? { id, label: id } : null
+  })
+  return Object.freeze({
+    visible: graph.nodes.length,
+    managed: managedNodes.length,
+    active: managedNodes.filter(node => node.source.managed.active === true).length,
+    alive: managedNodes.filter(node => node.source.readiness.alive === true).length,
+    ready: managedNodes.filter(node => node.status.key === 'ready').length,
+    attention: managedNodes.filter(node => node.status.key === 'attention').length,
+    awaiting: managedNodes.filter(node => node.status.key === 'awaiting').length,
+    inactive: managedNodes.filter(node => node.status.key === 'inactive').length,
+    observed: observedNodes.length,
+    relationshipCount: graph.edges.length,
+    sources: Object.freeze(networkFacetRows(graph.nodes, networkSourceFacet)),
+    networks: Object.freeze(networks)
+  })
+}
+
+export function filterFleetGraph(
+  graph,
+  query = '',
+  statusFilter = 'all',
+  sourceFilter = 'all',
+  networkFilter = 'all'
+) {
   const tokens = normalizedSearch(query).split(/\s+/).filter(Boolean)
   const nodes = graph.nodes.filter(node => {
-    const statusMatches = statusFilter === 'all' || node.status.key === statusFilter
-    return statusMatches && tokens.every(token => node.searchText.includes(token))
+    const sourceMatches = sourceFilter === 'all' || networkSourceFacet(node).id === sourceFilter
+    const networkMatches = networkFilter === 'all' || networkIdFacet(node) === networkFilter
+    return networkStatusMatches(node, statusFilter) &&
+      sourceMatches &&
+      networkMatches &&
+      tokens.every(token => node.searchText.includes(token))
   })
   const included = new Set(nodes.map(node => node.id))
   const edges = graph.edges.filter(
@@ -2417,6 +2507,7 @@ function FleetCanvasNode({
   footer,
   selected,
   hovered,
+  authority = 'editor',
   executionState = 'idle',
   disabled = false,
   showPorts = false
@@ -2429,6 +2520,7 @@ function FleetCanvasNode({
     'data-selected': selected,
     'data-hovered': hovered,
     'data-execution': executionState,
+    'data-authority': authority,
     'data-disabled': disabled,
     'data-show-ports': showPorts,
     children: [
@@ -2503,25 +2595,41 @@ function FleetCanvasNode({
 function MachineCanvasNode({ node, selected, hovered }) {
   const observed = node.source.kind === 'observed'
   const observation = observed ? node.source.observation : null
+  const readiness = observed ? null : node.source.readiness
+  const capacity = readiness?.capacity
+  const blockerCount = Array.isArray(readiness?.reasons) ? readiness.reasons.length : 0
   const badges = observed
     ? [
         { label: 'Observed', tone: 'info' },
         { label: 'Unmanaged', tone: 'neutral' },
         ...(observation.expired ? [{ label: 'Expired', tone: 'attention' }] : [])
       ]
-    : [{ label: node.status.label, tone: node.status.tone }]
+    : [
+        { label: node.status.label, tone: node.status.tone },
+        ...(readiness?.last_observation
+          ? [{ label: readiness.fresh ? 'Fresh' : 'Stale', tone: readiness.fresh ? 'good' : 'attention' }]
+          : [{ label: 'No evidence', tone: 'neutral' }]),
+        ...(capacity
+          ? [{
+              label: `${capacity.available_worker_slots} slot${capacity.available_worker_slots === 1 ? '' : 's'} free`,
+              tone: capacity.available_worker_slots > 0 ? 'good' : 'attention'
+            }]
+          : [])
+      ]
   const body = observed
     ? observation.addresses[0] ?? 'No address observed'
-    : node.detail
+    : formatCanvasCapacity(readiness)
   const footer = observed
     ? `${observation.addresses.length} address${observation.addresses.length === 1 ? '' : 'es'} · provider evidence`
-    : 'Managed Fleet node'
+    : readiness.last_observation
+      ? `${readiness.scheduler_ready ? 'Scheduler ready' : `${blockerCount} blocker${blockerCount === 1 ? '' : 's'}`} · ${formatFleetAge(readiness.observation_age_ms)}`
+      : 'Managed · no readiness evidence'
   return jsx(FleetCanvasNode, {
     nodeType: node.nodeType.id,
     category: node.nodeType.category,
     icon: node.nodeType.icon,
     title: node.label,
-    subtitle: node.detail,
+    subtitle: observed ? node.provider?.label ?? node.detail : node.status.label,
     status: node.status,
     badges,
     body,
@@ -2530,6 +2638,7 @@ function MachineCanvasNode({ node, selected, hovered }) {
     footer,
     selected,
     hovered,
+    authority: observed ? 'observed' : 'managed',
     executionState: 'idle',
     disabled: node.disabled,
     showPorts: false
@@ -2559,6 +2668,7 @@ function WorkflowCanvasNode({ node, selected, hovered }) {
     footer: 'Execution unavailable',
     selected,
     hovered,
+    authority: 'editor',
     executionState: 'idle',
     disabled: true,
     showPorts: false
@@ -4109,14 +4219,52 @@ function NodeInspector({ node, ctx, refresh }) {
   })
 }
 
-const FILTERS = [
-  ['all', 'All'],
-  ['observed', 'Observed'],
-  ['ready', 'Ready'],
-  ['attention', 'Attention'],
-  ['awaiting', 'Awaiting evidence'],
-  ['inactive', 'Inactive']
-]
+export const NETWORK_FILTERS = Object.freeze([
+  Object.freeze(['all', 'All']),
+  Object.freeze(['managed', 'Managed']),
+  Object.freeze(['active', 'Active']),
+  Object.freeze(['alive', 'Alive']),
+  Object.freeze(['ready', 'Ready']),
+  Object.freeze(['attention', 'Attention']),
+  Object.freeze(['observed', 'Observed']),
+  Object.freeze(['awaiting', 'Awaiting evidence']),
+  Object.freeze(['inactive', 'Inactive'])
+])
+
+const FILTERS = NETWORK_FILTERS
+const NETWORK_FILTER_KEYS = new Set(NETWORK_FILTERS.map(([key]) => key))
+const EMPTY_NETWORK_PRESENTATION_STATE = Object.freeze({
+  query: '', status: 'all', source: 'all', network: 'all', selectedId: null
+})
+let fleetNetworkPresentationState = EMPTY_NETWORK_PRESENTATION_STATE
+
+function boundedNetworkPresentationText(value, limit) {
+  return typeof value === 'string' && value.length <= limit ? value : ''
+}
+
+export function normalizeFleetNetworkPresentationState(value = {}) {
+  const status = NETWORK_FILTER_KEYS.has(value?.status) ? value.status : 'all'
+  const source = boundedNetworkPresentationText(value?.source, 256) || 'all'
+  const network = boundedNetworkPresentationText(value?.network, 256) || 'all'
+  const selectedId = boundedNetworkPresentationText(value?.selectedId, 256) || null
+  return Object.freeze({
+    query: boundedNetworkPresentationText(value?.query, 256),
+    status,
+    source,
+    network,
+    selectedId
+  })
+}
+
+export function setFleetNetworkPresentationState(value = {}) {
+  fleetNetworkPresentationState = normalizeFleetNetworkPresentationState(value)
+  return fleetNetworkPresentationState
+}
+
+function openFleetNetwork(intent = {}) {
+  setFleetNetworkPresentationState(intent)
+  host.navigate('/fleet/network')
+}
 
 function FleetInspectorDrawer({ node, ctx, refresh, onClose }) {
   const closeRef = useRef(null)
@@ -4775,10 +4923,85 @@ function WorkflowModePanel({ history, setHistory }) {
   })
 }
 
+function NetworkSummaryStrip({ model, activeFilter, onFilter }) {
+  const items = [
+    ['all', 'Visible', model.visible, 'All machines in the current overview'],
+    ['managed', 'Managed', model.managed, 'Fleet-authorized managed machines'],
+    ['ready', 'Ready', model.ready, 'Scheduler-ready managed machines'],
+    ['attention', 'Attention', model.attention, 'Active managed machines blocked from readiness'],
+    ['observed', 'Observed', model.observed, 'Provider evidence without Fleet authority']
+  ]
+  return jsxs('section', {
+    className: 'grid gap-2 sm:grid-cols-2 xl:grid-cols-6',
+    'aria-label': 'Network topology summary',
+    children: [
+      ...items.map(([key, label, value, detail]) =>
+        jsxs('button', {
+          type: 'button',
+          className: 'rounded-lg border border-border bg-muted/10 p-3 text-left hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'aria-pressed': activeFilter === key,
+          title: detail,
+          onClick: () => onFilter(key),
+          children: [
+            jsx('div', {
+              className: 'text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground',
+              children: label
+            }),
+            jsx('div', {
+              className: 'mt-1 text-lg font-semibold tabular-nums text-foreground',
+              children: value
+            })
+          ]
+        }, key)
+      ),
+      jsxs('div', {
+        className: 'rounded-lg border border-border bg-muted/10 p-3',
+        title: 'Relationship edges appear only when a versioned Fleet relationship contract supplies evidence.',
+        children: [
+          jsx('div', {
+            className: 'text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground',
+            children: 'Relationships'
+          }),
+          jsx('div', {
+            className: 'mt-1 text-lg font-semibold tabular-nums text-foreground',
+            children: model.relationshipCount
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function NetworkFacetSelect({ label, value, options, onChange }) {
+  return jsxs('label', {
+    className: 'inline-flex min-w-44 items-center gap-2 rounded-md border border-border bg-background px-2 py-1 text-[0.6875rem] text-muted-foreground',
+    children: [
+      jsx('span', { className: 'shrink-0', children: label }),
+      jsx('select', {
+        value,
+        onChange: event => onChange(event.target.value),
+        className: 'min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none',
+        children: [
+          jsx('option', { value: 'all', children: 'All' }, 'all'),
+          ...options.map(option =>
+            jsx('option', {
+              value: option.id,
+              children: `${option.label} (${option.count})`
+            }, option.id)
+          )
+        ]
+      })
+    ]
+  })
+}
+
 function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'network' }) {
   const [workflowHistory, setWorkflowHistory] = useFleetWorkflowSession()
-  const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState('all')
+  const initialNetworkView = useMemo(() => fleetNetworkPresentationState, [])
+  const [query, setQuery] = useState(() => initialNetworkView.query)
+  const [filter, setFilter] = useState(() => initialNetworkView.status)
+  const [sourceFilter, setSourceFilter] = useState(() => initialNetworkView.source)
+  const [networkFilter, setNetworkFilter] = useState(() => initialNetworkView.network)
   const [positions, setPositions] = useState(() =>
     sanitizeFleetPositions(ctx.storage.get(LAYOUT_STORAGE_KEY, {}))
   )
@@ -4793,8 +5016,8 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
     }
   }, [overview.nodes, overview.observed_nodes])
   const canvasNodes = topologyProjection.nodes
-  const [selectedId, setSelectedId] = useState(null)
-  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState(() => initialNetworkView.selectedId)
+  const [inspectorOpen, setInspectorOpen] = useState(() => Boolean(initialNetworkView.selectedId))
   const positionsRef = useRef(positions)
   positionsRef.current = positions
 
@@ -4802,9 +5025,13 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
     () => buildFleetGraph(canvasNodes, positions),
     [canvasNodes, positions]
   )
+  const networkModel = useMemo(
+    () => buildFleetNetworkWorkspaceModel(graph),
+    [graph]
+  )
   const visibleGraph = useMemo(
-    () => filterFleetGraph(graph, query, filter),
-    [filter, graph, query]
+    () => filterFleetGraph(graph, query, filter, sourceFilter, networkFilter),
+    [filter, graph, networkFilter, query, sourceFilter]
   )
   const selectedNode = canvasNodes.find(node => node.stable_id === selectedId) ?? null
   const animatedIds = useMemo(
@@ -4816,6 +5043,16 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
     positionsRef.current = next
     ctx.storage.set(LAYOUT_STORAGE_KEY, next)
   }, [ctx.storage])
+
+  useEffect(() => {
+    fleetNetworkPresentationState = normalizeFleetNetworkPresentationState({
+      query,
+      status: filter,
+      source: sourceFilter,
+      network: networkFilter,
+      selectedId
+    })
+  }, [filter, networkFilter, query, selectedId, sourceFilter])
 
   useEffect(() => {
     if (selectedId && !graph.nodes.some(node => node.id === selectedId)) {
@@ -4848,6 +5085,12 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
     })
     host.navigate('/fleet/workflows')
   }, [selectedNode, setWorkflowHistory])
+  const clearNetworkFilters = useCallback(() => {
+    setQuery('')
+    setFilter('all')
+    setSourceFilter('all')
+    setNetworkFilter('all')
+  }, [])
 
   const topologyPanel = topologyProjection.error
     ? jsx('div', {
@@ -4860,6 +5103,11 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
     : jsxs('div', {
     className: 'flex min-h-0 flex-1 flex-col gap-3 px-4',
     children: [
+      jsx(NetworkSummaryStrip, {
+        model: networkModel,
+        activeFilter: filter,
+        onFilter: setFilter
+      }),
       jsxs('div', {
         className: 'flex flex-wrap items-center gap-1.5',
         children: [
@@ -4880,6 +5128,31 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
               children: label
             }, key)
           ),
+          jsx(NetworkFacetSelect, {
+            label: 'Source/provider',
+            value: sourceFilter,
+            options: networkModel.sources,
+            onChange: setSourceFilter
+          }),
+          jsx(NetworkFacetSelect, {
+            label: 'Network',
+            value: networkFilter,
+            options: networkModel.networks,
+            onChange: setNetworkFilter
+          }),
+          query || filter !== 'all' || sourceFilter !== 'all' || networkFilter !== 'all'
+            ? jsx(Button, {
+                type: 'button',
+                size: 'sm',
+                variant: 'ghost',
+                onClick: clearNetworkFilters,
+                children: 'Clear filters'
+              })
+            : null,
+          jsx('span', {
+            className: 'text-[0.6875rem] tabular-nums text-muted-foreground',
+            children: `${visibleGraph.nodes.length}/${graph.nodes.length} visible`
+          }),
           selectedNode
             ? jsxs('div', {
                 className: 'ml-auto flex items-center gap-1.5',
@@ -4918,7 +5191,10 @@ function FleetCanvasWorkspace({ overview, ctx, refresh, activity, surface = 'net
             selectedId,
             setSelectedId: selectNode,
             animatedIds,
-            inspectorOpen: Boolean(selectedNode && inspectorOpen)
+            inspectorOpen: Boolean(selectedNode && inspectorOpen),
+            emptyMessage: graph.nodes.length
+              ? 'No machines match the current Network filters.'
+              : 'No machines are visible in the current Fleet overview.'
           }),
           selectedNode && inspectorOpen
             ? jsx(FleetInspectorDrawer, {
@@ -5297,11 +5573,20 @@ export function buildFleetOverviewCommandCenterModel(overview) {
   })
 }
 
+const NETWORK_METRIC_FILTERS = Object.freeze({
+  managed: 'managed',
+  active: 'active',
+  alive: 'alive',
+  ready: 'ready',
+  observed: 'observed',
+  attention: 'attention'
+})
+
 function FleetMetricCard({ metric }) {
   return jsxs('button', {
     type: 'button',
     className: 'group rounded-xl border border-border bg-muted/10 p-4 text-left transition-colors hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-    onClick: () => host.navigate('/fleet/network'),
+    onClick: () => openFleetNetwork({ status: NETWORK_METRIC_FILTERS[metric.id] ?? 'all' }),
     'aria-label': `${metric.label}: ${metric.value}. Open Network`,
     children: [
       jsxs('div', {
@@ -5367,7 +5652,9 @@ function FleetQuickActions() {
     children: FLEET_OVERVIEW_QUICK_ACTIONS.map(action => jsxs('button', {
       type: 'button',
       className: 'rounded-lg border border-border bg-muted/10 p-3 text-left hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-      onClick: () => host.navigate(action.path),
+      onClick: () => action.path === '/fleet/network'
+        ? openFleetNetwork({ status: action.id === 'ready' ? 'ready' : 'all' })
+        : host.navigate(action.path),
       children: [
         jsxs('div', {
           className: 'flex items-center gap-2 text-xs font-medium text-foreground',
@@ -5450,7 +5737,10 @@ function FleetNeedsAttention({ items }) {
             type: 'button',
             size: 'sm',
             variant: 'outline',
-            onClick: () => host.navigate('/fleet/network'),
+            onClick: () => openFleetNetwork({
+              status: 'attention',
+              selectedId: item.stable_id
+            }),
             children: 'Inspect in Network'
           })
         ]
@@ -5525,7 +5815,7 @@ function FleetOverviewHome({ overview, connection, refresh }) {
             type: 'button',
             size: 'sm',
             variant: 'outline',
-            onClick: () => host.navigate('/fleet/network'),
+            onClick: () => openFleetNetwork({ status: 'all' }),
             children: 'Search Fleet'
           }, 'search'),
           jsx(Button, {
@@ -5573,7 +5863,7 @@ function FleetOverviewHome({ overview, connection, refresh }) {
                       }),
                       jsx(Button, {
                         type: 'button', size: 'sm', variant: 'ghost',
-                        onClick: () => host.navigate('/fleet/network'),
+                        onClick: () => openFleetNetwork({ status: 'attention' }),
                         children: 'Open Network'
                       })
                     ]
@@ -5768,6 +6058,13 @@ function FleetOperationalPage({ ctx, sectionId }) {
         section,
         actions: [
           jsx(ConnectionChip, { state: events.connection }, 'connection'),
+          jsx(Button, {
+            type: 'button',
+            size: 'sm',
+            variant: 'outline',
+            onClick: query.refetch,
+            children: 'Refresh'
+          }, 'refresh'),
           jsx(Button, {
             type: 'button',
             size: 'sm',

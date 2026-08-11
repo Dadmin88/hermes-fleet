@@ -155,3 +155,21 @@ node --check desktop/plugin.js
 ```
 
 Run the repository's complete CI bundle before opening a pull request.
+
+## Network operator workspace
+
+`/fleet/network` is the graph-first operator workspace for the current `fleet.desktop.v2` overview. It remains a presentation over authoritative Fleet and Nodescale evidence rather than a source of new authority.
+
+The Network workspace provides:
+
+- a summary strip for visible, managed, scheduler-ready, needs-attention, observed/unmanaged, and relationship-edge counts;
+- bounded search plus managed/active/alive/ready/attention/observed/awaiting/inactive filters;
+- source/provider and network facets derived only from values present in the current overview;
+- deterministic presentation-state handoff from Overview metrics and attention items into Network;
+- managed machine cards with freshness, readiness, blocker, and worker-capacity evidence;
+- dashed observed/unmanaged cards that remain provider evidence only;
+- the existing explicit inspector drawer, readiness ladder, resource evidence, local alias mutation, minimap, keyboard canvas navigation, and local layout persistence.
+
+The current Desktop contract still exposes no authoritative relationship edges. Network therefore renders a truthful relationship count of zero and never infers links from addresses, provider membership, naming, proximity, shared profiles, or any other heuristic.
+
+Provider visibility, Nodescale trust, Keryx identity, Fleet authorization, scheduler readiness, and operation permission remain separate gates. Network filtering or deep-link presentation never promotes observed evidence or changes backend authority.
