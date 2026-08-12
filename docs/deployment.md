@@ -128,7 +128,7 @@ The bundled worker reads its service environment from the site-owned `fleet-node
 - `KERYX_NODE_TOKEN`: the worker's secret Keryx node token;
 - `API_SERVER_KEY`: the secret credential for the loopback Hermes Runs API.
 
-Observation publishing is optional, but its three settings are atomic: define `FLEET_OBSERVATION_SOCKET`, `NODESCALE_NETWORK_ID`, and `NODESCALE_DEVICE_ID` together or omit all three. The socket must match the Rust managed-control unit and the two IDs must match an active managed projection. Keep the environment file outside Git with mode `0600`; do not place tokens in the unit or inventory.
+Observation publishing is optional. Local publishing requires the atomic set `FLEET_OBSERVATION_SOCKET`, `NODESCALE_NETWORK_ID`, and `NODESCALE_DEVICE_ID`. Remote publishing instead requires `FLEET_REMOTE_OBSERVATION_ENDPOINT`, `FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID`, `HERMES_KERYX_REGISTRY_CA_CERT`, `NODESCALE_NETWORK_ID`, and `NODESCALE_DEVICE_ID`. The remote endpoint must be `https://`; Fleet reuses Keryx's configured relay/registry CA trust material and never falls back to plaintext. The socket must match the Rust managed-control unit, and the two IDs must match an active managed projection. Keep the environment file outside Git with mode `0600`; do not place tokens in the unit or inventory.
 
 The example unit's inventory path and profile are baseline deployment examples. Sites using another profile or layout must install a systemd drop-in that replaces `ExecStart` with exact absolute `--config` and `--binding-db` paths rather than copying machine-specific paths into the repository.
 

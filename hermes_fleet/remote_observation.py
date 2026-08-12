@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import grpc
 from keryx.proto.hermes.keryx.v1 import control_pb2, relay_pb2, relay_pb2_grpc
@@ -17,6 +19,7 @@ _RPC_TIMEOUT_SECONDS = 10.0
 @dataclass(frozen=True, slots=True)
 class RemoteObservationConfig:
     relay_endpoint: str
+    relay_ca_cert_path: Path | None
     source_peer_id: str
     node_token: str
     target_peer_id: str
@@ -34,6 +37,23 @@ class RemoteObservationConfig:
         ):
             if type(value) is not str or not value or value.strip() != value:
                 raise ValueError(f"{name} must be nonempty and trimmed")
+        parsed = urlsplit(self.relay_endpoint)
+        if parsed.scheme.lower() != "https" or not parsed.netloc or parsed.path:
+            raise ValueError("remote observation endpoint must be an https authority")
+        if not isinstance(self.relay_ca_cert_path, Path):
+            raise ValueError("remote observation relay CA certificate is required")
+
+
+def _secure_channel(config: RemoteObservationConfig) -> grpc.Channel:
+    assert config.relay_ca_cert_path is not None
+    try:
+        root_certificates = config.relay_ca_cert_path.expanduser().read_bytes()
+    except OSError as error:
+        raise ValueError("failed to read relay CA certificate") from error
+    if not root_certificates:
+        raise ValueError("relay CA certificate must not be empty")
+    credentials = grpc.ssl_channel_credentials(root_certificates=root_certificates)
+    return grpc.secure_channel(urlsplit(config.relay_endpoint).netloc, credentials)
 
 
 class RemoteObservationPublisher:
@@ -48,7 +68,7 @@ class RemoteObservationPublisher:
         if type(config) is not RemoteObservationConfig:
             raise ValueError("config must be RemoteObservationConfig")
         self._config = config
-        self._channel = channel or grpc.insecure_channel(config.relay_endpoint)
+        self._channel = channel or _secure_channel(config)
         self._owns_channel = channel is None
         self._stub = relay_pb2_grpc.KeryxRelayStub(self._channel)
         self._epoch: Any | None = None
