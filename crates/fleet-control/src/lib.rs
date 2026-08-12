@@ -350,10 +350,18 @@ fn parse_request(payload: &[u8]) -> Result<ParsedRequest> {
             .ok()
             .is_some_and(|value| value.get("authenticated_context").is_some())
         {
-            let envelope: AuthenticatedRemotePublishEnvelope =
+            let envelope: AuthenticatedRemoteObservationEnvelope =
                 serde_json::from_slice(payload).map_err(|_| ControlError::MalformedRequest)?;
+            let request = match envelope.request {
+                AuthenticatedRemoteObservationRequest::Acquire(request) => {
+                    Request::RemoteAcquire(request)
+                }
+                AuthenticatedRemoteObservationRequest::Publish(request) => {
+                    Request::RemotePublish(*request)
+                }
+            };
             return Ok(ParsedRequest {
-                request: Request::RemotePublish(envelope.request),
+                request,
                 authenticated_sender: Some(envelope.authenticated_context.sender_peer_id),
             });
         }
@@ -371,9 +379,16 @@ fn parse_request(payload: &[u8]) -> Result<ParsedRequest> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AuthenticatedRemotePublishEnvelope {
+struct AuthenticatedRemoteObservationEnvelope {
     authenticated_context: AuthenticatedRemoteContext,
-    request: RemotePublishRequest,
+    request: AuthenticatedRemoteObservationRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum AuthenticatedRemoteObservationRequest {
+    Acquire(RemoteAcquireRequest),
+    Publish(Box<RemotePublishRequest>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -971,6 +986,9 @@ fn dispatch_result(
         }
         Request::RemoteAcquire(request) => {
             let _ = request.kind;
+            let authenticated_sender =
+                authenticated_sender.ok_or(ControlError::UnauthorizedCaller)?;
+            validate_identifier(authenticated_sender)?;
             let epoch = state
                 .acquire_remote_observation_authority(
                     &request.selector.source,
@@ -978,6 +996,9 @@ fn dispatch_result(
                     &request.selector.device_id,
                 )
                 .map_err(map_state_error)?;
+            if authenticated_sender != epoch.authenticated_peer_id {
+                return Err(ControlError::UnauthorizedCaller);
+            }
             serde_json::to_value(epoch).map_err(|_| ControlError::StateCorruption)
         }
         Request::RemotePublish(request) => {
