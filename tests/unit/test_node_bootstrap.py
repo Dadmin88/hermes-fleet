@@ -127,6 +127,16 @@ def test_load_bundle_rejects_binary_hash_skew(tmp_path: Path) -> None:
         bootstrap.load_bundle(bundle)
 
 
+def test_load_bundle_accepts_exact_canonical_fleet_revision(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    _manifest(bundle)
+    manifest_path = bundle / "bundle.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["revisions"]["fleet"] = "7" * 40
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert bootstrap.load_bundle(bundle)["revisions"]["fleet"] == "7" * 40
+
+
 def test_doctor_detects_binary_skew(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
