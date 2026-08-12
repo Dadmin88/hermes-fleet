@@ -14,9 +14,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use fleet_control::{ControlConfig, canonical_projection_hash, run};
+use fleet_control::{
+    ControlConfig, acquire_remote_observation_authority, canonical_projection_hash,
+    publish_remote_observation, run,
+};
 use fleet_domain::ProjectionDocument;
-use fleet_state::FleetStateStore;
+use fleet_state::{
+    FleetStateStore, ObservationOutcome, RemoteObservationAuthorityEpoch, RemoteObservationSelector,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -78,11 +83,15 @@ fn wait_for(path: &Path, exists: bool) {
 
 fn transact(socket: &Path, request: &Value) -> Value {
     let payload = serde_json::to_vec(request).unwrap();
+    transact_bytes(socket, &payload)
+}
+
+fn transact_bytes(socket: &Path, payload: &[u8]) -> Value {
     let mut stream = UnixStream::connect(socket).unwrap();
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
         .unwrap();
-    stream.write_all(&payload).unwrap();
+    stream.write_all(payload).unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut header = [0_u8; 4];
     stream.read_exact(&mut header).unwrap();
@@ -187,6 +196,265 @@ fn inspect(socket: &Path) -> Value {
             }
         }),
     )
+}
+
+#[test]
+fn authenticated_projection_provenance_survives_control_apply_and_inspect() {
+    let root = private_tempdir();
+    let mut service = RunningService::start(root.path());
+    let mut document = managed_document();
+    document["provenance"]["binding_id"] = json!("binding-1");
+    document["provenance"]["authenticated_peer_id"] = json!("peer-1");
+    document["content_hash"] = json!(canonical_projection_hash(&document).unwrap());
+
+    let applied = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.managed-projection.v1",
+            "kind": "apply",
+            "document": document,
+        }),
+    );
+    assert_eq!(applied["result"]["outcome"], "applied");
+    let inspected = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.managed-projection.v1",
+            "kind": "inspect",
+            "selector": {
+                "source": "nodescale",
+                "network_id": "net-demo",
+                "device_id": "node-demo"
+            }
+        }),
+    );
+    assert_eq!(
+        inspected["result"]["generated"]["provenance"]["binding_id"],
+        "binding-1"
+    );
+    assert_eq!(
+        inspected["result"]["generated"]["provenance"]["authenticated_peer_id"],
+        "peer-1"
+    );
+
+    let state = FleetStateStore::open(&service.database).unwrap();
+    let authority = acquire_remote_observation_authority(
+        &state,
+        &RemoteObservationSelector {
+            source: "nodescale".to_string(),
+            network_id: "net-demo".to_string(),
+            device_id: "node-demo".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(authority.binding_id, "binding-1");
+    assert_eq!(authority.authenticated_peer_id, "peer-1");
+
+    let selector = json!({
+        "source": "nodescale",
+        "network_id": "net-demo",
+        "device_id": "node-demo"
+    });
+    let acquired = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.remote-observation-internal.v1",
+            "kind": "acquire",
+            "selector": selector
+        }),
+    );
+    assert_eq!(acquired["result"]["binding_id"], "binding-1");
+    assert_eq!(acquired["result"]["authenticated_peer_id"], "peer-1");
+    let sample = observation(2_000, 0, "available");
+    let rejected = transact(
+        &service.socket,
+        &json!({
+            "authenticated_context": {"sender_peer_id": "wrong-peer"},
+            "request": {
+                "schema": "fleet.remote-observation-internal.v1",
+                "kind": "publish",
+                "selector": selector,
+                "authority_epoch": acquired["result"],
+                "observation": sample
+            }
+        }),
+    );
+    assert_eq!(rejected["ok"], false);
+    let published = transact(
+        &service.socket,
+        &json!({
+            "authenticated_context": {"sender_peer_id": "peer-1"},
+            "request": {
+                "schema": "fleet.remote-observation-internal.v1",
+                "kind": "publish",
+                "selector": selector,
+                "authority_epoch": acquired["result"],
+                "observation": sample
+            }
+        }),
+    );
+    assert_eq!(published["result"]["outcome"], "published");
+    let replay = transact(
+        &service.socket,
+        &json!({
+            "authenticated_context": {"sender_peer_id": "peer-1"},
+            "request": {
+                "schema": "fleet.remote-observation-internal.v1",
+                "kind": "publish",
+                "selector": selector,
+                "authority_epoch": acquired["result"],
+                "observation": sample
+            }
+        }),
+    );
+    assert_eq!(replay["result"]["outcome"], "already_recorded");
+    service.stop();
+}
+
+#[test]
+fn remote_wire_rejects_ambiguous_or_self_asserted_identity_and_accepts_trusted_context() {
+    let root = private_tempdir();
+    let mut service = RunningService::start(root.path());
+    let mut document = managed_document();
+    document["provenance"]["binding_id"] = json!("binding-1");
+    document["provenance"]["authenticated_peer_id"] = json!("peer-1");
+    document["content_hash"] = json!(canonical_projection_hash(&document).unwrap());
+    assert_eq!(
+        transact(
+            &service.socket,
+            &json!({
+                "schema": "fleet.managed-projection.v1",
+                "kind": "apply",
+                "document": document
+            }),
+        )["ok"],
+        true
+    );
+
+    let duplicate = transact_bytes(
+        &service.socket,
+        br#"{"schema":"fleet.remote-observation-internal.v1","kind":"acquire","kind":"acquire","selector":{"source":"nodescale","network_id":"net-demo","device_id":"node-demo"}}"#,
+    );
+    assert_eq!(duplicate["ok"], false);
+
+    let nested_unknown = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.remote-observation-internal.v1",
+            "kind": "acquire",
+            "selector": {
+                "source": "nodescale",
+                "network_id": "net-demo",
+                "device_id": "node-demo",
+                "unexpected": true
+            }
+        }),
+    );
+    assert_eq!(nested_unknown["ok"], false);
+
+    let selector = json!({
+        "source": "nodescale",
+        "network_id": "net-demo",
+        "device_id": "node-demo"
+    });
+    let acquired = transact(
+        &service.socket,
+        &json!({
+            "schema": "fleet.remote-observation-internal.v1",
+            "kind": "acquire",
+            "selector": selector
+        }),
+    );
+    let inner_publish = json!({
+        "schema": "fleet.remote-observation-internal.v1",
+        "kind": "publish",
+        "selector": selector,
+        "authority_epoch": acquired["result"],
+        "observation": observation(2_000, 0, "available")
+    });
+    let mut self_asserted = inner_publish.clone();
+    self_asserted["authenticated_sender"] = json!("peer-1");
+    assert_eq!(transact(&service.socket, &self_asserted)["ok"], false);
+
+    let trusted = transact(
+        &service.socket,
+        &json!({
+            "authenticated_context": {"sender_peer_id": "peer-1"},
+            "request": inner_publish
+        }),
+    );
+    assert_eq!(trusted["result"]["outcome"], "published");
+    service.stop();
+}
+
+#[test]
+fn remote_adapter_uses_trusted_sender_and_atomic_state_admission() {
+    let root = private_tempdir();
+    let store = FleetStateStore::open(root.path().join("fleet.db")).unwrap();
+    let selector = RemoteObservationSelector {
+        source: "nodescale".to_string(),
+        network_id: "net-demo".to_string(),
+        device_id: "node-demo".to_string(),
+    };
+    let legacy: ProjectionDocument = serde_json::from_value(managed_document()).unwrap();
+    store.apply_projection(legacy).unwrap();
+    assert!(acquire_remote_observation_authority(&store, &selector).is_err());
+
+    let mut remote = managed_document();
+    remote["projection_generation"] = json!("2");
+    remote["membership_generation"] = json!("2");
+    remote["binding_generation"] = json!("2");
+    remote["provenance"]["snapshot"] = json!("2");
+    remote["provenance"]["binding_id"] = json!("binding-1");
+    remote["provenance"]["authenticated_peer_id"] = json!("peer-1");
+    remote["content_hash"] = json!(canonical_projection_hash(&remote).unwrap());
+    store
+        .apply_projection(serde_json::from_value(remote).unwrap())
+        .unwrap();
+    let epoch = acquire_remote_observation_authority(&store, &selector).unwrap();
+    assert_eq!(
+        epoch,
+        RemoteObservationAuthorityEpoch {
+            binding_id: "binding-1".to_string(),
+            authenticated_peer_id: "peer-1".to_string(),
+            binding_generation: 2,
+            projection_generation: 2,
+        }
+    );
+
+    let sample = json!({
+        "admission_generation": 2,
+        "observed_at_ms": 2_000,
+        "network": "reachable",
+        "keryx": "available",
+        "hermes": "available",
+        "worker": "available",
+        "capacity": {"active_workers": 0, "max_workers": 1},
+        "profiles": [],
+        "resources": {}
+    });
+    let bytes = serde_json::to_vec(&sample).unwrap();
+    assert!(
+        publish_remote_observation(&store, &selector, "wrong-peer", &epoch, &bytes, 2_100).is_err()
+    );
+    assert!(
+        publish_remote_observation(
+            &store,
+            &selector,
+            "peer-1",
+            &epoch,
+            br#"{"admission_generation":2,"admission_generation":2}"#,
+            2_100,
+        )
+        .is_err()
+    );
+    let first =
+        publish_remote_observation(&store, &selector, "peer-1", &epoch, &bytes, 2_100).unwrap();
+    assert_eq!(first.outcome, ObservationOutcome::Recorded);
+    let replay =
+        publish_remote_observation(&store, &selector, "peer-1", &epoch, &bytes, 2_900).unwrap();
+    assert_eq!(replay.outcome, ObservationOutcome::AlreadyRecorded);
+    assert_eq!(replay.record.received_at_ms, 2_100);
 }
 
 #[test]

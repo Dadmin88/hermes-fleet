@@ -85,7 +85,13 @@ An `apply` document carries:
 - generated operation set;
 - provenance.
 
-The provenance identity must match the document identity.
+The provenance identity must match the document identity. Legacy documents may
+omit `binding_id` and `authenticated_peer_id` and retain their existing local
+behavior. Authenticated remote observation publication requires both fields plus
+the exact current binding and projection generations. Fleet compares the
+authenticated sender and complete authority epoch in the same immediate
+transaction that may record the observation. Rejection performs no observation
+mutation, and exact replay does not refresh `received_at_ms`.
 
 An `inspect` selector contains only source, network ID, and device ID.
 

@@ -20,6 +20,7 @@ from .hermes_runs import HermesRunsClient
 from .models import FleetDefaults, NodeConfig, _require_exact_type
 from .observation import ObservationClient, build_observation
 from .profile_inventory import scan_profile_distributions
+from .remote_observation import RemoteObservationConfig, RemoteObservationPublisher
 from .run_binding import RunBindingStore
 from .selection import select_nodes
 
@@ -45,8 +46,6 @@ class _Node(Protocol):
 class _Observation(Protocol):
     def publish(self, observation: dict[str, Any]) -> str: ...
 
-    def inspect(self) -> dict[str, Any]: ...
-
     def admission_generation(self) -> int: ...
 
 
@@ -68,6 +67,8 @@ class NodeRuntimeConfig:
     keryx_node_token: str = field(repr=False)
     registration_ttl_seconds: int = 300
     observation_socket: Path | None = None
+    remote_observation_endpoint: str | None = None
+    remote_observation_target_peer_id: str | None = None
     managed_network_id: str | None = None
     managed_device_id: str | None = None
     observation_interval_seconds: int = 30
@@ -97,22 +98,41 @@ class NodeRuntimeConfig:
             or self.registration_ttl_seconds > 86_400
         ):
             raise ValueError("registration_ttl_seconds must be between 30 and 86400")
-        observation_fields = (
-            self.observation_socket,
-            self.managed_network_id,
-            self.managed_device_id,
+        remote_fields = (
+            self.remote_observation_endpoint,
+            self.remote_observation_target_peer_id,
         )
-        if any(value is not None for value in observation_fields) and not all(
-            value is not None for value in observation_fields
+        if any(value is not None for value in remote_fields) and not all(
+            value is not None for value in remote_fields
+        ):
+            raise ValueError("remote observation configuration must be complete")
+        if (
+            self.observation_socket is not None
+            and self.remote_observation_endpoint is not None
+        ):
+            raise ValueError("local and remote observation transports are exclusive")
+        observation_enabled = self.observation_socket is not None or all(
+            value is not None for value in remote_fields
+        )
+        if observation_enabled != (
+            self.managed_network_id is not None and self.managed_device_id is not None
         ):
             raise ValueError("observation configuration must be complete")
         if self.observation_socket is not None and (
             not is_concrete_path(self.observation_socket)
             or not self.observation_socket.is_absolute()
-            or not _managed_identifier(self.managed_network_id)
+        ):
+            raise ValueError("observation socket is invalid")
+        if observation_enabled and (
+            not _managed_identifier(self.managed_network_id)
             or not _managed_identifier(self.managed_device_id)
         ):
-            raise ValueError("observation configuration is invalid")
+            raise ValueError("observation identity is invalid")
+        if self.remote_observation_endpoint is not None and (
+            not self.remote_observation_endpoint
+            or not _managed_identifier(self.remote_observation_target_peer_id)
+        ):
+            raise ValueError("remote observation transport is invalid")
         if (
             isinstance(self.observation_interval_seconds, bool)
             or not isinstance(self.observation_interval_seconds, int)
@@ -168,6 +188,9 @@ async def run_node_service(
     shutdown: asyncio.Event,
     hermes_factory: Callable[..., Any] = HermesRunsClient,
     observation_factory: Callable[..., _Observation] = ObservationClient,
+    remote_observation_factory: Callable[..., _Observation] = (
+        RemoteObservationPublisher
+    ),
 ) -> None:
     """Run one registered Keryx worker until shutdown or worker failure."""
     if type(runtime) is not NodeRuntimeConfig:
@@ -188,6 +211,20 @@ async def run_node_service(
             socket_path=runtime.observation_socket,
             network_id=runtime.managed_network_id,
             device_id=runtime.managed_device_id,
+        )
+    elif runtime.remote_observation_endpoint is not None:
+        assert runtime.managed_network_id is not None
+        assert runtime.managed_device_id is not None
+        assert runtime.remote_observation_target_peer_id is not None
+        observer = remote_observation_factory(
+            RemoteObservationConfig(
+                relay_endpoint=runtime.remote_observation_endpoint,
+                source_peer_id=runtime.target.peer_id,
+                node_token=runtime.keryx_node_token,
+                target_peer_id=runtime.remote_observation_target_peer_id,
+                network_id=runtime.managed_network_id,
+                device_id=runtime.managed_device_id,
+            )
         )
     card = card_factory(include_hermes_run)
     expected_specs = operation_specs(include_hermes_run=include_hermes_run)
@@ -227,7 +264,11 @@ async def run_node_service(
             advertised_operations=tuple(
                 operation for operation, _description in expected_specs
             ),
-            readiness_inspector=observer.inspect if observer is not None else None,
+            readiness_inspector=(
+                cast(ObservationClient, observer).inspect
+                if runtime.observation_socket is not None and observer is not None
+                else None
+            ),
             capacity_observer=capacity_observer if observer is not None else None,
         )
         worker.bind(node)
@@ -333,6 +374,9 @@ async def run_node_service(
             await asyncio.gather(serve_task, return_exceptions=True)
         if started:
             await node.stop()
+        close_observer = getattr(observer, "close", None)
+        if callable(close_observer):
+            await asyncio.to_thread(close_observer)
 
 
 async def _admission_generation(observer: _Observation) -> int | None:
@@ -439,6 +483,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--binding-db", type=Path)
     parser.add_argument("--registration-ttl", type=int, default=300)
     parser.add_argument("--observation-socket", type=Path)
+    parser.add_argument("--remote-observation-endpoint")
+    parser.add_argument("--remote-observation-target-peer-id")
     parser.add_argument("--managed-network-id")
     parser.add_argument("--managed-device-id")
     parser.add_argument("--observation-interval", type=int, default=30)
@@ -477,6 +523,13 @@ def _runtime_from_args(
         "NODESCALE_NETWORK_ID"
     )
     managed_device_id = args.managed_device_id or environment.get("NODESCALE_DEVICE_ID")
+    remote_observation_endpoint = args.remote_observation_endpoint or environment.get(
+        "FLEET_REMOTE_OBSERVATION_ENDPOINT"
+    )
+    remote_observation_target_peer_id = (
+        args.remote_observation_target_peer_id
+        or environment.get("FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID")
+    )
     return NodeRuntimeConfig(
         target=selected[0],
         defaults=config.defaults,
@@ -487,6 +540,8 @@ def _runtime_from_args(
         keryx_node_token=node_token,
         registration_ttl_seconds=args.registration_ttl,
         observation_socket=observation_socket,
+        remote_observation_endpoint=remote_observation_endpoint,
+        remote_observation_target_peer_id=remote_observation_target_peer_id,
         managed_network_id=managed_network_id,
         managed_device_id=managed_device_id,
         observation_interval_seconds=args.observation_interval,

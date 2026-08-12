@@ -7,7 +7,10 @@ use fleet_domain::{
     ApplyOutcome, Availability, ManagedNodeState, NodeObservation, Reachability, ReadinessPolicy,
     ReadinessReason, ResourceObservation, WorkerCapacity, canonical_projection_hash,
 };
-use fleet_state::{FleetStateStore, ObservationOutcome, StateError};
+use fleet_state::{
+    FleetStateStore, ObservationOutcome, RemoteObservationAuthorityEpoch,
+    RemoteObservationSelector, StateError,
+};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -42,6 +45,35 @@ fn projection_with_generations(
     .unwrap();
     document.content_hash = canonical_projection_hash(&document);
     document
+}
+
+fn remote_projection(generation: u64) -> fleet_domain::ProjectionDocument {
+    let mut document = projection("upsert", generation);
+    document
+        .provenance
+        .insert("binding_id".to_string(), "binding-1".to_string());
+    document
+        .provenance
+        .insert("authenticated_peer_id".to_string(), "peer-1".to_string());
+    document.content_hash = canonical_projection_hash(&document);
+    document
+}
+
+fn remote_selector() -> RemoteObservationSelector {
+    RemoteObservationSelector {
+        source: "nodescale".to_string(),
+        network_id: "network-1".to_string(),
+        device_id: "device-1".to_string(),
+    }
+}
+
+fn remote_epoch(generation: u64) -> RemoteObservationAuthorityEpoch {
+    RemoteObservationAuthorityEpoch {
+        binding_id: "binding-1".to_string(),
+        authenticated_peer_id: "peer-1".to_string(),
+        binding_generation: generation,
+        projection_generation: generation,
+    }
 }
 
 fn observation(observed_at_ms: u64, active_workers: u32) -> NodeObservation {
@@ -79,6 +111,119 @@ fn active_store(path: &std::path::Path) -> FleetStateStore {
         ApplyOutcome::Applied
     );
     store
+}
+
+#[test]
+fn remote_authority_acquire_and_atomic_admission_fail_closed_without_mutation() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("fleet.sqlite3");
+    let store = FleetStateStore::open(&path).unwrap();
+
+    store.apply_projection(projection("upsert", 1)).unwrap();
+    assert!(matches!(
+        store.acquire_remote_observation_authority("nodescale", "network-1", "device-1"),
+        Err(StateError::InvalidTransition(_))
+    ));
+    assert!(matches!(
+        store.record_remote_observation(
+            &remote_selector(),
+            "peer-1",
+            &remote_epoch(1),
+            observation(1_000, 0),
+            1_100,
+        ),
+        Err(StateError::InvalidTransition(_))
+    ));
+    assert!(
+        store
+            .inspect_node(
+                "nodescale",
+                "network-1",
+                "device-1",
+                1_100,
+                ReadinessPolicy::new(1_000).unwrap(),
+            )
+            .unwrap()
+            .observation
+            .is_none()
+    );
+
+    store.apply_projection(remote_projection(2)).unwrap();
+    let epoch = store
+        .acquire_remote_observation_authority("nodescale", "network-1", "device-1")
+        .unwrap();
+    assert_eq!(epoch, remote_epoch(2));
+
+    for (sender, rejected_epoch) in [
+        ("wrong-peer", epoch.clone()),
+        (
+            "peer-1",
+            RemoteObservationAuthorityEpoch {
+                binding_id: "wrong-binding".to_string(),
+                ..epoch.clone()
+            },
+        ),
+        (
+            "peer-1",
+            RemoteObservationAuthorityEpoch {
+                binding_generation: 1,
+                ..epoch.clone()
+            },
+        ),
+        (
+            "peer-1",
+            RemoteObservationAuthorityEpoch {
+                projection_generation: 1,
+                ..epoch.clone()
+            },
+        ),
+    ] {
+        assert!(matches!(
+            store.record_remote_observation(
+                &remote_selector(),
+                sender,
+                &rejected_epoch,
+                observation_for_generation(2, 2_000, 0),
+                2_100,
+            ),
+            Err(StateError::InvalidTransition(_))
+        ));
+        assert!(
+            store
+                .inspect_node(
+                    "nodescale",
+                    "network-1",
+                    "device-1",
+                    2_100,
+                    ReadinessPolicy::new(1_000).unwrap(),
+                )
+                .unwrap()
+                .observation
+                .is_none()
+        );
+    }
+
+    let first = store
+        .record_remote_observation(
+            &remote_selector(),
+            "peer-1",
+            &epoch,
+            observation_for_generation(2, 2_000, 0),
+            2_100,
+        )
+        .unwrap();
+    assert_eq!(first.outcome, ObservationOutcome::Recorded);
+    let replay = store
+        .record_remote_observation(
+            &remote_selector(),
+            "peer-1",
+            &epoch,
+            observation_for_generation(2, 2_000, 0),
+            2_900,
+        )
+        .unwrap();
+    assert_eq!(replay.outcome, ObservationOutcome::AlreadyRecorded);
+    assert_eq!(replay.record.received_at_ms, 2_100);
 }
 
 #[test]
