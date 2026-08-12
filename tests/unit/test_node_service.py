@@ -438,6 +438,13 @@ def test_remote_observation_requires_complete_tls_configuration(tmp_path) -> Non
             managed_device_id="device-1",
         )
 
+    runtime = replace(
+        _runtime(tmp_path),
+        remote_observation_ca_cert_path=tmp_path / "relay-ca.pem",
+    )
+    assert runtime.remote_observation_endpoint is None
+    assert runtime.observation_socket is None
+
 
 def test_node_runtime_config_redacts_secrets_from_repr(tmp_path) -> None:
     rendered = repr(_runtime(tmp_path))
