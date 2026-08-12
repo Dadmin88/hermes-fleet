@@ -258,9 +258,12 @@ fn authenticated_projection_provenance_survives_control_apply_and_inspect() {
     let acquired = transact(
         &service.socket,
         &json!({
-            "schema": "fleet.remote-observation-internal.v1",
-            "kind": "acquire",
-            "selector": selector
+            "authenticated_context": {"sender_peer_id": "peer-1"},
+            "request": {
+                "schema": "fleet.remote-observation-internal.v1",
+                "kind": "acquire",
+                "selector": selector
+            }
         }),
     );
     assert_eq!(acquired["result"]["binding_id"], "binding-1");
@@ -357,12 +360,36 @@ fn remote_wire_rejects_ambiguous_or_self_asserted_identity_and_accepts_trusted_c
         "network_id": "net-demo",
         "device_id": "node-demo"
     });
-    let acquired = transact(
+    let unwrapped_acquire = transact(
         &service.socket,
         &json!({
             "schema": "fleet.remote-observation-internal.v1",
             "kind": "acquire",
             "selector": selector
+        }),
+    );
+    assert_eq!(unwrapped_acquire["ok"], false);
+    let wrong_acquire = transact(
+        &service.socket,
+        &json!({
+            "authenticated_context": {"sender_peer_id": "wrong-peer"},
+            "request": {
+                "schema": "fleet.remote-observation-internal.v1",
+                "kind": "acquire",
+                "selector": selector
+            }
+        }),
+    );
+    assert_eq!(wrong_acquire["ok"], false);
+    let acquired = transact(
+        &service.socket,
+        &json!({
+            "authenticated_context": {"sender_peer_id": "peer-1"},
+            "request": {
+                "schema": "fleet.remote-observation-internal.v1",
+                "kind": "acquire",
+                "selector": selector
+            }
         }),
     );
     let inner_publish = json!({
