@@ -99,13 +99,17 @@ class NodeRuntimeConfig:
             or self.registration_ttl_seconds > 86_400
         ):
             raise ValueError("registration_ttl_seconds must be between 30 and 86400")
-        remote_fields = (
+        remote_identity_fields = (
             self.remote_observation_endpoint,
             self.remote_observation_target_peer_id,
-            self.remote_observation_ca_cert_path,
         )
-        if any(value is not None for value in remote_fields) and not all(
-            value is not None for value in remote_fields
+        if any(value is not None for value in remote_identity_fields) and not all(
+            value is not None for value in remote_identity_fields
+        ):
+            raise ValueError("remote observation configuration must be complete")
+        if (
+            self.remote_observation_endpoint is not None
+            and self.remote_observation_ca_cert_path is None
         ):
             raise ValueError("remote observation configuration must be complete")
         if (
@@ -113,8 +117,9 @@ class NodeRuntimeConfig:
             and self.remote_observation_endpoint is not None
         ):
             raise ValueError("local and remote observation transports are exclusive")
-        observation_enabled = self.observation_socket is not None or all(
-            value is not None for value in remote_fields
+        observation_enabled = (
+            self.observation_socket is not None
+            or self.remote_observation_endpoint is not None
         )
         if observation_enabled != (
             self.managed_network_id is not None and self.managed_device_id is not None
@@ -135,9 +140,11 @@ class NodeRuntimeConfig:
             or not _managed_identifier(self.remote_observation_target_peer_id)
         ):
             raise ValueError("remote observation transport is invalid")
-        if self.remote_observation_ca_cert_path is not None and (
-            not is_concrete_path(self.remote_observation_ca_cert_path)
-            or not self.remote_observation_ca_cert_path.is_absolute()
+        remote_ca_path = self.remote_observation_ca_cert_path
+        if self.remote_observation_endpoint is not None and (
+            remote_ca_path is None
+            or not is_concrete_path(remote_ca_path)
+            or not remote_ca_path.is_absolute()
         ):
             raise ValueError("remote observation CA certificate path is invalid")
         if (
