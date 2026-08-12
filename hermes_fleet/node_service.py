@@ -69,6 +69,7 @@ class NodeRuntimeConfig:
     observation_socket: Path | None = None
     remote_observation_endpoint: str | None = None
     remote_observation_target_peer_id: str | None = None
+    remote_observation_ca_cert_path: Path | None = None
     managed_network_id: str | None = None
     managed_device_id: str | None = None
     observation_interval_seconds: int = 30
@@ -101,6 +102,7 @@ class NodeRuntimeConfig:
         remote_fields = (
             self.remote_observation_endpoint,
             self.remote_observation_target_peer_id,
+            self.remote_observation_ca_cert_path,
         )
         if any(value is not None for value in remote_fields) and not all(
             value is not None for value in remote_fields
@@ -133,6 +135,11 @@ class NodeRuntimeConfig:
             or not _managed_identifier(self.remote_observation_target_peer_id)
         ):
             raise ValueError("remote observation transport is invalid")
+        if self.remote_observation_ca_cert_path is not None and (
+            not is_concrete_path(self.remote_observation_ca_cert_path)
+            or not self.remote_observation_ca_cert_path.is_absolute()
+        ):
+            raise ValueError("remote observation CA certificate path is invalid")
         if (
             isinstance(self.observation_interval_seconds, bool)
             or not isinstance(self.observation_interval_seconds, int)
@@ -219,6 +226,7 @@ async def run_node_service(
         observer = remote_observation_factory(
             RemoteObservationConfig(
                 relay_endpoint=runtime.remote_observation_endpoint,
+                relay_ca_cert_path=runtime.remote_observation_ca_cert_path,
                 source_peer_id=runtime.target.peer_id,
                 node_token=runtime.keryx_node_token,
                 target_peer_id=runtime.remote_observation_target_peer_id,
@@ -485,6 +493,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--observation-socket", type=Path)
     parser.add_argument("--remote-observation-endpoint")
     parser.add_argument("--remote-observation-target-peer-id")
+    parser.add_argument("--remote-observation-ca-cert", type=Path)
     parser.add_argument("--managed-network-id")
     parser.add_argument("--managed-device-id")
     parser.add_argument("--observation-interval", type=int, default=30)
@@ -530,6 +539,13 @@ def _runtime_from_args(
         args.remote_observation_target_peer_id
         or environment.get("FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID")
     )
+    remote_observation_ca_cert_path = args.remote_observation_ca_cert
+    if remote_observation_ca_cert_path is None and environment.get(
+        "HERMES_KERYX_REGISTRY_CA_CERT"
+    ):
+        remote_observation_ca_cert_path = Path(
+            environment["HERMES_KERYX_REGISTRY_CA_CERT"]
+        )
     return NodeRuntimeConfig(
         target=selected[0],
         defaults=config.defaults,
@@ -542,6 +558,7 @@ def _runtime_from_args(
         observation_socket=observation_socket,
         remote_observation_endpoint=remote_observation_endpoint,
         remote_observation_target_peer_id=remote_observation_target_peer_id,
+        remote_observation_ca_cert_path=remote_observation_ca_cert_path,
         managed_network_id=managed_network_id,
         managed_device_id=managed_device_id,
         observation_interval_seconds=args.observation_interval,

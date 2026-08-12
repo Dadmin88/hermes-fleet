@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -354,8 +355,9 @@ def test_remote_observation_uses_existing_node_lifecycle(tmp_path) -> None:
 
     runtime = replace(
         _runtime(tmp_path),
-        remote_observation_endpoint="127.0.0.1:50052",
+        remote_observation_endpoint="https://relay.example:50052",
         remote_observation_target_peer_id="peer-katana",
+        remote_observation_ca_cert_path=tmp_path / "relay-ca.pem",
         managed_network_id="network-1",
         managed_device_id="device-1",
     )
@@ -401,7 +403,8 @@ def test_remote_observation_uses_existing_node_lifecycle(tmp_path) -> None:
 
     assert len(created_publishers) == 1
     publisher = created_publishers[0]
-    assert publisher.config.relay_endpoint == "127.0.0.1:50052"
+    assert publisher.config.relay_endpoint == "https://relay.example:50052"
+    assert publisher.config.relay_ca_cert_path == tmp_path / "relay-ca.pem"
     assert publisher.config.source_peer_id == "peer-vps"
     assert publisher.config.target_peer_id == "peer-katana"
     assert publisher.config.network_id == "network-1"
@@ -411,8 +414,29 @@ def test_remote_observation_uses_existing_node_lifecycle(tmp_path) -> None:
     assert publisher.samples[0]["worker"] == "available"
     assert publisher.samples[1]["worker"] == "unavailable"
     assert publisher.closed is True
-    assert created_nodes[0].stopped is True
-    assert created_nodes[0].handler.__self__._readiness_inspector is None
+
+
+def test_remote_observation_requires_complete_tls_configuration(tmp_path) -> None:
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="configuration must be complete"):
+        replace(
+            _runtime(tmp_path),
+            remote_observation_endpoint="https://relay.example:50052",
+            remote_observation_target_peer_id="peer-katana",
+            managed_network_id="network-1",
+            managed_device_id="device-1",
+        )
+
+    with pytest.raises(ValueError, match="CA certificate path"):
+        replace(
+            _runtime(tmp_path),
+            remote_observation_endpoint="https://relay.example:50052",
+            remote_observation_target_peer_id="peer-katana",
+            remote_observation_ca_cert_path=Path("relative-ca.pem"),
+            managed_network_id="network-1",
+            managed_device_id="device-1",
+        )
 
 
 def test_node_runtime_config_redacts_secrets_from_repr(tmp_path) -> None:

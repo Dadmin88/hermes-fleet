@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from keryx.proto.hermes.keryx.v1 import control_pb2
 
 from hermes_fleet.remote_observation import (
@@ -61,6 +64,88 @@ class _Call:
         return SimpleNamespace(result=result, HasField=lambda name: name == "result")
 
 
+def _config(ca_cert_path: Path) -> RemoteObservationConfig:
+    return RemoteObservationConfig(
+        relay_endpoint="https://relay.example:50052",
+        relay_ca_cert_path=ca_cert_path,
+        source_peer_id="peer-vps",
+        node_token="node-token",
+        target_peer_id="peer-katana",
+        network_id="network-1",
+        device_id="device-1",
+    )
+
+
+def test_remote_publisher_uses_secure_channel_with_configured_trust(
+    monkeypatch, tmp_path
+) -> None:
+    ca_cert = tmp_path / "relay-ca.pem"
+    ca_cert.write_bytes(b"test-ca-pem")
+    credentials = object()
+    channel = _Channel()
+    calls = []
+
+    monkeypatch.setattr(
+        "hermes_fleet.remote_observation.grpc.ssl_channel_credentials",
+        lambda *, root_certificates: (
+            calls.append(("credentials", root_certificates)) or credentials
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_fleet.remote_observation.grpc.secure_channel",
+        lambda target, supplied_credentials: (
+            calls.append(("secure", target, supplied_credentials)) or channel
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_fleet.remote_observation.grpc.insecure_channel",
+        lambda *_args, **_kwargs: pytest.fail("plaintext fallback is forbidden"),
+    )
+    monkeypatch.setattr(
+        "hermes_fleet.remote_observation.relay_pb2_grpc.KeryxRelayStub",
+        lambda supplied_channel: SimpleNamespace(channel=supplied_channel),
+    )
+
+    publisher = RemoteObservationPublisher(_config(ca_cert))
+
+    assert calls == [
+        ("credentials", b"test-ca-pem"),
+        ("secure", "relay.example:50052", credentials),
+    ]
+    publisher.close()
+
+
+def test_remote_publisher_requires_https_and_trust_material(tmp_path) -> None:
+    ca_cert = tmp_path / "relay-ca.pem"
+    ca_cert.write_text("test-ca")
+
+    with pytest.raises(ValueError, match="https"):
+        replace(_config(ca_cert), relay_endpoint="relay.example:50052")
+
+    with pytest.raises(ValueError, match="CA certificate"):
+        RemoteObservationConfig(
+            relay_endpoint="https://relay.example:50052",
+            relay_ca_cert_path=None,
+            source_peer_id="peer-vps",
+            node_token="node-token",
+            target_peer_id="peer-katana",
+            network_id="network-1",
+            device_id="device-1",
+        )
+
+
+def test_remote_publisher_missing_trust_file_fails_before_channel_creation(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        "hermes_fleet.remote_observation.grpc.secure_channel",
+        lambda *_args, **_kwargs: pytest.fail("channel must not be created"),
+    )
+
+    with pytest.raises(ValueError, match="read relay CA certificate"):
+        RemoteObservationPublisher(_config(tmp_path / "missing-ca.pem"))
+
+
 def test_remote_publisher_reacquires_exact_epoch_and_uses_metadata_only_sender(
     monkeypatch,
 ) -> None:
@@ -71,7 +156,8 @@ def test_remote_publisher_reacquires_exact_epoch_and_uses_metadata_only_sender(
     )
     publisher = RemoteObservationPublisher(
         RemoteObservationConfig(
-            relay_endpoint="127.0.0.1:50052",
+            relay_endpoint="https://relay.example:50052",
+            relay_ca_cert_path=Path("/unused/injected-channel-ca.pem"),
             source_peer_id="peer-vps",
             node_token="node-token",
             target_peer_id="peer-katana",

@@ -171,6 +171,12 @@ A Fleet node enables periodic publishing with all three identity settings:
 
 The values must identify the active managed projection already stored by Fleet. Partial observation configuration is rejected.
 
+For authenticated remote publication, replace the local observation socket with an
+`https://` `FLEET_REMOTE_OBSERVATION_ENDPOINT`, an exact
+`FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID`, and Keryx's existing
+`HERMES_KERYX_REGISTRY_CA_CERT`. Missing trust material is a configuration error;
+invalid trust material fails the TLS connection, with no plaintext fallback.
+
 ## What readiness does not mean
 
 Scheduler readiness means that the platform layers required for a future Fleet run are currently observed as available and that a worker slot remains. It does not:
