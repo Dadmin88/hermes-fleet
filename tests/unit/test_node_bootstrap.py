@@ -262,7 +262,11 @@ def test_failed_runtime_preflight_causes_zero_mutation(
     _manifest(bundle)
     home = _worker_home(tmp_path, bundle)
     before = {path: path.read_bytes() for path in home.rglob("*") if path.is_file()}
-    monkeypatch.setattr(bootstrap.socket, "getaddrinfo", lambda *_: [(None,)])
+    monkeypatch.setattr(
+        bootstrap.Doctor,
+        "_tailscale",
+        lambda self: [bootstrap.Check("tailscale.registry_dns", True, "resolved")],
+    )
     monkeypatch.setattr(
         bootstrap.Doctor,
         "_hermes",
