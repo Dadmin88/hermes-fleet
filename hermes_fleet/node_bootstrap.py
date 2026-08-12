@@ -175,12 +175,16 @@ def load_bundle(bundle: Path) -> dict[str, Any]:
         raise ValueError("bundle schema or role is unsupported")
     revisions = document["revisions"]
     expected = {
-        "fleet": FLEET_REVISION,
         "keryx": KERYX_REVISION,
         "nodescale": NODESCALE_REVISION,
         "hermes": HERMES_REVISION,
     }
-    if revisions != expected:
+    if (
+        type(revisions) is not dict
+        or set(revisions) != {"fleet", *expected}
+        or not re.fullmatch(r"[0-9a-f]{40}", revisions.get("fleet", ""))
+        or any(revisions.get(name) != value for name, value in expected.items())
+    ):
         raise ValueError("bundle revisions do not match the accepted stack")
     artifacts = document["artifacts"]
     if type(artifacts) is not dict or set(artifacts) != {
@@ -753,10 +757,8 @@ def build_bundle(
     runner: Runner | None = None,
 ) -> Path:
     runner = runner or SubprocessRunner()
-    if (
-        _git_head(fleet_source, runner) != FLEET_REVISION
-        or _git_head(keryx_source, runner) != KERYX_REVISION
-    ):
+    fleet_revision = _git_head(fleet_source, runner)
+    if _git_head(keryx_source, runner) != KERYX_REVISION:
         raise RuntimeError("bundle sources are not at accepted revisions")
     output.mkdir(parents=True, exist_ok=False)
     cargo_target = output / "cargo-target"
@@ -832,7 +834,7 @@ def build_bundle(
             "sha256": _sha256(destination),
         }
     revisions = {
-        "fleet": FLEET_REVISION,
+        "fleet": fleet_revision,
         "keryx": KERYX_REVISION,
         "nodescale": NODESCALE_REVISION,
         "hermes": HERMES_REVISION,
