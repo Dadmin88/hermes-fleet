@@ -347,6 +347,74 @@ def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
     assert samples[0]["admission_generation"] == 1
 
 
+def test_remote_observation_uses_existing_node_lifecycle(tmp_path) -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import run_node_service
+
+    runtime = replace(
+        _runtime(tmp_path),
+        remote_observation_endpoint="127.0.0.1:50052",
+        remote_observation_target_peer_id="peer-katana",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    created_publishers = []
+    created_nodes = []
+
+    class Publisher:
+        def __init__(self, config) -> None:
+            self.config = config
+            self.samples = []
+            self.closed = False
+            created_publishers.append(self)
+
+        def publish(self, observation: dict[str, Any]) -> str:
+            assert not self.closed
+            self.samples.append(observation)
+            return "published"
+
+        def admission_generation(self) -> int:
+            return 11
+
+        def close(self) -> None:
+            self.closed = True
+
+    def node_factory(**kwargs):
+        node = _Node(**kwargs)
+        created_nodes.append(node)
+        return node
+
+    async def exercise() -> None:
+        shutdown = asyncio.Event()
+        shutdown.set()
+        await run_node_service(
+            runtime,
+            card_factory=_card_factory([]),
+            node_factory=node_factory,
+            shutdown=shutdown,
+            hermes_factory=_Hermes,
+            remote_observation_factory=Publisher,
+        )
+
+    asyncio.run(exercise())
+
+    assert len(created_publishers) == 1
+    publisher = created_publishers[0]
+    assert publisher.config.relay_endpoint == "127.0.0.1:50052"
+    assert publisher.config.source_peer_id == "peer-vps"
+    assert publisher.config.target_peer_id == "peer-katana"
+    assert publisher.config.network_id == "network-1"
+    assert publisher.config.device_id == "device-1"
+    assert len(publisher.samples) == 2
+    assert publisher.samples[0]["admission_generation"] == 11
+    assert publisher.samples[0]["worker"] == "available"
+    assert publisher.samples[1]["worker"] == "unavailable"
+    assert publisher.closed is True
+    assert created_nodes[0].stopped is True
+    assert created_nodes[0].handler.__self__._readiness_inspector is None
+
+
 def test_node_runtime_config_redacts_secrets_from_repr(tmp_path) -> None:
     rendered = repr(_runtime(tmp_path))
 

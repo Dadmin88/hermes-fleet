@@ -37,7 +37,8 @@ use fleet_domain::{
 };
 use fleet_state::{
     AliasClearOutcome, AliasSetOutcome, FleetStateStore, ManagedNodeView, NodeOperationalView,
-    ObservationOutcome, ProjectionView, StateError, WorkflowDeleteOutcome, WorkflowRevision,
+    ObservationApply, ObservationOutcome, ProjectionView, RemoteObservationAuthorityEpoch,
+    RemoteObservationSelector, StateError, WorkflowDeleteOutcome, WorkflowRevision,
     WorkflowWriteOutcome,
 };
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,7 @@ use thiserror::Error;
 
 pub const SCHEMA: &str = "fleet.managed-projection.v1";
 pub const OBSERVATION_SCHEMA: &str = "fleet.node-observation.v1";
+const REMOTE_OBSERVATION_SCHEMA: &str = "fleet.remote-observation-internal.v1";
 pub const DESKTOP_SCHEMA: &str = "fleet.desktop.v1";
 pub const DESKTOP_ALIAS_SCHEMA: &str = "fleet.desktop-alias.v1";
 pub const WORKFLOW_SCHEMA: &str = "fleet.workflow.v1";
@@ -88,6 +90,45 @@ pub enum ControlError {
 }
 
 pub type Result<T> = std::result::Result<T, ControlError>;
+
+pub fn acquire_remote_observation_authority(
+    state: &FleetStateStore,
+    selector: &RemoteObservationSelector,
+) -> Result<RemoteObservationAuthorityEpoch> {
+    state
+        .acquire_remote_observation_authority(
+            &selector.source,
+            &selector.network_id,
+            &selector.device_id,
+        )
+        .map_err(map_state_error)
+}
+
+pub fn publish_remote_observation(
+    state: &FleetStateStore,
+    selector: &RemoteObservationSelector,
+    authenticated_sender: &str,
+    authority_epoch: &RemoteObservationAuthorityEpoch,
+    observation_json: &[u8],
+    received_at_ms: u64,
+) -> Result<ObservationApply> {
+    if observation_json.is_empty() || observation_json.len() > MAX_FRAME_BYTES {
+        return Err(ControlError::MalformedRequest);
+    }
+    let text = std::str::from_utf8(observation_json).map_err(|_| ControlError::MalformedRequest)?;
+    reject_duplicate_json_members(text).map_err(|_| ControlError::MalformedRequest)?;
+    let observation: NodeObservation =
+        serde_json::from_str(text).map_err(|_| ControlError::MalformedRequest)?;
+    state
+        .record_remote_observation(
+            selector,
+            authenticated_sender,
+            authority_epoch,
+            observation,
+            received_at_ms,
+        )
+        .map_err(map_state_error)
+}
 
 #[derive(Clone, Debug)]
 pub struct ControlConfig {
@@ -236,7 +277,12 @@ fn peer_uid(stream: &UnixStream) -> Result<u32> {
     Ok(credentials.uid)
 }
 
-fn receive_request(stream: &mut UnixStream) -> (Result<Request>, &'static str) {
+struct ParsedRequest {
+    request: Request,
+    authenticated_sender: Option<String>,
+}
+
+fn receive_request(stream: &mut UnixStream) -> (Result<ParsedRequest>, &'static str) {
     let payload = match receive_payload(stream) {
         Ok(payload) => payload,
         Err(error) => return (Err(error), SCHEMA),
@@ -270,13 +316,15 @@ fn declared_schema(payload: &[u8]) -> &'static str {
     let schema = serde_json::from_slice::<serde_json::Value>(payload)
         .ok()
         .and_then(|value| {
-            value
+            let request = value.get("request").unwrap_or(&value);
+            request
                 .get("schema")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
     match schema.as_deref() {
         Some(OBSERVATION_SCHEMA) => OBSERVATION_SCHEMA,
+        Some(REMOTE_OBSERVATION_SCHEMA) => REMOTE_OBSERVATION_SCHEMA,
         Some(DESKTOP_SCHEMA) => DESKTOP_SCHEMA,
         Some(DESKTOP_ALIAS_SCHEMA) => DESKTOP_ALIAS_SCHEMA,
         Some(WORKFLOW_SCHEMA) => WORKFLOW_SCHEMA,
@@ -284,20 +332,54 @@ fn declared_schema(payload: &[u8]) -> &'static str {
     }
 }
 
-fn parse_request(payload: &[u8]) -> Result<Request> {
+fn parse_request(payload: &[u8]) -> Result<ParsedRequest> {
     if declared_schema(payload) == WORKFLOW_SCHEMA {
         let input = std::str::from_utf8(payload).map_err(|_| ControlError::MalformedRequest)?;
         reject_duplicate_json_members(input).map_err(|_| ControlError::MalformedRequest)?;
         let request: WorkflowRequest =
             serde_json::from_slice(payload).map_err(|_| ControlError::MalformedRequest)?;
-        return Ok(request.into());
+        return Ok(ParsedRequest {
+            request: request.into(),
+            authenticated_sender: None,
+        });
+    }
+    if declared_schema(payload) == REMOTE_OBSERVATION_SCHEMA {
+        let input = std::str::from_utf8(payload).map_err(|_| ControlError::MalformedRequest)?;
+        reject_duplicate_json_members(input).map_err(|_| ControlError::MalformedRequest)?;
+        if serde_json::from_slice::<Value>(payload)
+            .ok()
+            .is_some_and(|value| value.get("authenticated_context").is_some())
+        {
+            let envelope: AuthenticatedRemotePublishEnvelope =
+                serde_json::from_slice(payload).map_err(|_| ControlError::MalformedRequest)?;
+            return Ok(ParsedRequest {
+                request: Request::RemotePublish(envelope.request),
+                authenticated_sender: Some(envelope.authenticated_context.sender_peer_id),
+            });
+        }
     }
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| ControlError::MalformedRequest)?;
     if request.schema() != request.expected_schema() {
         return Err(ControlError::UnsupportedSchema);
     }
-    Ok(request)
+    Ok(ParsedRequest {
+        request,
+        authenticated_sender: None,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthenticatedRemotePublishEnvelope {
+    authenticated_context: AuthenticatedRemoteContext,
+    request: RemotePublishRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthenticatedRemoteContext {
+    sender_peer_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -333,6 +415,8 @@ enum Request {
     Apply(ApplyRequest),
     Inspect(InspectRequest),
     Observe(ObserveRequest),
+    RemoteAcquire(RemoteAcquireRequest),
+    RemotePublish(RemotePublishRequest),
     InspectObservation(InspectObservationRequest),
     DesktopOverview(DesktopOverviewRequest),
     SetAlias(SetAliasRequest),
@@ -353,6 +437,8 @@ impl Request {
             Self::Apply(request) => &request.schema,
             Self::Inspect(request) => &request.schema,
             Self::Observe(request) => &request.schema,
+            Self::RemoteAcquire(request) => &request.schema,
+            Self::RemotePublish(request) => &request.schema,
             Self::InspectObservation(request) => &request.schema,
             Self::DesktopOverview(request) => &request.schema,
             Self::SetAlias(request) => &request.schema,
@@ -371,6 +457,7 @@ impl Request {
         match self {
             Self::Capabilities(_) | Self::Apply(_) | Self::Inspect(_) => SCHEMA,
             Self::Observe(_) | Self::InspectObservation(_) => OBSERVATION_SCHEMA,
+            Self::RemoteAcquire(_) | Self::RemotePublish(_) => REMOTE_OBSERVATION_SCHEMA,
             Self::DesktopOverview(_) => DESKTOP_SCHEMA,
             Self::SetAlias(_) | Self::ClearAlias(_) => DESKTOP_ALIAS_SCHEMA,
             Self::WorkflowCapabilities(_)
@@ -413,6 +500,24 @@ struct ObserveRequest {
     schema: String,
     kind: ObserveKind,
     selector: InspectSelector,
+    observation: NodeObservation,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteAcquireRequest {
+    schema: String,
+    kind: RemoteAcquireKind,
+    selector: RemoteObservationSelector,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemotePublishRequest {
+    schema: String,
+    kind: RemotePublishKind,
+    selector: RemoteObservationSelector,
+    authority_epoch: RemoteObservationAuthorityEpoch,
     observation: NodeObservation,
 }
 
@@ -532,6 +637,18 @@ enum ObserveKind {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
+enum RemoteAcquireKind {
+    #[serde(rename = "acquire")]
+    Acquire,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum RemotePublishKind {
+    #[serde(rename = "publish")]
+    Publish,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
 enum InspectObservationKind {
     #[serde(rename = "inspect_observation")]
     InspectObservation,
@@ -632,6 +749,10 @@ struct WireProvenance {
     network_id: String,
     device_id: String,
     snapshot: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authenticated_peer_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -758,6 +879,7 @@ fn validate_identifier(value: &str) -> Result<()> {
 
 fn dispatch_result(
     request: Request,
+    authenticated_sender: Option<&str>,
     state: &FleetStateStore,
     freshness_window: Duration,
 ) -> Result<Value> {
@@ -846,6 +968,40 @@ fn dispatch_result(
                 ObservationOutcome::Conflict => "conflict",
             };
             Ok(json!({"outcome":outcome}))
+        }
+        Request::RemoteAcquire(request) => {
+            let _ = request.kind;
+            let epoch = state
+                .acquire_remote_observation_authority(
+                    &request.selector.source,
+                    &request.selector.network_id,
+                    &request.selector.device_id,
+                )
+                .map_err(map_state_error)?;
+            serde_json::to_value(epoch).map_err(|_| ControlError::StateCorruption)
+        }
+        Request::RemotePublish(request) => {
+            let _ = request.kind;
+            let authenticated_sender =
+                authenticated_sender.ok_or(ControlError::UnauthorizedCaller)?;
+            validate_identifier(authenticated_sender)?;
+            let applied = state
+                .record_remote_observation(
+                    &request.selector,
+                    authenticated_sender,
+                    &request.authority_epoch,
+                    request.observation,
+                    current_time_ms()?,
+                )
+                .map_err(map_state_error)?;
+            Ok(json!({
+                "outcome": match applied.outcome {
+                    ObservationOutcome::Recorded => "published",
+                    ObservationOutcome::AlreadyRecorded => "already_recorded",
+                    ObservationOutcome::Stale => "stale",
+                    ObservationOutcome::Conflict => "conflict",
+                }
+            }))
         }
         Request::InspectObservation(request) => {
             let _ = request.kind;
@@ -1041,12 +1197,18 @@ impl WireProjectionDocument {
             .into_iter()
             .map(WireGeneratedOperation::domain)
             .collect();
-        let provenance = BTreeMap::from([
+        let mut provenance = BTreeMap::from([
             ("source".to_owned(), self.provenance.source),
             ("network_id".to_owned(), self.provenance.network_id),
             ("device_id".to_owned(), self.provenance.device_id),
             ("snapshot".to_owned(), self.provenance.snapshot),
         ]);
+        if let Some(binding_id) = self.provenance.binding_id {
+            provenance.insert("binding_id".to_owned(), binding_id);
+        }
+        if let Some(authenticated_peer_id) = self.provenance.authenticated_peer_id {
+            provenance.insert("authenticated_peer_id".to_owned(), authenticated_peer_id);
+        }
         ProjectionDocument {
             source: self.source,
             network_id: self.network_id,
@@ -1187,16 +1349,22 @@ fn error_response(schema: &'static str) -> Value {
 }
 
 fn dispatch_response(
-    request: Request,
+    parsed: ParsedRequest,
     state: &FleetStateStore,
     freshness_window: Duration,
 ) -> Result<Value> {
+    let ParsedRequest {
+        request,
+        authenticated_sender,
+    } = parsed;
     let schema = request.expected_schema();
     let kind = match &request {
         Request::Capabilities(_) => "capabilities",
         Request::Apply(_) => "apply",
         Request::Inspect(_) => "inspect",
         Request::Observe(_) => "observe",
+        Request::RemoteAcquire(_) => "acquire",
+        Request::RemotePublish(_) => "publish",
         Request::InspectObservation(_) => "inspect_observation",
         Request::DesktopOverview(_) => "overview",
         Request::SetAlias(_) => "set_alias",
@@ -1209,8 +1377,13 @@ fn dispatch_response(
         Request::WorkflowList(_) => "list",
         Request::WorkflowDelete(_) => "delete",
     };
-    dispatch_result(request, state, freshness_window)
-        .map(|result| success_response(schema, kind, result))
+    dispatch_result(
+        request,
+        authenticated_sender.as_deref(),
+        state,
+        freshness_window,
+    )
+    .map(|result| success_response(schema, kind, result))
 }
 
 fn send_response(stream: &mut UnixStream, response: &Value) -> Result<()> {

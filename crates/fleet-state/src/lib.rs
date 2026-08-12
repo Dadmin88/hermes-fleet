@@ -257,6 +257,23 @@ pub enum AliasClearOutcome {
     AlreadyClear,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteObservationSelector {
+    pub source: String,
+    pub network_id: String,
+    pub device_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteObservationAuthorityEpoch {
+    pub binding_id: String,
+    pub authenticated_peer_id: String,
+    pub binding_generation: u64,
+    pub projection_generation: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservationApply {
     pub outcome: ObservationOutcome,
@@ -865,6 +882,58 @@ impl FleetStateStore {
         Ok(())
     }
 
+    pub fn acquire_remote_observation_authority(
+        &self,
+        source: &str,
+        network_id: &str,
+        device_id: &str,
+    ) -> Result<RemoteObservationAuthorityEpoch> {
+        validate_key(source, network_id, device_id)?;
+        let connection = self.connect()?;
+        let projection = load_projection(&connection, source, network_id, device_id)?;
+        remote_observation_authority(projection.as_ref())
+    }
+
+    pub fn record_remote_observation(
+        &self,
+        selector: &RemoteObservationSelector,
+        authenticated_sender: &str,
+        authority_epoch: &RemoteObservationAuthorityEpoch,
+        observation: NodeObservation,
+        received_at_ms: u64,
+    ) -> Result<ObservationApply> {
+        validate_key(&selector.source, &selector.network_id, &selector.device_id)?;
+        validate_remote_authority_epoch(authority_epoch)?;
+        validate_observation(&observation, received_at_ms)?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let projection = load_projection(
+            &transaction,
+            &selector.source,
+            &selector.network_id,
+            &selector.device_id,
+        )?;
+        let active_epoch = remote_observation_authority(projection.as_ref())?;
+        if authenticated_sender != active_epoch.authenticated_peer_id
+            || authority_epoch != &active_epoch
+        {
+            return Err(StateError::InvalidTransition(
+                "remote observation authority epoch is stale or mismatched",
+            ));
+        }
+        let applied = record_observation_in_transaction(
+            &transaction,
+            &selector.source,
+            &selector.network_id,
+            &selector.device_id,
+            projection.as_ref(),
+            observation,
+            received_at_ms,
+        )?;
+        transaction.commit()?;
+        Ok(applied)
+    }
+
     pub fn record_observation(
         &self,
         source: &str,
@@ -878,80 +947,17 @@ impl FleetStateStore {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let projection = load_projection(&transaction, source, network_id, device_id)?;
-        if managed_state(projection.as_ref()) != ManagedNodeState::Active {
-            return Err(StateError::InvalidTransition(
-                "observation identity is not an active managed node",
-            ));
-        }
-        let active_admission_generation = projection
-            .as_ref()
-            .map(|record| record.document.projection_generation.get())
-            .ok_or(StateError::CorruptState(
-                "active observation identity has no managed projection",
-            ))?;
-        if observation.admission_generation != active_admission_generation {
-            return Err(StateError::InvalidTransition(
-                "observation admission generation does not match active projection",
-            ));
-        }
-
-        let current = load_observation(&transaction, source, network_id, device_id)?;
-        let incoming_time = observation.observed_at_ms;
-        let clock_rebased = current.as_ref().is_some_and(|record| {
-            record.observation.observed_at_ms
-                > received_at_ms.saturating_add(MAX_OBSERVATION_FUTURE_SKEW_MS)
-        });
-        let outcome = match current.as_ref() {
-            None => ObservationOutcome::Recorded,
-            Some(_) if clock_rebased => ObservationOutcome::Recorded,
-            Some(current) if incoming_time < current.observation.observed_at_ms => {
-                ObservationOutcome::Stale
-            }
-            Some(current) if incoming_time == current.observation.observed_at_ms => {
-                if observation == current.observation {
-                    ObservationOutcome::AlreadyRecorded
-                } else {
-                    ObservationOutcome::Conflict
-                }
-            }
-            Some(_) => ObservationOutcome::Recorded,
-        };
-
-        let record = if outcome == ObservationOutcome::Recorded {
-            let record = ObservationRecord {
-                observation,
-                received_at_ms,
-            };
-            transaction.execute(
-                "INSERT INTO node_observations (
-                    source, network_id, device_id, observed_at_ms,
-                    received_at_ms, observation_json
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(source, network_id, device_id) DO UPDATE SET
-                    observed_at_ms = excluded.observed_at_ms,
-                    received_at_ms = excluded.received_at_ms,
-                    observation_json = excluded.observation_json",
-                params![
-                    source,
-                    network_id,
-                    device_id,
-                    i64::try_from(record.observation.observed_at_ms).map_err(|_| {
-                        StateError::InvalidInput("observation timestamp exceeds SQLite range")
-                    })?,
-                    i64::try_from(record.received_at_ms).map_err(|_| {
-                        StateError::InvalidInput("receipt timestamp exceeds SQLite range")
-                    })?,
-                    serde_json::to_string(&record.observation)?,
-                ],
-            )?;
-            record
-        } else {
-            current.ok_or(StateError::CorruptState(
-                "non-recorded observation has no current state",
-            ))?
-        };
+        let applied = record_observation_in_transaction(
+            &transaction,
+            source,
+            network_id,
+            device_id,
+            projection.as_ref(),
+            observation,
+            received_at_ms,
+        )?;
         transaction.commit()?;
-        Ok(ObservationApply { outcome, record })
+        Ok(applied)
     }
 
     pub fn inspect_node(
@@ -2068,6 +2074,134 @@ fn normalized_sql(sql: &str) -> String {
         .collect()
 }
 
+fn validate_remote_authority_epoch(epoch: &RemoteObservationAuthorityEpoch) -> Result<()> {
+    for value in [&epoch.binding_id, &epoch.authenticated_peer_id] {
+        validate_identifier(value, "remote observation authority identifier")?;
+    }
+    if epoch.binding_generation == 0 || epoch.projection_generation == 0 {
+        return Err(StateError::InvalidInput(
+            "remote observation authority generations must be positive",
+        ));
+    }
+    Ok(())
+}
+
+fn remote_observation_authority(
+    projection: Option<&ManagedProjectionRecord>,
+) -> Result<RemoteObservationAuthorityEpoch> {
+    if managed_state(projection) != ManagedNodeState::Active {
+        return Err(StateError::InvalidTransition(
+            "remote observation identity is not an active managed node",
+        ));
+    }
+    let document = &projection
+        .ok_or(StateError::CorruptState(
+            "active remote observation identity has no managed projection",
+        ))?
+        .document;
+    let epoch = RemoteObservationAuthorityEpoch {
+        binding_id: document.provenance.get("binding_id").cloned().ok_or(
+            StateError::InvalidTransition(
+                "managed projection cannot authorize remote observation publication",
+            ),
+        )?,
+        authenticated_peer_id: document
+            .provenance
+            .get("authenticated_peer_id")
+            .cloned()
+            .ok_or(StateError::InvalidTransition(
+                "managed projection cannot authorize remote observation publication",
+            ))?,
+        binding_generation: document.binding_generation.get(),
+        projection_generation: document.projection_generation.get(),
+    };
+    validate_remote_authority_epoch(&epoch)?;
+    Ok(epoch)
+}
+
+fn record_observation_in_transaction(
+    connection: &Connection,
+    source: &str,
+    network_id: &str,
+    device_id: &str,
+    projection: Option<&ManagedProjectionRecord>,
+    observation: NodeObservation,
+    received_at_ms: u64,
+) -> Result<ObservationApply> {
+    if managed_state(projection) != ManagedNodeState::Active {
+        return Err(StateError::InvalidTransition(
+            "observation identity is not an active managed node",
+        ));
+    }
+    let active_admission_generation = projection
+        .map(|record| record.document.projection_generation.get())
+        .ok_or(StateError::CorruptState(
+            "active observation identity has no managed projection",
+        ))?;
+    if observation.admission_generation != active_admission_generation {
+        return Err(StateError::InvalidTransition(
+            "observation admission generation does not match active projection",
+        ));
+    }
+
+    let current = load_observation(connection, source, network_id, device_id)?;
+    let incoming_time = observation.observed_at_ms;
+    let clock_rebased = current.as_ref().is_some_and(|record| {
+        record.observation.observed_at_ms
+            > received_at_ms.saturating_add(MAX_OBSERVATION_FUTURE_SKEW_MS)
+    });
+    let outcome = match current.as_ref() {
+        None => ObservationOutcome::Recorded,
+        Some(_) if clock_rebased => ObservationOutcome::Recorded,
+        Some(current) if incoming_time < current.observation.observed_at_ms => {
+            ObservationOutcome::Stale
+        }
+        Some(current) if incoming_time == current.observation.observed_at_ms => {
+            if observation == current.observation {
+                ObservationOutcome::AlreadyRecorded
+            } else {
+                ObservationOutcome::Conflict
+            }
+        }
+        Some(_) => ObservationOutcome::Recorded,
+    };
+
+    let record = if outcome == ObservationOutcome::Recorded {
+        let record = ObservationRecord {
+            observation,
+            received_at_ms,
+        };
+        connection.execute(
+            "INSERT INTO node_observations (
+                source, network_id, device_id, observed_at_ms,
+                received_at_ms, observation_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(source, network_id, device_id) DO UPDATE SET
+                observed_at_ms = excluded.observed_at_ms,
+                received_at_ms = excluded.received_at_ms,
+                observation_json = excluded.observation_json",
+            params![
+                source,
+                network_id,
+                device_id,
+                i64::try_from(record.observation.observed_at_ms).map_err(|_| {
+                    StateError::InvalidInput("observation timestamp exceeds SQLite range")
+                })?,
+                i64::try_from(record.received_at_ms).map_err(|_| {
+                    StateError::InvalidInput("receipt timestamp exceeds SQLite range")
+                })?,
+                serde_json::to_string(&record.observation)?,
+            ],
+        )?;
+        record
+    } else {
+        current.ok_or(StateError::CorruptState(
+            "non-recorded observation has no current state",
+        ))?
+    };
+    Ok(ObservationApply { outcome, record })
+}
+
 fn validate_observation(observation: &NodeObservation, received_at_ms: u64) -> Result<()> {
     observation
         .validate()
@@ -2198,7 +2332,13 @@ fn validate_projection(document: &ProjectionDocument) -> Result<()> {
     if document.provenance.keys().any(|key| {
         !matches!(
             key.as_str(),
-            "source" | "network_id" | "device_id" | "snapshot" | "controller"
+            "source"
+                | "network_id"
+                | "device_id"
+                | "snapshot"
+                | "controller"
+                | "binding_id"
+                | "authenticated_peer_id"
         )
     }) {
         return Err(StateError::InvalidInput(
