@@ -12,12 +12,13 @@ license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [
   "PyYAML>=6,<7",
-  "keryx @ git+https://github.com/Dadmin88/hermes-keryx.git@f4ee645e415600a959ea8062d1143140bd6c2616#subdirectory=sdk/python",
+  "keryx @ git+https://github.com/Dadmin88/hermes-keryx.git@1a569219517ea3f6ea216967f4dcc23dcaf5c822#subdirectory=sdk/python",
 ]
 
 [project.scripts]
 fleet-node = "hermes_fleet.node_service:main"
 fleet-managed-projection = "hermes_fleet.managed_service:main"
+hermes-fleet-node = "hermes_fleet.node_bootstrap:main"
 
 [project.optional-dependencies]
 dev = ["fastapi>=0.115,<1", "pytest>=8", "ruff>=0.6"]

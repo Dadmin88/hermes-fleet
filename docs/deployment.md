@@ -107,7 +107,7 @@ Validate that:
 
 ## Keryx requirements
 
-Fleet depends on public Keryx behavior rather than Keryx database internals. The Python package pins the worker SDK to immutable Keryx commit `f4ee645e415600a959ea8062d1143140bd6c2616`; installing the Fleet wheel installs that SDK revision and its declared dependencies. Keryx daemon/relay binaries remain separate service prerequisites and should be deployed from a contract-compatible reviewed revision.
+Fleet depends on public Keryx behavior rather than Keryx database internals. The Python package and worker bundle pin the SDK and daemon/edge artifacts to immutable Keryx commit `1a569219517ea3f6ea216967f4dcc23dcaf5c822`. Worker convergence must verify artifact hashes from the bundle rather than infer provenance from package version or service health.
 
 Before enabling Fleet traffic, verify:
 
