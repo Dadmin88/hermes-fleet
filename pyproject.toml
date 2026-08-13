@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+fleet = "hermes_fleet.operator_cli:main"
 fleet-node = "hermes_fleet.node_service:main"
 fleet-managed-projection = "hermes_fleet.managed_service:main"
 hermes-fleet-node = "hermes_fleet.node_bootstrap:main"

@@ -170,6 +170,53 @@ class OperatorService:
     async def run_exact(
         self, target: str, prompt: str, *, deadline_seconds: int = 120
     ) -> OperatorCompletionResult:
+        submission, resolved = await self._submit_exact(
+            target, prompt, deadline_seconds=deadline_seconds
+        )
+        try:
+            task = await submission.handle.wait(float(deadline_seconds) + 5.0)
+        except TimeoutError as error:
+            raise OperatorError(
+                OperatorErrorCode.DEADLINE_EXCEEDED,
+                "Fleet task did not reach a terminal state before the deadline.",
+                detail=error,
+            ) from error
+        except Exception as error:
+            raise OperatorError(
+                OperatorErrorCode.TRANSPORT_UNAVAILABLE,
+                "Fleet transport is unavailable.",
+                detail=error,
+            ) from error
+        return self._completion(
+            task,
+            task_id=submission.task_id,
+            requested_target=target,
+            resolved_target=resolved,
+            routed_to=submission.routed_to,
+            delivery_route=submission.delivery_route,
+            operation="fleet.hermes.run",
+            deadline_ms=submission.deadline_ms,
+        )
+
+    async def submit_exact(
+        self, target: str, prompt: str, *, deadline_seconds: int = 120
+    ) -> OperatorCompletionResult:
+        """Submit exact work and return its durable identity without waiting."""
+        submission, resolved = await self._submit_exact(
+            target, prompt, deadline_seconds=deadline_seconds
+        )
+        return OperatorCompletionResult(
+            task_id=submission.task_id,
+            terminal_state="submitted",
+            requested_target=target,
+            resolved_target=resolved,
+            routed_to=submission.routed_to,
+            delivery_route=submission.delivery_route,
+            operation="fleet.hermes.run",
+            deadline_ms=submission.deadline_ms,
+        )
+
+    async def _submit_exact(self, target: str, prompt: str, *, deadline_seconds: int):
         operation = "fleet.hermes.run"
         resolved, row, _projection = self._resolve(target)
         if operation not in resolved.policy.policy.allowed_operations:
@@ -209,7 +256,6 @@ class OperatorService:
                 input_data={"prompt": prompt, "export_paths": []},
                 deadline_seconds=deadline_seconds,
             )
-            task = await submission.handle.wait(float(deadline_seconds) + 5.0)
         except OperatorError:
             raise
         except Exception as error:
@@ -218,6 +264,20 @@ class OperatorService:
                 "Fleet transport is unavailable.",
                 detail=error,
             ) from error
+        return submission, resolved
+
+    @staticmethod
+    def _completion(
+        task: object,
+        *,
+        task_id: str,
+        requested_target: str | None = None,
+        resolved_target: ResolvedOperatorTarget | None = None,
+        routed_to: str | None = None,
+        delivery_route: str | None = None,
+        operation: str | None = None,
+        deadline_ms: int | None = None,
+    ) -> OperatorCompletionResult:
         status = getattr(getattr(task, "status", None), "value", None)
         if type(status) is not str or not status:
             raise OperatorError(
@@ -232,22 +292,31 @@ class OperatorService:
         run_id = metadata.get("run_id")
         if type(run_id) is not str or not run_id:
             run_id = None
-        error_category = None
-        if status != "completed":
-            error_category = (
-                OperatorErrorCode.DEADLINE_EXCEEDED
-                if status in {"expired", "deadline_exceeded"}
-                else OperatorErrorCode.TASK_FAILED
+        error_categories = {
+            "failed": OperatorErrorCode.TASK_FAILED,
+            "canceled": OperatorErrorCode.TASK_FAILED,
+            "cancelled": OperatorErrorCode.TASK_FAILED,
+            "rejected": OperatorErrorCode.REMOTE_REJECTED,
+            "expired": OperatorErrorCode.DEADLINE_EXCEEDED,
+            "deadline_exceeded": OperatorErrorCode.DEADLINE_EXCEEDED,
+            "timed_out": OperatorErrorCode.DEADLINE_EXCEEDED,
+        }
+        known_nonterminal = {"submitted", "pending", "working", "running", "leased"}
+        if status == "completed" or status in known_nonterminal:
+            error_category = None
+        else:
+            error_category = error_categories.get(
+                status, OperatorErrorCode.TASK_INDETERMINATE
             )
         return OperatorCompletionResult(
-            task_id=submission.task_id,
-            requested_target=target,
-            resolved_target=resolved,
-            routed_to=submission.routed_to,
-            delivery_route=submission.delivery_route,
-            operation=operation,
-            deadline_ms=submission.deadline_ms,
+            task_id=task_id,
             terminal_state=status,
+            requested_target=requested_target,
+            resolved_target=resolved_target,
+            routed_to=routed_to,
+            delivery_route=delivery_route,
+            operation=operation,
+            deadline_ms=deadline_ms,
             run_id=run_id,
             result=result,
             error_category=error_category,
@@ -270,29 +339,7 @@ class OperatorService:
                 "Fleet task status is unavailable.",
                 detail=error,
             ) from error
-        status = getattr(getattr(task, "status", None), "value", None)
-        if type(status) is not str or not status:
-            raise OperatorError(
-                OperatorErrorCode.TASK_INDETERMINATE,
-                "Fleet task status is indeterminate.",
-            )
-        metadata = getattr(task, "metadata", None)
-        metadata = metadata if type(metadata) is dict else {}
-        result = metadata.get("result_text")
-        if type(result) is not str or len(result) > _MAX_RESULT_CHARS:
-            result = None
-        run_id = metadata.get("run_id")
-        if type(run_id) is not str or not run_id:
-            run_id = None
-        return OperatorCompletionResult(
-            task_id=task_id,
-            terminal_state=status,
-            run_id=run_id,
-            result=result,
-            error_category=None
-            if status == "completed"
-            else OperatorErrorCode.TASK_FAILED,
-        )
+        return self._completion(task, task_id=task_id)
 
     def _resolve(
         self, target: str
