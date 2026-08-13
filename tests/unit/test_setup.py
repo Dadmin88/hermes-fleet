@@ -156,9 +156,7 @@ def test_worker_adopt_requires_linger_before_transfer_or_mutation(
         "-o",
         "BatchMode=yes",
         "worker-example",
-        "sh",
-        "-c",
-        'test "$(loginctl show-user "$(id -un)" -p Linger --value)" = yes',
+        'sh -c \'test "$(loginctl show-user "$(id -un)" -p Linger --value)" = yes\'',
     ]
     runner = FakeRunner(
         {
@@ -176,6 +174,48 @@ def test_worker_adopt_requires_linger_before_transfer_or_mutation(
 
     assert not any(call[0] == "scp" for call in runner.calls)
     assert not any("snapshot" in call for call in runner.calls)
+
+
+def test_worker_adopt_shell_encodes_each_remote_argv_once(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    status = {
+        "Peer": {
+            "peer-key": {
+                "HostName": "worker-example",
+                "ID": "provider-stable-id",
+                "Online": True,
+            }
+        }
+    }
+    runner = FakeRunner(
+        {
+            ("tailscale", "status", "--json"): _response(
+                ["tailscale", "status", "--json"], 0, json.dumps(status)
+            )
+        }
+    )
+
+    setup.SetupService(
+        home=tmp_path, runner=runner, which=lambda _: "/bin/tool"
+    ).adopt_worker("worker-example", bundle=bundle)
+
+    remote_calls = [call for call in runner.calls if call[0] == "ssh"]
+    assert remote_calls
+    assert all(len(call) == 5 for call in remote_calls)
+    assert [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "worker-example",
+        "python3 -c 'import sys,venv,ensurepip; assert sys.version_info >= (3, 11)'",
+    ] in remote_calls
+    assert [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "worker-example",
+        'sh -c \'test "$(loginctl show-user "$(id -un)" -p Linger --value)" = yes\'',
+    ] in remote_calls
 
 
 def test_worker_adopt_runs_remote_doctor_then_installer_without_nodescale_authority(

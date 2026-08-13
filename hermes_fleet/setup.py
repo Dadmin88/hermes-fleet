@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -115,7 +116,7 @@ class SetupService:
             manifest = load_bundle(bundle)
         except (OSError, ValueError) as error:
             raise SetupError(f"Worker bundle is invalid: {error}") from error
-        reachable = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, "true"])
+        reachable = self._run(self._ssh(ssh_target, ["true"]))
         if reachable.returncode != 0:
             raise SetupError("SSH target is unavailable.")
         self._remote_preflight(ssh_target)
@@ -150,18 +151,17 @@ class SetupService:
                 fleet_wheel,
             ],
         ):
-            result = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, *command])
+            result = self._run(self._ssh(ssh_target, command))
             if result.returncode != 0:
                 raise SetupError("Fleet bootstrap helper staging failed.")
         snapshot = self._run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
+            self._ssh(
                 ssh_target,
-                remote_venv + "/bin/hermes-fleet-node",
-                "snapshot",
-            ]
+                [
+                    remote_venv + "/bin/hermes-fleet-node",
+                    "snapshot",
+                ],
+            )
         )
         if snapshot.returncode != 0:
             raise SetupError("Worker rollback snapshot failed.")
@@ -179,7 +179,7 @@ class SetupService:
                 remote_bundle,
             ],
         ):
-            result = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, *command])
+            result = self._run(self._ssh(ssh_target, command))
             if result.returncode != 0:
                 raise SetupError("Worker software convergence failed.")
         return AdoptionReport(
@@ -203,7 +203,7 @@ class SetupService:
             ],
         )
         for command in checks:
-            result = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, *command])
+            result = self._run(self._ssh(ssh_target, command))
             if result.returncode != 0:
                 raise PrerequisiteBlocked(
                     "Worker lacks a required unprivileged bootstrap prerequisite."
@@ -231,6 +231,10 @@ class SetupService:
         if len(set(matches)) != 1:
             raise SetupError("Unable to resolve one exact provider identity.")
         return matches[0]
+
+    @staticmethod
+    def _ssh(target: str, remote_argv: list[str]) -> list[str]:
+        return ["ssh", "-o", "BatchMode=yes", target, shlex.join(remote_argv)]
 
     def _run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         try:
