@@ -70,6 +70,7 @@ class NodeRuntimeConfig:
     binding_path: Path
     keryx_node_token: str = field(repr=False)
     registration_ttl_seconds: int = 300
+    advertise_observation_publish: bool = False
     observation_socket: Path | None = None
     remote_observation_endpoint: str | None = None
     remote_observation_target_peer_id: str | None = None
@@ -103,6 +104,8 @@ class NodeRuntimeConfig:
             or self.registration_ttl_seconds > 86_400
         ):
             raise ValueError("registration_ttl_seconds must be between 30 and 86400")
+        if type(self.advertise_observation_publish) is not bool:
+            raise ValueError("advertise_observation_publish must be a bool")
         remote_identity_fields = (
             self.remote_observation_endpoint,
             self.remote_observation_target_peer_id,
@@ -158,6 +161,9 @@ class NodeRuntimeConfig:
             or self.observation_interval_seconds > 3_600
         ):
             raise ValueError("observation_interval_seconds must be between 5 and 3600")
+
+
+_FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE = "fleet.observation.publish.v1"
 
 
 def operation_specs(*, include_hermes_run: bool = True) -> tuple[tuple[str, str], ...]:
@@ -282,6 +288,8 @@ async def run_node_service(
             )
         )
     card = card_factory(include_hermes_run)
+    if runtime.advertise_observation_publish:
+        _advertise_observation_publish(card)
     expected_specs = operation_specs(include_hermes_run=include_hermes_run)
     skill_ids = tuple(
         getattr(skill, "id", None) for skill in getattr(card, "skills", ())
@@ -542,6 +550,26 @@ def _managed_identifier(value: object) -> bool:
     )
 
 
+def _environment_flag(
+    environment: Mapping[str, str],
+    name: str,
+) -> bool:
+    raw = environment.get(name)
+    if raw is None or raw == "0":
+        return False
+    if raw == "1":
+        return True
+    raise ValueError(f"{name} must be 0 or 1")
+
+
+def _advertise_observation_publish(card: object) -> None:
+    protocol_features = getattr(card, "protocol_features", None)
+    if type(protocol_features) is not list:
+        raise ValueError("card protocol_features must be a list")
+    if _FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE not in protocol_features:
+        protocol_features.append(_FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fleet-node")
     parser.add_argument("--config", type=Path)
@@ -582,6 +610,10 @@ def _runtime_from_args(
         )
     api_key = environment.get("API_SERVER_KEY", "")
     node_token = environment.get("KERYX_NODE_TOKEN", "")
+    advertise_observation_publish = _environment_flag(
+        environment,
+        "FLEET_ADVERTISE_OBSERVATION_PUBLISH",
+    )
     binding_path = args.binding_db or (config_path.parent / "run-bindings.sqlite3")
     if not binding_path.is_absolute():
         raise ValueError("binding DB path must be absolute")
@@ -615,6 +647,7 @@ def _runtime_from_args(
         binding_path=binding_path,
         keryx_node_token=node_token,
         registration_ttl_seconds=args.registration_ttl,
+        advertise_observation_publish=advertise_observation_publish,
         observation_socket=observation_socket,
         remote_observation_endpoint=remote_observation_endpoint,
         remote_observation_target_peer_id=remote_observation_target_peer_id,

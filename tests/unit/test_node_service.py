@@ -118,6 +118,7 @@ def _card_factory(cards):
 
         card = SimpleNamespace(
             name="fleet-node:vps",
+            protocol_features=[],
             skills=[
                 SimpleNamespace(id=operation)
                 for operation, _ in operation_specs(
@@ -302,7 +303,69 @@ def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
         "fleet.inventory",
         "fleet.message",
     ]
+    assert cards[0].protocol_features == []
     assert created[0].registration == 300
+
+
+def test_fleet_node_service_advertises_observation_protocol_feature(
+    tmp_path,
+) -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import run_node_service
+
+    cards = []
+    created: list[_Node] = []
+
+    def factory(**kwargs):
+        node = _Node(**kwargs)
+        created.append(node)
+        return node
+
+    async def exercise() -> None:
+        shutdown = asyncio.Event()
+        shutdown.set()
+        await run_node_service(
+            replace(
+                _runtime(tmp_path),
+                advertise_observation_publish=True,
+            ),
+            card_factory=_card_factory(cards),
+            node_factory=factory,
+            shutdown=shutdown,
+            hermes_factory=lambda **kwargs: _Hermes(
+                healthy=False,
+                **kwargs,
+            ),
+        )
+
+    asyncio.run(exercise())
+
+    skill_ids = [skill.id for skill in cards[0].skills]
+    assert cards[0].protocol_features == ["fleet.observation.publish.v1"]
+    assert "fleet.observation.publish.v1" not in skill_ids
+    assert skill_ids == [
+        "fleet.health",
+        "fleet.inventory",
+        "fleet.message",
+    ]
+    assert created[0].registration == 300
+
+
+def test_observation_publish_environment_flag_is_strict() -> None:
+    import pytest
+
+    from hermes_fleet.node_service import _environment_flag
+
+    name = "FLEET_ADVERTISE_OBSERVATION_PUBLISH"
+
+    assert _environment_flag({}, name) is False
+    assert _environment_flag({name: "0"}, name) is False
+    assert _environment_flag({name: "1"}, name) is True
+
+    for invalid in ("", "2", "true", "yes", " 1", "1 "):
+        with pytest.raises(ValueError, match="must be 0 or 1"):
+            _environment_flag({name: invalid}, name)
 
 
 def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
