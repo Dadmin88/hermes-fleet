@@ -32,6 +32,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 
 - [Deployment](deployment.md) - generic service topology, configuration, rollout, verification, and rollback guidance.
 - [Integration verification](smoke-test.md) - repeatable two-node checks for direct communication, deliberate execution, deadlines, and trust boundaries.
+- [Private-network vertical-slice acceptance V1](acceptance/private-network-vertical-slice-v1.md) - sanitized checkpoint for the accepted two-machine exact-target Hermes execution path and its regression expectations.
 
 ## For coding agents
 
