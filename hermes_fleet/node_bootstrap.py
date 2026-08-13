@@ -1211,6 +1211,8 @@ def build_bundle(
         (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode(),
         0o644,
     )
+    for temporary in (cargo_target, fleet_cargo_target, fleet_dist, keryx_dist):
+        shutil.rmtree(temporary)
     load_bundle(output)
     return output
 

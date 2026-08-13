@@ -282,6 +282,10 @@ def test_build_bundle_materializes_the_exact_verified_service_units(
         assert (bundle / item["path"]).read_bytes() == (
             source_units / name
         ).read_bytes()
+    assert not (bundle / "cargo-target").exists()
+    assert not (bundle / "fleet-cargo-target").exists()
+    assert not (bundle / "fleet-dist").exists()
+    assert not (bundle / "keryx-dist").exists()
 
 
 def test_freeze_git_source_materializes_only_the_requested_commit(
