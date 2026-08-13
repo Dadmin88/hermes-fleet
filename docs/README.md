@@ -30,6 +30,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 - [Operator foundation](operator-foundation.md) - presentation-neutral application service, canonical policy, managed identity resolution, structured results/errors, and read-only diagnostics.
 - [Fleet Recipe contracts](recipes.md) - runtime-neutral logical requirements and exact immutable resolution identities; no backend or execution behavior.
 - [Backend capability contracts](backend-capabilities.md) - provider-neutral hard eligibility guarantees without placement or runtime configuration.
+- [ExecutionBackend contract](execution-backend.md) - idempotent provider-neutral realization lifecycle with explicit cleanup and indeterminate state.
 - [Fleet Desktop](desktop.md) - native Hermes Desktop packaging, Fleet Overview, Network/Membership operator surfaces, real-state projection, installation, and troubleshooting.
 - [Fleet Canvas topology](canvas.md) - truthful node graph, stable local layout, controls, accessibility, workflow-editor boundaries, and edge provenance.
 - [Exact-execution demo](demo-exact-execution.md) - safe repeatable recording sequence for the live graph, stable target, durable task, and truthful terminal timeline.
