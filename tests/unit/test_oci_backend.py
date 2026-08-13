@@ -6,6 +6,7 @@ import pytest
 
 from hermes_fleet.backend_capabilities import BackendCapabilities
 from hermes_fleet.execution_backend import (
+    BackendExecutionHandle,
     BackendExecutionState,
     ExecutionBackendError,
     ExecutionBackendErrorCode,
@@ -287,6 +288,44 @@ def test_cleanup_does_not_mistake_unavailable_inspection_for_absence() -> None:
         service.cleanup(prepared)
 
     assert raised.value.code == ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE
+
+
+def test_cleanup_rejects_foreign_backend_handle_even_when_realization_is_absent() -> (
+    None
+):
+    fake = FakeDocker()
+    service = backend(fake)
+    foreign = BackendExecutionHandle(
+        execution_id="exec-1",
+        backend_kind="example.org/native",
+        realization_id="missing-realization",
+        plan_fingerprint=plan().fingerprint,
+        state=BackendExecutionState.STOPPED,
+    )
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        service.cleanup(foreign)
+
+    assert raised.value.code == ExecutionBackendErrorCode.INVALID_INPUT
+
+
+def test_lifecycle_rejects_handle_with_rebound_plan_fingerprint() -> None:
+    fake = FakeDocker()
+    service = backend(fake)
+    prepared = service.prepare(plan())
+    rebound = BackendExecutionHandle(
+        execution_id=prepared.execution_id,
+        backend_kind=prepared.backend_kind,
+        realization_id=prepared.realization_id,
+        plan_fingerprint="sha256:" + "9" * 64,
+        state=prepared.state,
+    )
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        service.start(rebound)
+
+    assert raised.value.code == ExecutionBackendErrorCode.PLAN_CONFLICT
+    assert not any(call[1] == "start" for call in fake.calls)
 
 
 def test_realization_requires_digest_pin_and_non_secret_bounded_argv() -> None:
