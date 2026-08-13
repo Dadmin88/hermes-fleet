@@ -13,6 +13,7 @@ import importlib
 import json
 import os
 import sys
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,74 @@ class WorkflowDeleteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
 
     expected_version: int = Field(alias="expectedVersion", ge=1, le=(1 << 64) - 1)
+
+
+class ExactRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+    target: str = Field(min_length=1, max_length=512)
+    prompt: str = Field(min_length=1, max_length=65_536)
+    deadline_seconds: int = Field(alias="deadlineSeconds", ge=1, le=900)
+
+
+async def open_operator_context():
+    """Open the same operator runtime used by the CLI adapter."""
+    context_type = importlib.import_module(
+        "hermes_fleet.operator_cli"
+    ).OperatorCliContext
+    return await context_type.open()
+
+
+def _enum_value(value: object) -> object:
+    return value.value if isinstance(value, Enum) else value
+
+
+def _run_document(
+    result: object, *, submission_stages_observed: bool = False
+) -> dict[str, Any]:
+    terminal_state = getattr(result, "terminal_state", None)
+    terminal = terminal_state not in {
+        "submitted",
+        "pending",
+        "working",
+        "running",
+        "leased",
+    }
+    error_category = _enum_value(getattr(result, "error_category", None))
+    if not terminal:
+        completion_state = "pending"
+    elif error_category == "task_indeterminate":
+        completion_state = "indeterminate"
+    elif error_category is not None:
+        completion_state = "failed"
+    else:
+        completion_state = "completed"
+    stages = []
+    if submission_stages_observed:
+        stages.extend(
+            {"id": stage, "state": "completed"}
+            for stage in (
+                "operator_request",
+                "target_resolution",
+                "authorization",
+                "readiness",
+            )
+        )
+    stages.extend(
+        (
+            {"id": "durable_submission", "state": "observed"},
+            {"id": "completion", "state": completion_state},
+        )
+    )
+    return {
+        "schema": "fleet.desktop-run.v1",
+        "taskId": getattr(result, "task_id", None),
+        "state": terminal_state,
+        "runId": getattr(result, "run_id", None),
+        "result": getattr(result, "result", None),
+        "errorCategory": error_category,
+        "stages": stages,
+    }
 
 
 def _expected_stable_id(request: AliasClearRequest) -> str:
@@ -315,6 +384,77 @@ async def overview() -> dict[str, Any]:
         raise HTTPException(
             status_code=503, detail="Fleet Desktop state is unavailable."
         ) from error
+
+
+@router.post("/runs")
+async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
+    """Submit exact-target Hermes work through the shared operator service."""
+    context = None
+    try:
+        context = await open_operator_context()
+        result = await context.operator.submit_exact(
+            request.target,
+            request.prompt,
+            deadline_seconds=request.deadline_seconds,
+        )
+        return _run_document(result, submission_stages_observed=True)
+    except Exception as error:
+        operator_module = importlib.import_module("hermes_fleet.operator")
+        operator_error = getattr(operator_module, "OperatorError")
+        if isinstance(error, operator_error):
+            public_error: Any = error
+            code = _enum_value(public_error.code)
+            status = 403 if code == "policy_denied" else 409
+            raise HTTPException(
+                status_code=status,
+                detail={"code": code, "message": public_error.public_message},
+            ) from error
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "operation_unavailable",
+                "message": "Fleet execution is unavailable.",
+            },
+        ) from error
+    finally:
+        if context is not None:
+            await context.close()
+
+
+@router.get("/tasks/{task_id}")
+async def inspect_exact_task(task_id: str) -> dict[str, Any]:
+    """Reattach to one durable Keryx task without resubmitting work."""
+    if not task_id or len(task_id) > 512:
+        raise HTTPException(status_code=400, detail="Invalid Fleet task identity.")
+    context = None
+    try:
+        context = await open_operator_context()
+        result = await context.operator.inspect_task(task_id)
+        return _run_document(result)
+    except HTTPException:
+        raise
+    except Exception as error:
+        operator_module = importlib.import_module("hermes_fleet.operator")
+        operator_error = getattr(operator_module, "OperatorError")
+        if isinstance(error, operator_error):
+            public_error: Any = error
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": _enum_value(public_error.code),
+                    "message": public_error.public_message,
+                },
+            ) from error
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "operation_unavailable",
+                "message": "Fleet task status is unavailable.",
+            },
+        ) from error
+    finally:
+        if context is not None:
+            await context.close()
 
 
 @router.get("/workflows")

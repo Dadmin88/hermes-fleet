@@ -79,7 +79,7 @@ Fleet keeps exactly one global Hermes Desktop sidebar entry and owns its navigat
 | Invitations | `/fleet/invitations` | Truthful shell; no invitation secrets or mutations are exposed yet. |
 | Profiles | `/fleet/profiles` | Truthful shell reserved for Fleet-owned profile presence/placement contracts. |
 | Workflows | `/fleet/workflows` | Durable backend-owned authoring revisions with a refreshable library, explicit Load/Save, new drafts, naming, and version-fenced soft deletion; execution unavailable. |
-| Activity | `/fleet/activity` | Truthful shell reserved for authoritative activity history. |
+| Activity | `/fleet/activity` | Truthful shell reserved for authoritative activity history. Exact-node task status is currently scoped to the submitting inspector. |
 | Settings | `/fleet/settings` | Truthful shell; no backend policy is mutated yet. |
 
 The responsive internal navigation collapses from a left rail to a horizontally scrollable section bar on narrow Desktop windows. Route changes do not create additional Hermes sidebar entries.
@@ -93,7 +93,7 @@ Workflow editing history remains in process memory for undo/redo, while the refr
 
 The Overview shows clickable **Managed**, **Active**, **Alive**, **Ready**, **Observed**, and **Needs attention** summaries. Managed-node readiness blockers are derived directly from the authoritative readiness reason list and include the node's presentation label plus bounded observation-age context. Disabled or removed nodes do not inflate the active needs-attention count, and provider observations remain explicitly unmanaged.
 
-The Overview also summarizes reporting worker-slot capacity, aggregate RAM usage when managed nodes report it, distinct observed profile names, provider-observation availability, and managed-sample freshness. Active task/run counts are deliberately not shown because the current Desktop contract does not expose authoritative task state.
+The Overview also summarizes reporting worker-slot capacity, aggregate RAM usage when managed nodes report it, distinct observed profile names, provider-observation availability, and managed-sample freshness. Fleet Desktop does not show aggregate active task/run counts because the current contract has no authoritative task-list endpoint. A managed-node inspector can submit one exact-target task and reattach to that durable Keryx task by its returned identity.
 
 Quick actions route only to existing Fleet surfaces. Search, managed-node inspection, reported node operations, the read-only Membership Center, and the durable non-executing workflow editor are available through their current routes. Membership mutation controls, invitation and profile operator controls, diagnostics/settings, and authoritative activity history remain reserved until their dedicated contracts exist. The **Invite someone** header action is visibly unavailable instead of simulating invitation creation.
 
@@ -111,7 +111,15 @@ The validated operational surfaces render:
 - **Workflows:** durable backend-owned authoring revisions with explicit Load/Save, optimistic conflict fencing, and no execution;
 - **Reserved operator sections:** explicit explanatory shells that do not fabricate invitation, profile, activity-history, or settings authority.
 
-No fake nodes or scheduler metrics are seeded. Observed nodes have no rename, run, reservation, scheduler, readiness, or other authority-mutating controls. A selected observation may be copied into Workflow Mode as an editor-only exact-machine target; that transition preserves `authority: observed`, remains runtime-unavailable, and grants no Fleet control or execution capability. Relationship edges remain absent because neither API supplies provenance-bearing relationship evidence.
+No fake nodes or scheduler metrics are seeded. Observed nodes have no rename, run, reservation, scheduler, readiness, or other authority-mutating controls.
+
+## Exact-target execution
+
+The managed-node Inspector enables execution only when current authoritative readiness reports scheduler-ready and the node advertises explicit `fleet.hermes.run` authorization. The backend rechecks both facts at operation time. Submission sends the selected stable managed identity to the dashboard backend, which opens the same `OperatorService` runtime used by the CLI. Target resolution, explicit policy, generation-fenced binding, readiness, and durable Keryx submission are therefore shared application behavior rather than Desktop logic.
+
+The returned `fleet.desktop-run.v1` document reports only stages directly established by the request path: operator request, target resolution, authorization, readiness, durable submission, and terminal completion. Keryx routing and destination/Hermes internals are not fabricated as separate stages because the current operator result does not expose authoritative timestamps for them.
+
+The renderer polls `GET /tasks/{task_id}` to reattach to the durable task. Poll failures never resubmit work. `submitted`, other nonterminal states, completion, failure categories, timeout, and indeterminate outcomes remain distinct. Task state is currently local to the open inspector and is not an aggregate activity ledger. A selected observation may be copied into Workflow Mode as an editor-only exact-machine target; that transition preserves `authority: observed`, remains runtime-unavailable, and grants no Fleet control or execution capability. Relationship edges remain absent because neither API supplies provenance-bearing relationship evidence.
 
 ## Troubleshooting
 
