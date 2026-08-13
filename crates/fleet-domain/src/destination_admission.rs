@@ -53,7 +53,7 @@ pub enum DestinationAdmissionStatus {
     CapabilitiesChanged,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AdmissionDecision {
     pub status: DestinationAdmissionStatus,
     pub instance_id: String,

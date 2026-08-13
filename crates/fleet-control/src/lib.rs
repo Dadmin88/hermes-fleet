@@ -31,8 +31,9 @@ use std::{
 };
 
 use fleet_domain::{
-    ApplyOutcome, FleetOperation, Generation, ManagedOperation, NodeObservation,
-    ProjectionDocument, ReadinessPolicy,
+    ApplyOutcome, DestinationAdmissionContext, DestinationAdmissionRequest, ExecutionInstance,
+    ExecutionInstancePhase, FleetOperation, Generation, ManagedNodeIdentity, ManagedNodeState,
+    ManagedOperation, NodeObservation, ProjectionDocument, ReadinessPolicy, admit_destination,
     workflow::{WorkflowDocument, reject_duplicate_json_members},
 };
 use fleet_state::{
@@ -52,6 +53,7 @@ const REMOTE_OBSERVATION_SCHEMA: &str = "fleet.remote-observation-internal.v1";
 pub const DESKTOP_SCHEMA: &str = "fleet.desktop.v1";
 pub const DESKTOP_ALIAS_SCHEMA: &str = "fleet.desktop-alias.v1";
 pub const WORKFLOW_SCHEMA: &str = "fleet.workflow.v1";
+pub const EXECUTION_CONTROL_SCHEMA: &str = "fleet.execution-control.v1";
 pub const MAX_FRAME_BYTES: usize = 2_097_152;
 pub const MAX_RESPONSE_BYTES: usize = 2_097_152;
 pub const MAX_DESKTOP_NODES: usize = 256;
@@ -328,6 +330,7 @@ fn declared_schema(payload: &[u8]) -> &'static str {
         Some(DESKTOP_SCHEMA) => DESKTOP_SCHEMA,
         Some(DESKTOP_ALIAS_SCHEMA) => DESKTOP_ALIAS_SCHEMA,
         Some(WORKFLOW_SCHEMA) => WORKFLOW_SCHEMA,
+        Some(EXECUTION_CONTROL_SCHEMA) => EXECUTION_CONTROL_SCHEMA,
         _ => SCHEMA,
     }
 }
@@ -443,6 +446,9 @@ enum Request {
     WorkflowUpdate(WorkflowUpdateRequest),
     WorkflowList(WorkflowListRequest),
     WorkflowDelete(WorkflowDeleteRequest),
+    ExecutionReserveAdmit(ExecutionReserveAdmitRequest),
+    ExecutionGet(ExecutionGetRequest),
+    ExecutionTransition(ExecutionTransitionRequest),
 }
 
 impl Request {
@@ -465,6 +471,9 @@ impl Request {
             Self::WorkflowUpdate(request) => &request.schema,
             Self::WorkflowList(request) => &request.schema,
             Self::WorkflowDelete(request) => &request.schema,
+            Self::ExecutionReserveAdmit(request) => &request.schema,
+            Self::ExecutionGet(request) => &request.schema,
+            Self::ExecutionTransition(request) => &request.schema,
         }
     }
 
@@ -482,6 +491,9 @@ impl Request {
             | Self::WorkflowUpdate(_)
             | Self::WorkflowList(_)
             | Self::WorkflowDelete(_) => WORKFLOW_SCHEMA,
+            Self::ExecutionReserveAdmit(_)
+            | Self::ExecutionGet(_)
+            | Self::ExecutionTransition(_) => EXECUTION_CONTROL_SCHEMA,
         }
     }
 }
@@ -627,6 +639,36 @@ struct WorkflowDeleteRequest {
     expected_version: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionReserveAdmitRequest {
+    schema: String,
+    kind: ExecutionReserveAdmitKind,
+    instance: ExecutionInstance,
+    operation: String,
+    operation_authorized: bool,
+    current_capabilities_hash: String,
+    deadline_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionGetRequest {
+    schema: String,
+    kind: ExecutionGetKind,
+    instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionTransitionRequest {
+    schema: String,
+    kind: ExecutionTransitionKind,
+    instance_id: String,
+    expected_generation: u64,
+    phase: ExecutionInstancePhase,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum CapabilitiesKind {
     #[serde(rename = "capabilities")]
@@ -727,6 +769,24 @@ enum WorkflowListKind {
 enum WorkflowDeleteKind {
     #[serde(rename = "delete")]
     Delete,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ExecutionReserveAdmitKind {
+    #[serde(rename = "reserve_admit")]
+    ReserveAdmit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ExecutionGetKind {
+    #[serde(rename = "get")]
+    Get,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ExecutionTransitionKind {
+    #[serde(rename = "transition")]
+    Transition,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -1178,6 +1238,100 @@ fn dispatch_result(
                 }
             }))
         }
+        Request::ExecutionReserveAdmit(request) => {
+            let _ = request.kind;
+            request
+                .instance
+                .validate()
+                .map_err(|_| ControlError::MalformedRequest)?;
+            let projection = state
+                .inspect_projection(
+                    &request.instance.target.source,
+                    &request.instance.target.network_id,
+                    &request.instance.target.device_id,
+                )
+                .map_err(map_state_error)?;
+            let evaluated_at_ms = current_time_ms()?;
+            let current = state
+                .inspect_node(
+                    &request.instance.target.source,
+                    &request.instance.target.network_id,
+                    &request.instance.target.device_id,
+                    evaluated_at_ms,
+                    ReadinessPolicy::new(freshness_window.as_millis() as u64)
+                        .map_err(|_| ControlError::MalformedRequest)?,
+                )
+                .map_err(map_state_error)?;
+            let document = projection.generated.as_ref().map(|record| &record.document);
+            let authenticated_binding = document
+                .and_then(|item| item.provenance.get("authenticated_peer_id"))
+                .is_some_and(|value| !value.is_empty())
+                && document
+                    .and_then(|item| item.provenance.get("binding_id"))
+                    .is_some_and(|value| !value.is_empty());
+            let current_identity = ManagedNodeIdentity {
+                source: request.instance.target.source.clone(),
+                network_id: request.instance.target.network_id.clone(),
+                device_id: request.instance.target.device_id.clone(),
+                binding_generation: document
+                    .map(|item| item.binding_generation.get())
+                    .unwrap_or_default(),
+                admission_generation: current.admission_generation.unwrap_or_default(),
+            };
+            let admission = admit_destination(
+                &DestinationAdmissionRequest {
+                    instance_id: request.instance.instance_id.clone(),
+                    idempotency_key: request.instance.idempotency_key.clone(),
+                    recipe_hash: request.instance.recipe_hash.clone(),
+                    capabilities_hash: request.instance.capabilities_hash.clone(),
+                    target: request.instance.target.clone(),
+                    operation: request.operation,
+                    deadline_ms: request.deadline_ms,
+                },
+                &DestinationAdmissionContext {
+                    current_target: current_identity,
+                    managed_active: current.managed_state == ManagedNodeState::Active,
+                    authenticated_keryx_binding: authenticated_binding,
+                    operation_authorized: request.operation_authorized,
+                    readiness: current.readiness,
+                    available_worker_slots: current.available_worker_slots.unwrap_or_default(),
+                    capabilities_hash: request.current_capabilities_hash,
+                    evaluated_at_ms,
+                },
+            );
+            match admission {
+                Ok(decision) => {
+                    let reservation = state
+                        .reserve_execution_instance(&request.instance)
+                        .map_err(map_state_error)?;
+                    Ok(json!({
+                        "created": reservation.created,
+                        "instance": reservation.instance,
+                        "decision": decision,
+                    }))
+                }
+                Err(status) => Ok(json!({"decision":{"status":status}})),
+            }
+        }
+        Request::ExecutionGet(request) => {
+            let _ = request.kind;
+            let instance = state
+                .get_execution_instance(&request.instance_id)
+                .map_err(map_state_error)?;
+            Ok(json!({"instance": instance}))
+        }
+        Request::ExecutionTransition(request) => {
+            let _ = request.kind;
+            let instance = state
+                .transition_execution_instance(
+                    &request.instance_id,
+                    request.expected_generation,
+                    request.phase,
+                    current_time_ms()?,
+                )
+                .map_err(map_state_error)?;
+            Ok(json!({"instance": instance}))
+        }
     }
 }
 
@@ -1397,6 +1551,9 @@ fn dispatch_response(
         Request::WorkflowUpdate(_) => "update",
         Request::WorkflowList(_) => "list",
         Request::WorkflowDelete(_) => "delete",
+        Request::ExecutionReserveAdmit(_) => "reserve_admit",
+        Request::ExecutionGet(_) => "get",
+        Request::ExecutionTransition(_) => "transition",
     };
     dispatch_result(
         request,
