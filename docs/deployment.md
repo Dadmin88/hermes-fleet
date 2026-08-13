@@ -95,7 +95,7 @@ Initialize operator state with:
 hermes fleet init
 ```
 
-Inventory maps an exact friendly name to an immutable Keryx peer ID and operation policy. It should not contain transport URLs, passwords, node tokens, or TLS keys.
+New schema-v2 configuration keys explicit operation policy by authoritative managed identity. The operator layer resolves the current authenticated Keryx peer from managed binding provenance, so operators can use an explicit alias, managed DeviceId, or Fleet stable ID instead of maintaining peer IDs as the primary human-facing target. Existing schema-v1 inventory remains supported by the static exact-peer controller surfaces. Neither form should contain transport URLs, passwords, node tokens, or TLS keys. See [Operator foundation](operator-foundation.md).
 
 Validate that:
 

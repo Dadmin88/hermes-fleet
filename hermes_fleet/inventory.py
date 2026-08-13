@@ -13,7 +13,12 @@ import yaml
 
 from ._paths import is_concrete_path
 
-_INITIAL_INVENTORY = {"schema_version": 1, "defaults": {}, "nodes": []}
+_INITIAL_INVENTORY = {
+    "schema_version": 2,
+    "defaults": {},
+    "nodes": [],
+    "managed_targets": [],
+}
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
 _TEMPORARY_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)

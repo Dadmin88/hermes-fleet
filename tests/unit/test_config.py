@@ -147,6 +147,71 @@ nodes:
         load_fleet_config(path)
 
 
+def test_schema_v2_keys_explicit_policy_by_managed_identity_without_peer_ids(
+    tmp_path,
+) -> None:
+    from hermes_fleet.config import load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text(
+        """schema_version: 2
+defaults: {}
+nodes: []
+managed_targets:
+  - source: nodescale
+    network_id: network-test
+    device_id: device-a
+    target_name: worker
+    policy:
+      allowed_operations:
+        - fleet.hermes.run
+""",
+        encoding="utf-8",
+    )
+
+    config = load_fleet_config(path)
+    assert config.schema_version == 2
+    assert config.nodes == ()
+    assert config.managed_targets[0].device_id == "device-a"
+    assert config.managed_targets[0].target_name == "worker"
+    assert config.managed_targets[0].policy.allowed_operations == ("fleet.hermes.run",)
+
+
+def test_schema_v1_rejects_managed_targets_and_schema_v2_rejects_duplicate_identity(
+    tmp_path,
+) -> None:
+    from hermes_fleet.config import FleetConfigError, load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text(
+        "schema_version: 1\ndefaults: {}\nnodes: []\nmanaged_targets: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(FleetConfigError, match="unknown configuration keys"):
+        load_fleet_config(path)
+
+    path.write_text(
+        """schema_version: 2
+defaults: {}
+nodes: []
+managed_targets:
+  - source: nodescale
+    network_id: network-test
+    device_id: device-a
+    target_name: worker
+    policy: {}
+  - source: nodescale
+    network_id: network-test
+    device_id: device-a
+    target_name: worker
+    policy: {}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(FleetConfigError, match="identities must be unique"):
+        load_fleet_config(path)
+
+
 @pytest.mark.parametrize(
     "field",
     (
