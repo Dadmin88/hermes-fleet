@@ -11,9 +11,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+pub mod destination_admission;
 pub mod execution_instance;
 pub mod workflow;
 
+pub use destination_admission::{
+    AdmissionDecision, DestinationAdmissionContext, DestinationAdmissionRequest,
+    DestinationAdmissionStatus, admit_destination,
+};
 pub use execution_instance::{
     ExecutionInstance, ExecutionInstancePhase, ExecutionInstanceRecovery, InvalidExecutionInstance,
     ManagedNodeIdentity,
