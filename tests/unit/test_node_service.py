@@ -342,9 +342,7 @@ def test_fleet_node_service_advertises_observation_protocol_feature(
     asyncio.run(exercise())
 
     skill_ids = [skill.id for skill in cards[0].skills]
-    assert cards[0].protocol_features == [
-        "fleet.observation.publish.v1"
-    ]
+    assert cards[0].protocol_features == ["fleet.observation.publish.v1"]
     assert "fleet.observation.publish.v1" not in skill_ids
     assert skill_ids == [
         "fleet.health",
