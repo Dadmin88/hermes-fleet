@@ -185,6 +185,7 @@ class DockerExecutionBackend(ExecutionBackend):
         return current.with_state(BackendExecutionState.STOPPED)
 
     def cleanup(self, handle: BackendExecutionHandle) -> BackendExecutionHandle:
+        self._validate_handle(handle)
         document = self._inspect_optional(handle.realization_id)
         if document is None:
             return _cleaned_handle(handle)
@@ -303,11 +304,7 @@ class DockerExecutionBackend(ExecutionBackend):
         return value[0]
 
     def _inspect_owned(self, handle: BackendExecutionHandle) -> dict[str, object]:
-        if (
-            type(handle) is not BackendExecutionHandle
-            or handle.backend_kind != self.capabilities.backend_kind
-        ):
-            _invalid("Docker execution handle is invalid")
+        self._validate_handle(handle)
         document = self._inspect_optional(handle.realization_id)
         if document is None:
             raise ExecutionBackendError(
@@ -315,7 +312,20 @@ class DockerExecutionBackend(ExecutionBackend):
                 "Docker realization is unavailable",
             )
         self._require_ownership(handle.execution_id, document)
+        observed_fingerprint = _plan_fingerprint_from_document(document)
+        if observed_fingerprint != handle.plan_fingerprint:
+            raise ExecutionBackendError(
+                ExecutionBackendErrorCode.PLAN_CONFLICT,
+                "Docker execution handle conflicts with realized plan",
+            )
         return document
+
+    def _validate_handle(self, handle: BackendExecutionHandle) -> None:
+        if (
+            type(handle) is not BackendExecutionHandle
+            or handle.backend_kind != self.capabilities.backend_kind
+        ):
+            _invalid("Docker execution handle is invalid")
 
     def _owned_handle(
         self, plan: ExecutionPlan, document: dict[str, object]
@@ -361,9 +371,7 @@ class DockerExecutionBackend(ExecutionBackend):
                 "Docker realization identity is invalid",
             )
         state = document.get("State")
-        config = document.get("Config")
-        labels = config.get("Labels") if type(config) is dict else None
-        plan_fingerprint = _plan_fingerprint_from_labels(labels)
+        plan_fingerprint = _plan_fingerprint_from_document(document)
         if plan_fingerprint is None:
             raise ExecutionBackendError(
                 ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE,
@@ -494,6 +502,12 @@ def _plan_fingerprint_from_labels(labels: object) -> str | None:
         separators=(",", ":"),
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(document).hexdigest()
+
+
+def _plan_fingerprint_from_document(document: dict[str, object]) -> str | None:
+    config = document.get("Config")
+    labels = config.get("Labels") if type(config) is dict else None
+    return _plan_fingerprint_from_labels(labels)
 
 
 def _cleaned_handle(handle: BackendExecutionHandle) -> BackendExecutionHandle:
