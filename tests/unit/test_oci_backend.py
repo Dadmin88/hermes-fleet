@@ -328,6 +328,40 @@ def test_lifecycle_rejects_handle_with_rebound_plan_fingerprint() -> None:
     assert not any(call[1] == "start" for call in fake.calls)
 
 
+def test_cleanup_rejects_handle_with_rebound_plan_fingerprint() -> None:
+    fake = FakeDocker()
+    service = backend(fake)
+    prepared = service.prepare(plan())
+    rebound = BackendExecutionHandle(
+        execution_id=prepared.execution_id,
+        backend_kind=prepared.backend_kind,
+        realization_id=prepared.realization_id,
+        plan_fingerprint="sha256:" + "9" * 64,
+        state=prepared.state,
+    )
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        service.cleanup(rebound)
+
+    assert raised.value.code == ExecutionBackendErrorCode.PLAN_CONFLICT
+    assert not any(call[1] == "rm" for call in fake.calls)
+    assert fake.container is not None
+
+
+def test_lifecycle_rejects_missing_plan_evidence_as_inspection_unavailable() -> None:
+    fake = FakeDocker()
+    service = backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    labels = fake.container["Config"]["Labels"]  # type: ignore[index]
+    del labels["dev.hermes.fleet.recipe"]
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        service.inspect(prepared)
+
+    assert raised.value.code == ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE
+
+
 def test_realization_requires_digest_pin_and_non_secret_bounded_argv() -> None:
     with pytest.raises(ExecutionBackendError):
         OciRealizationSpec(
