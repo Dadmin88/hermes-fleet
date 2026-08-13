@@ -122,6 +122,9 @@ class SetupService:
         self._remote_preflight(ssh_target)
         remote_state = ".local/state/hermes-fleet"
         remote_bundle = f"{remote_state}/setup-bundle"
+        staging = self._run(self._ssh(ssh_target, ["mkdir", "-p", remote_state]))
+        if staging.returncode != 0:
+            raise SetupError("Worker bundle staging failed.")
         transfer = self._run(
             ["scp", "-r", f"{bundle}/.", f"{ssh_target}:{remote_bundle}"]
         )
