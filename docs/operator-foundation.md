@@ -3,7 +3,7 @@
 Fleet's operator foundation is the presentation-neutral application boundary for future CLI and Hermes Desktop operator surfaces. It composes existing owners rather than introducing another registry, readiness model, scheduler, transport, task ledger, or execution runtime.
 
 ```text
-future CLI / Desktop adapter
+Fleet CLI / Desktop adapter
   -> hermes_fleet.operator.OperatorService
        -> Fleet managed-control API
        -> canonical local operator policy
@@ -85,4 +85,4 @@ Doctor never stops, restarts, disables, deletes, or rewrites services or configu
 - The managed control overview exposes authoritative readiness and effective managed operations. Exact binding peer provenance requires a second exact projection inspection; the operator service performs that generation-fenced read rather than reconstructing state.
 - Task reattachment can expose only bounded fields available from the public Keryx task record. It does not read Fleet execution-binding SQLite or duplicate Keryx records.
 - Installed revision comparison is reported only where reliable bundle metadata exists. The operator diagnostic does not guess source commits from process health or package versions.
-- Phase 1 does not add CLI commands or Desktop execution UI.
+- The top-level Fleet Operator CLI consumes this service. Desktop execution UI remains a later phase.

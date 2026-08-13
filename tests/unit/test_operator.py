@@ -295,6 +295,24 @@ def test_run_exact_preserves_exact_peer_and_returns_structured_completion() -> N
     assert result.result == "done"
 
 
+def test_submit_exact_preserves_exact_peer_without_waiting() -> None:
+    state = FakeState([_managed_node()])
+    keryx = FakeKeryx()
+
+    result = asyncio.run(
+        _service(state, keryx=keryx).submit_exact(
+            "worker-a", "do bounded work", deadline_seconds=30
+        )
+    )
+
+    assert keryx.sent[0]["peer_id"] == "peer-current"
+    assert result.task_id == "task-test"
+    assert result.terminal_state == "submitted"
+    assert result.resolved_target is not None
+    assert result.resolved_target.identity.device_id == "device-a"
+    assert result.routed_to == "peer-current"
+
+
 def test_error_details_are_debuggable_but_public_message_redacts_secrets() -> None:
     error = OperatorError(
         OperatorErrorCode.TRANSPORT_UNAVAILABLE,
