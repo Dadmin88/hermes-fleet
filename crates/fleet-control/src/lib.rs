@@ -447,7 +447,7 @@ enum Request {
     WorkflowUpdate(WorkflowUpdateRequest),
     WorkflowList(WorkflowListRequest),
     WorkflowDelete(WorkflowDeleteRequest),
-    ExecutionReserveAdmit(ExecutionReserveAdmitRequest),
+    ExecutionReserveAdmit(Box<ExecutionReserveAdmitRequest>),
     ExecutionGet(ExecutionGetRequest),
     ExecutionTransition(ExecutionTransitionRequest),
 }
