@@ -90,20 +90,22 @@ class ExecutionControlClient:
             {"created", "instance", "decision"},
         ):
             raise RuntimeError("Fleet returned an invalid admission result")
-        decision = result["decision"]
-        if (
-            type(decision) is not dict
-            or decision.get("status") not in _ADMISSION_STATUSES
-        ):
-            raise RuntimeError("Fleet returned an invalid admission decision")
+        decision = _admission_decision(
+            result["decision"], expected_instance=normalized, deadline_ms=deadline_ms
+        )
         if decision["status"] == "admitted":
             if set(result) != {"created", "instance", "decision"}:
                 raise RuntimeError("Fleet omitted an admitted execution instance")
             if type(result["created"]) is not bool:
                 raise RuntimeError("Fleet returned an invalid reservation outcome")
+            returned_instance = _instance(result["instance"])
+            if not _same_execution_request(returned_instance, normalized):
+                raise RuntimeError(
+                    "Fleet returned an invalid admitted execution instance"
+                )
             result = {
                 "created": result["created"],
-                "instance": _instance(result["instance"]),
+                "instance": returned_instance,
                 "decision": decision,
             }
         elif set(result) != {"decision"}:
@@ -266,6 +268,8 @@ def _phase(value: object) -> dict[str, Any]:
             raise ValueError("execution phase provenance is invalid")
         if value["keryx_task_id"] is not None and value["backend_kind"] is None:
             raise ValueError("execution phase provenance is invalid")
+        if value["backend_kind"] is not None and "/" not in value["backend_kind"]:
+            raise ValueError("execution phase backend is invalid")
     if "reason" in value and (
         type(value["reason"]) is not str
         or not value["reason"]
@@ -277,6 +281,75 @@ def _phase(value: object) -> dict[str, Any]:
     ):
         raise ValueError("execution phase reason is invalid")
     return value
+
+
+def _admission_decision(
+    value: object, *, expected_instance: dict[str, Any], deadline_ms: int
+) -> dict[str, Any]:
+    if (
+        type(value) is not dict
+        or type(value.get("status")) is not str
+        or value["status"] not in _ADMISSION_STATUSES
+    ):
+        raise RuntimeError("Fleet returned an invalid admission decision")
+    if value["status"] != "admitted":
+        if set(value) != {"status"}:
+            raise RuntimeError("Fleet returned an invalid admission decision")
+        return value
+    if set(value) != {
+        "status",
+        "instance_id",
+        "target",
+        "recipe_hash",
+        "capabilities_hash",
+        "operation",
+        "evaluated_at_ms",
+    }:
+        raise RuntimeError("Fleet returned an invalid admission decision")
+    try:
+        _identifier(value["instance_id"], "admission instance ID")
+        _content_hash(value["recipe_hash"])
+        _content_hash(value["capabilities_hash"])
+        _u64(value["evaluated_at_ms"], "admission evaluation time")
+        if value["operation"] != "fleet.hermes.run":
+            raise ValueError("admission operation is invalid")
+        target = value["target"]
+        if type(target) is not dict or set(target) != {
+            "source",
+            "network_id",
+            "device_id",
+            "binding_generation",
+            "admission_generation",
+        }:
+            raise ValueError("admission target is invalid")
+        for field in ("source", "network_id", "device_id"):
+            _identifier(target[field], f"admission target {field}")
+        for field in ("binding_generation", "admission_generation"):
+            _u64(target[field], f"admission target {field}")
+        if (
+            value["instance_id"] != expected_instance["instance_id"]
+            or target != expected_instance["target"]
+            or value["recipe_hash"] != expected_instance["recipe_hash"]
+            or value["capabilities_hash"] != expected_instance["capabilities_hash"]
+            or value["evaluated_at_ms"] > deadline_ms
+        ):
+            raise ValueError("admission decision does not match the request")
+    except ValueError as error:
+        raise RuntimeError("Fleet returned an invalid admission decision") from error
+    return value
+
+
+def _same_execution_request(returned: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return all(
+        returned[field] == expected[field]
+        for field in (
+            "instance_id",
+            "idempotency_key",
+            "recipe_hash",
+            "capabilities_hash",
+            "target",
+        )
+    )
 
 
 def _identifier(value: object, label: str) -> str:

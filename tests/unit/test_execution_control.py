@@ -148,6 +148,90 @@ def test_client_preserves_typed_denial_without_treating_it_as_transport_failure(
     assert result == {"decision": {"status": "stale_target"}}
 
 
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"status": "admitted"},
+        {"status": "stale_target", "unexpected": True},
+        {"status": []},
+        {"status": {}},
+    ],
+)
+def test_client_rejects_incomplete_or_extended_admission_decisions(
+    tmp_path: Path, decision: dict
+) -> None:
+    from hermes_fleet.execution_control import ExecutionControlClient
+
+    path = tmp_path / "fleet.sock"
+    result = (
+        {"created": True, "instance": instance(), "decision": decision}
+        if decision["status"] == "admitted"
+        else {"decision": decision}
+    )
+    response = {
+        "schema": "fleet.execution-control.v1",
+        "kind": "reserve_admit",
+        "ok": True,
+        "result": result,
+    }
+    thread = _serve_once(path, response, [])
+    with pytest.raises(RuntimeError, match="invalid admission decision"):
+        ExecutionControlClient(socket_path=path).reserve_admit(
+            instance(),
+            operation_authorized=True,
+            current_capabilities_hash="sha256:" + "2" * 64,
+            deadline_ms=2000,
+        )
+    thread.join(2)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("instance_id", "instance-2"),
+        ("target", {**instance()["target"], "admission_generation": 10}),
+        ("recipe_hash", "sha256:" + "3" * 64),
+        ("capabilities_hash", "sha256:" + "3" * 64),
+        ("evaluated_at_ms", 2001),
+    ],
+)
+def test_client_rejects_admission_decision_not_bound_to_request(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    from hermes_fleet.execution_control import ExecutionControlClient
+
+    path = tmp_path / "fleet.sock"
+    decision = {
+        "status": "admitted",
+        "instance_id": "instance-1",
+        "target": instance()["target"],
+        "recipe_hash": "sha256:" + "1" * 64,
+        "capabilities_hash": "sha256:" + "2" * 64,
+        "operation": "fleet.hermes.run",
+        "evaluated_at_ms": 1100,
+    }
+    decision[field] = value
+    response = {
+        "schema": "fleet.execution-control.v1",
+        "kind": "reserve_admit",
+        "ok": True,
+        "result": {
+            "created": True,
+            "instance": instance(),
+            "decision": decision,
+        },
+    }
+    thread = _serve_once(path, response, [])
+    with pytest.raises(RuntimeError, match="invalid admission decision"):
+        ExecutionControlClient(socket_path=path).reserve_admit(
+            instance(),
+            operation_authorized=True,
+            current_capabilities_hash="sha256:" + "2" * 64,
+            deadline_ms=2000,
+        )
+    thread.join(2)
+
+
 def test_client_rejects_invalid_inputs_and_backend_documents(tmp_path: Path) -> None:
     from hermes_fleet.execution_control import ExecutionControlClient
 
@@ -185,6 +269,13 @@ def test_client_rejects_invalid_inputs_and_backend_documents(tmp_path: Path) -> 
             "realization_id": "container-1",
         },
         {"kind": "cleaned", "extra": True},
+        {
+            "kind": "indeterminate",
+            "backend_kind": "docker-oci",
+            "realization_id": "container-1",
+            "keryx_task_id": None,
+            "reason": "provider response unavailable",
+        },
     ],
 )
 def test_client_rejects_structurally_invalid_phase_documents(
