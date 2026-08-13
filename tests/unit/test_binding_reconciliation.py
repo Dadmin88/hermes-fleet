@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 
 import grpc
+from keryx.task import TaskResultUnavailableError
 
 
 @dataclass
@@ -37,11 +38,30 @@ class _UnavailableNode:
         return Handle()
 
 
+class _RefreshErrorHandle:
+    def __init__(self, status: str, error: RuntimeError) -> None:
+        self.status = _Status(status)
+        self._error = error
+
+    async def refresh(self):
+        raise self._error
+
+
+class _RefreshErrorNode:
+    def __init__(self, status: str, error: RuntimeError) -> None:
+        self.handle = _RefreshErrorHandle(status, error)
+
+    def task_handle(self, _task_id: str) -> _RefreshErrorHandle:
+        return self.handle
+
+
 class _Hermes:
     def __init__(self, statuses: dict[str, str]) -> None:
         self._statuses = statuses
+        self.calls: list[str] = []
 
     def status(self, run_id: str) -> str:
+        self.calls.append(run_id)
         return self._statuses[run_id]
 
 
@@ -92,6 +112,85 @@ def test_keryx_refresh_failure_retains_binding_fail_closed(tmp_path) -> None:
         )
     )
 
+    assert store.get("task-1").state == "indeterminate"
+    assert store.unresolved_count() == 1
+
+
+def test_terminal_result_unavailable_with_failed_status_resolves_missing_run(
+    tmp_path,
+) -> None:
+    from hermes_fleet.node_service import _reconcile_indeterminate_bindings
+    from hermes_fleet.run_binding import RunBindingStore
+
+    store = RunBindingStore(tmp_path / "bindings.sqlite3")
+    store.reserve("task-1")
+    store.bind_run("task-1", "run-1")
+    store.mark_indeterminate("task-1")
+    node = _RefreshErrorNode("failed", TaskResultUnavailableError())
+    hermes = _Hermes({"run-1": "missing"})
+
+    asyncio.run(
+        _reconcile_indeterminate_bindings(
+            store,
+            node,
+            hermes,
+            now_ms=2_000_000,
+        )
+    )
+
+    assert hermes.calls == ["run-1"]
+    assert store.get("task-1").state == "resolved"
+    assert store.unresolved_count() == 0
+
+
+def test_terminal_result_unavailable_with_working_status_remains_fail_closed(
+    tmp_path,
+) -> None:
+    from hermes_fleet.node_service import _reconcile_indeterminate_bindings
+    from hermes_fleet.run_binding import RunBindingStore
+
+    store = RunBindingStore(tmp_path / "bindings.sqlite3")
+    store.reserve("task-1")
+    store.bind_run("task-1", "run-1")
+    store.mark_indeterminate("task-1")
+    node = _RefreshErrorNode("working", TaskResultUnavailableError())
+    hermes = _Hermes({"run-1": "missing"})
+
+    asyncio.run(
+        _reconcile_indeterminate_bindings(
+            store,
+            node,
+            hermes,
+            now_ms=2_000_000,
+        )
+    )
+
+    assert hermes.calls == []
+    assert store.get("task-1").state == "indeterminate"
+    assert store.unresolved_count() == 1
+
+
+def test_runtime_refresh_failure_retains_binding_fail_closed(tmp_path) -> None:
+    from hermes_fleet.node_service import _reconcile_indeterminate_bindings
+    from hermes_fleet.run_binding import RunBindingStore
+
+    store = RunBindingStore(tmp_path / "bindings.sqlite3")
+    store.reserve("task-1")
+    store.bind_run("task-1", "run-1")
+    store.mark_indeterminate("task-1")
+    node = _RefreshErrorNode("failed", RuntimeError("refresh failed"))
+    hermes = _Hermes({"run-1": "missing"})
+
+    asyncio.run(
+        _reconcile_indeterminate_bindings(
+            store,
+            node,
+            hermes,
+            now_ms=2_000_000,
+        )
+    )
+
+    assert hermes.calls == []
     assert store.get("task-1").state == "indeterminate"
     assert store.unresolved_count() == 1
 

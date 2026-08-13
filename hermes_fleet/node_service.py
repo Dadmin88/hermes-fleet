@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 import grpc
+from keryx.task import TaskResultUnavailableError
 
 from ._paths import is_concrete_path
 from .config import get_fleet_dir, load_fleet_config
@@ -219,10 +220,14 @@ async def _reconcile_indeterminate_bindings(
     current_ms = int(time.time() * 1_000) if now_ms is None else now_ms
     for binding, updated_at_ms in bindings.indeterminate_bindings():
         try:
-            task = await node.task_handle(binding.task_id).refresh()
-            task_state = getattr(getattr(task, "status", None), "value", None)
+            handle = node.task_handle(binding.task_id)
+            try:
+                task = await handle.refresh()
+            except TaskResultUnavailableError:
+                task = handle
         except (OSError, RuntimeError, ValueError, KeyError, grpc.RpcError):
             continue
+        task_state = getattr(getattr(task, "status", None), "value", None)
         if task_state not in _TERMINAL_TASK_STATES:
             continue
         if binding.run_id is not None:
