@@ -12,6 +12,8 @@ It is a prerequisite for exact-node Recipe execution, not an execution engine.
 
 Every request and response uses the existing length-prefixed local control transport and inherits its UID/socket authorization. Unknown members and invalid lifecycle documents are rejected.
 
+`hermes_fleet.execution_control.ExecutionControlClient` is the strict Python adapter used by the destination worker. It validates the complete instance envelope, typed admission outcomes, current capability hash, and generation-fenced transition responses rather than parsing human text or reading Fleet SQLite.
+
 ## Authority boundary
 
 The service derives managed state, binding evidence, admission generation, readiness, and capacity from the owning Rust state store at decision time. The caller does not supply those facts. The caller must supply its explicit local `fleet.hermes.run` policy verdict and the backend's freshly inspected capability hash because policy configuration and backend runtime state remain outside Fleet's state database. Admission compares that current hash against the instance's pinned requirement and fails closed on drift.
