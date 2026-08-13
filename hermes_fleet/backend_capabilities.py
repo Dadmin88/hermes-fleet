@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from .recipes import (
     FleetRecipe,
@@ -44,6 +44,16 @@ def _backend_kind(value: object) -> str:
     return kind
 
 
+def _guarantees(value: object, label: str) -> tuple[str, ...]:
+    if type(value) not in {list, tuple}:
+        raise CapabilityError(f"{label} is invalid")
+    items = cast(list[object] | tuple[object, ...], value)
+    try:
+        return _string_list(list(items), label)
+    except RecipeError as error:
+        raise CapabilityError(str(error)) from error
+
+
 @dataclass(frozen=True, slots=True)
 class BackendCapabilities:
     backend_kind: str
@@ -64,8 +74,12 @@ class BackendCapabilities:
             _backend_kind(self.backend_kind)
             _name(self.os, "backend operating system")
             _name(self.architecture, "backend architecture")
-            if not self.isolation or not self.network:
+            isolation = _guarantees(self.isolation, "isolation guarantees")
+            network = _guarantees(self.network, "network guarantees")
+            if not isolation or not network:
                 raise CapabilityError("backend guarantee sets cannot be empty")
+            object.__setattr__(self, "isolation", isolation)
+            object.__setattr__(self, "network", network)
             _positive_int(self.cpu_millis, "backend CPU capacity")
             _positive_int(self.memory_bytes, "backend memory capacity")
             _bool(self.ephemeral_root, "ephemeral-root guarantee")

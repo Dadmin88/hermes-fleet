@@ -107,3 +107,28 @@ def test_matching_does_not_select_or_rank_a_node() -> None:
     match = evaluate_capabilities(recipe(), capabilities())
 
     assert set(match.__dataclass_fields__) == {"eligible", "reasons"}
+
+
+def test_direct_construction_normalizes_mutable_guarantee_lists() -> None:
+    isolation = ["process"]
+    network = ["restricted"]
+    value = BackendCapabilities(
+        backend_kind="example.org/runtime",
+        os="linux",
+        architecture="x86_64",
+        isolation=isolation,  # type: ignore[arg-type]
+        network=network,  # type: ignore[arg-type]
+        cpu_millis=1000,
+        memory_bytes=1024,
+        ephemeral_root=True,
+        read_only_inputs=True,
+        agency_profile=True,
+        artifacts=True,
+        extensions={},
+    )
+
+    isolation.append("container")
+    network.append("none")
+
+    assert value.isolation == ("process",)
+    assert value.network == ("restricted",)
