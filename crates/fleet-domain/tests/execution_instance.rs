@@ -36,6 +36,15 @@ fn durable_instance_binds_exact_ingredients_and_managed_generation() {
 }
 
 #[test]
+fn reservation_cannot_claim_cleanup_without_cleanup_proof() {
+    assert!(
+        reserved()
+            .transition(ExecutionInstancePhase::Cleaned, 1_100)
+            .is_err()
+    );
+}
+
+#[test]
 fn lifecycle_requires_exact_provider_and_task_provenance() {
     let prepared = reserved()
         .transition(

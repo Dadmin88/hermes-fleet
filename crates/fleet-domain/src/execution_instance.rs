@@ -179,7 +179,7 @@ fn valid_transition(from: &ExecutionInstancePhase, to: &ExecutionInstancePhase) 
     match from {
         Reserved => matches!(
             to,
-            Prepared { .. } | Indeterminate { .. } | CleanupPending { .. } | Cleaned
+            Prepared { .. } | Indeterminate { .. } | CleanupPending { .. }
         ),
         Prepared { .. } => matches!(
             to,

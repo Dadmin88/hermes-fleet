@@ -51,6 +51,10 @@ const FLEET_STATE_SCHEMA_V5_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 5)
 ) STRICT";
+const FLEET_STATE_SCHEMA_V6_SQL: &str = "
+CREATE TABLE fleet_state_schema (
+    version INTEGER PRIMARY KEY CHECK (version = 6)
+) STRICT";
 const FLEET_STATE_SCHEMA_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 7)
@@ -138,6 +142,18 @@ CREATE TABLE execution_instances (
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms)
 ) STRICT";
+const EXECUTION_BACKEND_OWNER_INDEX_SQL: &str = "
+CREATE UNIQUE INDEX execution_instances_backend_realization_owner
+ON execution_instances(
+    json_extract(state_json, '$.phase.backend_kind'),
+    json_extract(state_json, '$.phase.realization_id')
+)
+WHERE json_extract(state_json, '$.phase.backend_kind') IS NOT NULL
+  AND json_extract(state_json, '$.phase.realization_id') IS NOT NULL";
+const EXECUTION_KERYX_OWNER_INDEX_SQL: &str = "
+CREATE UNIQUE INDEX execution_instances_keryx_task_owner
+ON execution_instances(json_extract(state_json, '$.phase.keryx_task_id'))
+WHERE json_extract(state_json, '$.phase.keryx_task_id') IS NOT NULL";
 const MAX_IDENTIFIER_CHARS: usize = 256;
 const MAX_OBSERVATION_FUTURE_SKEW_MS: u64 = 5_000;
 const MAX_RESULT_CHARS: usize = 65_536;
@@ -1553,6 +1569,7 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                require_v6_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_7)?;
                 transaction.pragma_update(None, "user_version", 7)?;
             }
@@ -1572,6 +1589,7 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                require_v6_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_7)?;
                 transaction.pragma_update(None, "user_version", 7)?;
             }
@@ -1588,6 +1606,7 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                require_v6_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_7)?;
                 transaction.pragma_update(None, "user_version", 7)?;
             }
@@ -1601,6 +1620,7 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                require_v6_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_7)?;
                 transaction.pragma_update(None, "user_version", 7)?;
             }
@@ -1611,6 +1631,7 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                require_v6_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_7)?;
                 transaction.pragma_update(None, "user_version", 7)?;
             }
@@ -1618,10 +1639,12 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                require_v6_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_7)?;
                 transaction.pragma_update(None, "user_version", 7)?;
             }
             6 => {
+                require_v6_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_7)?;
                 transaction.pragma_update(None, "user_version", 7)?;
             }
@@ -2121,8 +2144,22 @@ fn require_v5_schema(connection: &Connection) -> Result<()> {
     require_complete_schema(connection, 5, FLEET_STATE_SCHEMA_V5_SQL)
 }
 
+fn require_v6_schema(connection: &Connection) -> Result<()> {
+    require_complete_schema(connection, 6, FLEET_STATE_SCHEMA_V6_SQL)
+}
+
 fn require_ready_schema(connection: &Connection) -> Result<()> {
-    require_complete_schema(connection, SCHEMA_VERSION, FLEET_STATE_SCHEMA_SQL)
+    require_complete_schema(connection, SCHEMA_VERSION, FLEET_STATE_SCHEMA_SQL)?;
+    require_index_definition(
+        connection,
+        "execution_instances_backend_realization_owner",
+        EXECUTION_BACKEND_OWNER_INDEX_SQL,
+    )?;
+    require_index_definition(
+        connection,
+        "execution_instances_keryx_task_owner",
+        EXECUTION_KERYX_OWNER_INDEX_SQL,
+    )
 }
 
 fn require_complete_schema(
@@ -2357,6 +2394,28 @@ fn require_table_shape_with_definition(
     if actual != expected || normalized_sql(&definition) != normalized_sql(expected_definition) {
         return Err(StateError::CorruptState(
             "fleet state table definition is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn require_index_definition(
+    connection: &Connection,
+    index: &'static str,
+    expected_definition: &str,
+) -> Result<()> {
+    let definition = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            [index],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if definition.as_deref().map(normalized_sql).as_deref()
+        != Some(normalized_sql(expected_definition).as_str())
+    {
+        return Err(StateError::CorruptState(
+            "fleet state ownership index is invalid",
         ));
     }
     Ok(())
