@@ -22,7 +22,7 @@ use fleet_domain::{
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const WORKFLOW_DEFINITION_LIMIT: i64 = 256;
 const MIGRATION_1: &str = include_str!("../migrations/0001_fleet_state.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_node_observations.sql");
@@ -30,6 +30,7 @@ const MIGRATION_3: &str = include_str!("../migrations/0003_admission_generation.
 const MIGRATION_4: &str = include_str!("../migrations/0004_managed_node_aliases.sql");
 const MIGRATION_5: &str = include_str!("../migrations/0005_workflow_definitions.sql");
 const MIGRATION_6: &str = include_str!("../migrations/0006_execution_instances.sql");
+const MIGRATION_7: &str = include_str!("../migrations/0007_execution_instance_ownership.sql");
 const FLEET_STATE_SCHEMA_V1_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 1)
@@ -52,7 +53,7 @@ CREATE TABLE fleet_state_schema (
 ) STRICT";
 const FLEET_STATE_SCHEMA_SQL: &str = "
 CREATE TABLE fleet_state_schema (
-    version INTEGER PRIMARY KEY CHECK (version = 6)
+    version INTEGER PRIMARY KEY CHECK (version = 7)
 ) STRICT";
 const MANAGED_PROJECTIONS_SQL: &str = "
 CREATE TABLE managed_projections (
@@ -1379,6 +1380,7 @@ impl FleetStateStore {
         let next = current.transition(phase, now_ms).map_err(|_| {
             StateError::InvalidTransition("execution instance transition is invalid")
         })?;
+        reject_execution_instance_provenance_conflict(&transaction, &next)?;
         let changed = transaction.execute(
             "UPDATE execution_instances
              SET generation = ?1, state_json = ?2, updated_at_ms = ?3
@@ -1551,6 +1553,8 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                transaction.execute_batch(MIGRATION_7)?;
+                transaction.pragma_update(None, "user_version", 7)?;
             }
             1 => {
                 require_v1_schema(&transaction)?;
@@ -1568,6 +1572,8 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                transaction.execute_batch(MIGRATION_7)?;
+                transaction.pragma_update(None, "user_version", 7)?;
             }
             2 => {
                 require_v2_schema(&transaction)?;
@@ -1582,6 +1588,8 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                transaction.execute_batch(MIGRATION_7)?;
+                transaction.pragma_update(None, "user_version", 7)?;
             }
             3 => {
                 require_v3_schema(&transaction)?;
@@ -1593,6 +1601,8 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                transaction.execute_batch(MIGRATION_7)?;
+                transaction.pragma_update(None, "user_version", 7)?;
             }
             4 => {
                 require_v4_schema(&transaction)?;
@@ -1601,11 +1611,19 @@ impl FleetStateStore {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                transaction.execute_batch(MIGRATION_7)?;
+                transaction.pragma_update(None, "user_version", 7)?;
             }
             5 => {
                 require_v5_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_6)?;
                 transaction.pragma_update(None, "user_version", 6)?;
+                transaction.execute_batch(MIGRATION_7)?;
+                transaction.pragma_update(None, "user_version", 7)?;
+            }
+            6 => {
+                transaction.execute_batch(MIGRATION_7)?;
+                transaction.pragma_update(None, "user_version", 7)?;
             }
             SCHEMA_VERSION => {}
             _ => return Err(StateError::UnsupportedSchema(version)),
@@ -1912,43 +1930,77 @@ fn load_execution_instance(
 ) -> Result<Option<ExecutionInstance>> {
     let stored = connection
         .query_row(
-            "SELECT generation, state_json, created_at_ms, updated_at_ms
+            "SELECT idempotency_key, generation, state_json, created_at_ms, updated_at_ms
              FROM execution_instances WHERE instance_id = ?1",
             [instance_id],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .optional()?;
     stored
-        .map(|(generation, state_json, created_at_ms, updated_at_ms)| {
-            if generation <= 0 || created_at_ms <= 0 || updated_at_ms < created_at_ms {
-                return Err(StateError::CorruptState(
-                    "execution instance columns are invalid",
-                ));
-            }
-            let instance: ExecutionInstance = serde_json::from_str(&state_json)?;
-            instance
-                .validate()
-                .map_err(|_| StateError::CorruptState("execution instance document is invalid"))?;
-            if instance.instance_id != instance_id
-                || instance.generation != generation as u64
-                || instance.created_at_ms != created_at_ms as u64
-                || instance.updated_at_ms != updated_at_ms as u64
-                || serde_json::to_string(&instance)? != state_json
-            {
-                return Err(StateError::CorruptState(
-                    "execution instance columns contradict its document",
-                ));
-            }
-            Ok(instance)
-        })
+        .map(
+            |(idempotency_key, generation, state_json, created_at_ms, updated_at_ms)| {
+                if generation <= 0 || created_at_ms <= 0 || updated_at_ms < created_at_ms {
+                    return Err(StateError::CorruptState(
+                        "execution instance columns are invalid",
+                    ));
+                }
+                let instance: ExecutionInstance = serde_json::from_str(&state_json)?;
+                instance.validate().map_err(|_| {
+                    StateError::CorruptState("execution instance document is invalid")
+                })?;
+                if instance.instance_id != instance_id
+                    || instance.idempotency_key != idempotency_key
+                    || instance.generation != generation as u64
+                    || instance.created_at_ms != created_at_ms as u64
+                    || instance.updated_at_ms != updated_at_ms as u64
+                    || serde_json::to_string(&instance)? != state_json
+                {
+                    return Err(StateError::CorruptState(
+                        "execution instance columns contradict its document",
+                    ));
+                }
+                Ok(instance)
+            },
+        )
         .transpose()
+}
+
+fn reject_execution_instance_provenance_conflict(
+    connection: &Connection,
+    instance: &ExecutionInstance,
+) -> Result<()> {
+    let state_json = serde_json::to_string(instance)?;
+    let conflict = connection
+        .query_row(
+            "SELECT instance_id FROM execution_instances
+             WHERE instance_id <> ?1 AND (
+                 (
+                     json_extract(state_json, '$.phase.backend_kind') = json_extract(?2, '$.phase.backend_kind')
+                     AND json_extract(state_json, '$.phase.realization_id') = json_extract(?2, '$.phase.realization_id')
+                     AND json_extract(?2, '$.phase.backend_kind') IS NOT NULL
+                 ) OR (
+                     json_extract(state_json, '$.phase.keryx_task_id') = json_extract(?2, '$.phase.keryx_task_id')
+                     AND json_extract(?2, '$.phase.keryx_task_id') IS NOT NULL
+                 )
+             ) LIMIT 1",
+            params![instance.instance_id, state_json],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if conflict.is_some() {
+        return Err(StateError::InvalidTransition(
+            "execution instance provenance is already owned",
+        ));
+    }
+    Ok(())
 }
 
 fn same_execution_instance_identity(left: &ExecutionInstance, right: &ExecutionInstance) -> bool {

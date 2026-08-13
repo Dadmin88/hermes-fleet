@@ -47,6 +47,8 @@ pub enum ExecutionInstancePhase {
     CleanupPending {
         backend_kind: String,
         realization_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keryx_task_id: Option<String>,
         reason: String,
     },
     Cleaned,
@@ -138,8 +140,10 @@ impl ExecutionInstance {
             }
             ExecutionInstancePhase::Completed { .. }
             | ExecutionInstancePhase::Failed { .. }
-            | ExecutionInstancePhase::Cancelled { .. }
-            | ExecutionInstancePhase::Cleaned => ExecutionInstanceRecovery::NoAction,
+            | ExecutionInstancePhase::Cancelled { .. } => {
+                ExecutionInstanceRecovery::InspectBackendAndTask
+            }
+            ExecutionInstancePhase::Cleaned => ExecutionInstanceRecovery::NoAction,
         }
     }
 
@@ -179,7 +183,7 @@ fn valid_transition(from: &ExecutionInstancePhase, to: &ExecutionInstancePhase) 
         ),
         Prepared { .. } => matches!(
             to,
-            Running { .. } | Indeterminate { .. } | CleanupPending { .. } | Cleaned
+            Running { .. } | Indeterminate { .. } | CleanupPending { .. }
         ),
         Running { .. } => matches!(
             to,
@@ -190,7 +194,7 @@ fn valid_transition(from: &ExecutionInstancePhase, to: &ExecutionInstancePhase) 
                 | CleanupPending { .. }
         ),
         Completed { .. } | Failed { .. } | Cancelled { .. } => {
-            matches!(to, CleanupPending { .. } | Cleaned)
+            matches!(to, CleanupPending { .. })
         }
         Indeterminate { .. } => matches!(
             to,
@@ -200,7 +204,6 @@ fn valid_transition(from: &ExecutionInstancePhase, to: &ExecutionInstancePhase) 
                 | Failed { .. }
                 | Cancelled { .. }
                 | CleanupPending { .. }
-                | Cleaned
         ),
         CleanupPending { .. } => matches!(to, CleanupPending { .. } | Cleaned),
         Cleaned => false,
@@ -213,10 +216,11 @@ fn require_matching_provenance(
 ) -> Result<(), InvalidExecutionInstance> {
     if let Some((from_backend, from_realization)) = backend_provenance(from) {
         let Some((to_backend, to_realization)) = backend_provenance(to) else {
-            if matches!(to, ExecutionInstancePhase::Indeterminate { .. }) {
-                return Err(InvalidExecutionInstance);
-            }
-            return Ok(());
+            return if matches!(to, ExecutionInstancePhase::Cleaned) {
+                Ok(())
+            } else {
+                Err(InvalidExecutionInstance)
+            };
         };
         if from_backend != to_backend || from_realization != to_realization {
             return Err(InvalidExecutionInstance);
@@ -224,10 +228,11 @@ fn require_matching_provenance(
     }
     if let Some(from_task) = keryx_task(from) {
         let Some(to_task) = keryx_task(to) else {
-            if matches!(to, ExecutionInstancePhase::Indeterminate { .. }) {
-                return Err(InvalidExecutionInstance);
-            }
-            return Ok(());
+            return if matches!(to, ExecutionInstancePhase::Cleaned) {
+                Ok(())
+            } else {
+                Err(InvalidExecutionInstance)
+            };
         };
         if from_task != to_task {
             return Err(InvalidExecutionInstance);
@@ -283,6 +288,10 @@ fn keryx_task(phase: &ExecutionInstancePhase) -> Option<&str> {
         | ExecutionInstancePhase::Failed { keryx_task_id, .. }
         | ExecutionInstancePhase::Cancelled { keryx_task_id, .. }
         | ExecutionInstancePhase::Indeterminate {
+            keryx_task_id: Some(keryx_task_id),
+            ..
+        }
+        | ExecutionInstancePhase::CleanupPending {
             keryx_task_id: Some(keryx_task_id),
             ..
         } => Some(keryx_task_id),
