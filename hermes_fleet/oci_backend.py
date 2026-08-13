@@ -190,6 +190,7 @@ class DockerExecutionBackend(ExecutionBackend):
         if document is None:
             return _cleaned_handle(handle)
         self._require_ownership(handle.execution_id, document)
+        self._require_plan_fingerprint(handle, document)
         try:
             self._command(["docker", "rm", "--force", handle.realization_id])
         except ExecutionBackendError as error:
@@ -312,13 +313,24 @@ class DockerExecutionBackend(ExecutionBackend):
                 "Docker realization is unavailable",
             )
         self._require_ownership(handle.execution_id, document)
+        self._require_plan_fingerprint(handle, document)
+        return document
+
+    @staticmethod
+    def _require_plan_fingerprint(
+        handle: BackendExecutionHandle, document: dict[str, object]
+    ) -> None:
         observed_fingerprint = _plan_fingerprint_from_document(document)
+        if observed_fingerprint is None:
+            raise ExecutionBackendError(
+                ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE,
+                "Docker realization has incomplete plan ownership evidence",
+            )
         if observed_fingerprint != handle.plan_fingerprint:
             raise ExecutionBackendError(
                 ExecutionBackendErrorCode.PLAN_CONFLICT,
                 "Docker execution handle conflicts with realized plan",
             )
-        return document
 
     def _validate_handle(self, handle: BackendExecutionHandle) -> None:
         if (
