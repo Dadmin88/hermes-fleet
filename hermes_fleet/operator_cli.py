@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from . import setup as setup_runtime
 from .config import get_fleet_dir, load_fleet_config
 from .desktop_api import DesktopApiClient
 from .operator import OperatorError, OperatorErrorCode, OperatorService
@@ -146,6 +147,8 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     doctor = commands.add_parser("doctor", help="Run read-only local diagnostics")
     _json(doctor)
 
+    setup_runtime.add_commands(commands, node_commands=node_commands)
+
 
 def _json(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", dest="json_output")
@@ -158,6 +161,11 @@ def run(
     stdout: Callable[[str], None] = print,
     stderr: Callable[[str], None] = print,
 ) -> int:
+    if args.command == "setup" or (
+        args.command == "node" and args.node_command == "adopt"
+    ):
+        args.setup_command = args.command
+        return setup_runtime.run(args)
     return asyncio.run(
         _run_async(
             args,
