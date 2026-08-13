@@ -164,6 +164,10 @@ class NodeRuntimeConfig:
             raise ValueError("observation_interval_seconds must be between 5 and 3600")
 
 
+_KERYX_BASELINE_PROTOCOL_FEATURES = (
+    "absolute_deadlines_v1",
+    "result_artifact_bytes_v1",
+)
 _FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE = "fleet.observation.publish.v1"
 
 
@@ -293,6 +297,7 @@ async def run_node_service(
             )
         )
     card = card_factory(include_hermes_run)
+    _preserve_keryx_baseline_protocol_features(card)
     if runtime.advertise_observation_publish:
         _advertise_observation_publish(card)
     expected_specs = operation_specs(include_hermes_run=include_hermes_run)
@@ -567,10 +572,19 @@ def _environment_flag(
     raise ValueError(f"{name} must be 0 or 1")
 
 
-def _advertise_observation_publish(card: object) -> None:
+def _protocol_features(card: object) -> list[str]:
     protocol_features = getattr(card, "protocol_features", None)
     if type(protocol_features) is not list:
         raise ValueError("card protocol_features must be a list")
+    return protocol_features
+
+
+def _preserve_keryx_baseline_protocol_features(card: object) -> None:
+    _protocol_features(card)[:] = _KERYX_BASELINE_PROTOCOL_FEATURES
+
+
+def _advertise_observation_publish(card: object) -> None:
+    protocol_features = _protocol_features(card)
     if _FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE not in protocol_features:
         protocol_features.append(_FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE)
 

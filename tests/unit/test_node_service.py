@@ -275,7 +275,7 @@ def test_fleet_node_service_rejects_wrong_local_keryx_identity(tmp_path) -> None
 def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
     tmp_path,
 ) -> None:
-    from hermes_fleet.node_service import run_node_service
+    from hermes_fleet.node_service import operation_specs, run_node_service
 
     cards = []
     created = []
@@ -298,12 +298,20 @@ def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
 
     asyncio.run(exercise())
 
-    assert [skill.id for skill in cards[0].skills] == [
+    skill_ids = [skill.id for skill in cards[0].skills]
+    protocol_features = cards[0].protocol_features
+    assert skill_ids == [
         "fleet.health",
         "fleet.inventory",
         "fleet.message",
     ]
-    assert cards[0].protocol_features == []
+    assert protocol_features == [
+        "absolute_deadlines_v1",
+        "result_artifact_bytes_v1",
+    ]
+    assert len(protocol_features) == len(set(protocol_features))
+    operation_ids = {operation for operation, _description in operation_specs()}
+    assert operation_ids.isdisjoint(protocol_features)
     assert created[0].registration == 300
 
 
@@ -312,7 +320,7 @@ def test_fleet_node_service_advertises_observation_protocol_feature(
 ) -> None:
     from dataclasses import replace
 
-    from hermes_fleet.node_service import run_node_service
+    from hermes_fleet.node_service import operation_specs, run_node_service
 
     cards = []
     created: list[_Node] = []
@@ -342,13 +350,20 @@ def test_fleet_node_service_advertises_observation_protocol_feature(
     asyncio.run(exercise())
 
     skill_ids = [skill.id for skill in cards[0].skills]
-    assert cards[0].protocol_features == ["fleet.observation.publish.v1"]
-    assert "fleet.observation.publish.v1" not in skill_ids
+    protocol_features = cards[0].protocol_features
+    assert protocol_features == [
+        "absolute_deadlines_v1",
+        "result_artifact_bytes_v1",
+        "fleet.observation.publish.v1",
+    ]
+    assert len(protocol_features) == len(set(protocol_features))
     assert skill_ids == [
         "fleet.health",
         "fleet.inventory",
         "fleet.message",
     ]
+    operation_ids = {operation for operation, _description in operation_specs()}
+    assert operation_ids.isdisjoint(protocol_features)
     assert created[0].registration == 300
 
 
