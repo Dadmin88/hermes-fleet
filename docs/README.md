@@ -34,6 +34,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 - [Docker OCI execution backend](oci-backend.md) - first concrete mature-runtime adapter with digest-pinned immutable ingredients, hardened isolation, exact ownership, and response-loss recovery.
 - [Durable execution instances](durable-execution-instances.md) - Fleet-owned generation-fenced correlation and recovery state without duplicating Keryx task/result authority.
 - [Destination admission](destination-admission.md) - pure exact-target admission over current managed identity, policy, readiness, capacity, binding, and capability evidence.
+- [Execution control API](execution-control-api.md) - destination-local authenticated bridge for admission, durable instance recovery, and generation-fenced lifecycle transitions.
 - [Fleet Desktop](desktop.md) - native Hermes Desktop packaging, Fleet Overview, Network/Membership operator surfaces, real-state projection, installation, and troubleshooting.
 - [Fleet Canvas topology](canvas.md) - truthful node graph, stable local layout, controls, accessibility, workflow-editor boundaries, and edge provenance.
 - [Exact-execution demo](demo-exact-execution.md) - safe repeatable recording sequence for the live graph, stable target, durable task, and truthful terminal timeline.
