@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes Fleet exact-target execution architecture</title>
+  <desc id="desc">Stable managed identity flows through Fleet authorization and readiness, durable Keryx transport, an exact worker, Hermes execution, and a truthful result.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#120824"/>
+      <stop offset="1" stop-color="#21103b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".35"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#b7ff3c"/>
+    </marker>
+    <style>
+      .title{font:700 36px system-ui,sans-serif;fill:#fff}.sub{font:18px system-ui,sans-serif;fill:#c9b9df}
+      .box{fill:#291449;stroke:#8b5cf6;stroke-width:2;rx:18;filter:url(#shadow)}
+      .box2{fill:#18261b;stroke:#b7ff3c;stroke-width:2;rx:18;filter:url(#shadow)}
+      .label{font:700 20px system-ui,sans-serif;fill:#fff}.detail{font:15px system-ui,sans-serif;fill:#d8cceb}
+      .arrow{fill:none;stroke:#b7ff3c;stroke-width:3;marker-end:url(#arrow)}
+      .rule{font:700 15px system-ui,sans-serif;fill:#b7ff3c;letter-spacing:.04em}
+    </style>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <text x="60" y="68" class="title">Hermes Fleet: one exact task, one authoritative path</text>
+  <text x="60" y="101" class="sub">Desktop and CLI share Fleet’s operator application service; presentation never creates authority.</text>
+
+  <g transform="translate(55 165)">
+    <rect class="box" width="185" height="120"/>
+    <text x="24" y="42" class="label">Operator</text>
+    <text x="24" y="70" class="detail">Desktop / CLI</text>
+    <text x="24" y="94" class="detail">stable selector</text>
+  </g>
+  <path class="arrow" d="M240 225 H290"/>
+
+  <g transform="translate(300 145)">
+    <rect class="box2" width="250" height="160"/>
+    <text x="24" y="40" class="label">Fleet OperatorService</text>
+    <text x="24" y="70" class="detail">resolve current binding</text>
+    <text x="24" y="94" class="detail">check explicit policy</text>
+    <text x="24" y="118" class="detail">check readiness</text>
+    <text x="24" y="142" class="detail">submit once</text>
+  </g>
+  <path class="arrow" d="M550 225 H600"/>
+
+  <g transform="translate(610 165)">
+    <rect class="box" width="205" height="120"/>
+    <text x="24" y="42" class="label">Keryx</text>
+    <text x="24" y="70" class="detail">durable task ledger</text>
+    <text x="24" y="94" class="detail">authenticated routing</text>
+  </g>
+  <path class="arrow" d="M815 225 H865"/>
+
+  <g transform="translate(875 145)">
+    <rect class="box2" width="270" height="160"/>
+    <text x="24" y="40" class="label">Exact managed worker</text>
+    <text x="24" y="70" class="detail">destination admission</text>
+    <text x="24" y="94" class="detail">Hermes Runs API</text>
+    <text x="24" y="118" class="detail">one agent execution</text>
+    <text x="24" y="142" class="detail">terminal result</text>
+  </g>
+
+  <path class="arrow" d="M1010 325 V395 H710"/>
+  <g transform="translate(430 390)">
+    <rect class="box" width="350" height="115"/>
+    <text x="24" y="40" class="label">Truthful task reattachment</text>
+    <text x="24" y="70" class="detail">pending ≠ failed ≠ indeterminate ≠ completed</text>
+    <text x="24" y="94" class="detail">polling never resubmits uncertain work</text>
+  </g>
+  <path class="arrow" d="M430 447 H230 V305"/>
+
+  <text x="60" y="575" class="rule">CONNECTED ≠ TRUSTED ≠ KERYX-BOUND ≠ FLEET-MANAGED ≠ READY ≠ EXECUTION-AUTHORIZED</text>
+  <text x="60" y="612" class="sub">Nodescale owns stable device trust · Keryx owns transport and task truth · Fleet owns managed state, policy, readiness, and admission · Hermes executes.</text>
+</svg>

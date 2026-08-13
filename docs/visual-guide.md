@@ -18,6 +18,14 @@ This view explains the exact-node request path and the important split between d
 
 Use this visual with the [architecture guide](architecture.md).
 
+## Exact-target operator path
+
+This view explains the released Desktop/CLI exact-target path: presentation selects a stable managed identity, Fleet resolves and authorizes it, Keryx preserves durable task truth, and the exact worker invokes Hermes. Task refresh reattaches rather than resubmitting uncertain work.
+
+![Hermes Fleet exact-target execution](assets/exact-target-execution.svg)
+
+Use this visual with the [exact-execution demo runbook](demo-exact-execution.md).
+
 ## Profile identity and execution locality
 
 This view separates current exact native-profile evidence from the planned Recipe-based execution fabric. Current Fleet can validate exact Agency package identity and observe native locality. Planned Recipe execution moves environment requirements into `Fleet Recipe -> ResolvedRecipe -> ExecutionPlan -> scheduler -> worker materialization` rather than making persistent remote host-profile installation the default placement mechanism.
