@@ -175,6 +175,12 @@ class OperatorService:
         )
         try:
             task = await submission.handle.wait(float(deadline_seconds) + 5.0)
+        except TimeoutError as error:
+            raise OperatorError(
+                OperatorErrorCode.DEADLINE_EXCEEDED,
+                "Fleet task did not reach a terminal state before the deadline.",
+                detail=error,
+            ) from error
         except Exception as error:
             raise OperatorError(
                 OperatorErrorCode.TRANSPORT_UNAVAILABLE,
@@ -286,12 +292,21 @@ class OperatorService:
         run_id = metadata.get("run_id")
         if type(run_id) is not str or not run_id:
             run_id = None
-        error_category = None
-        if status != "completed":
-            error_category = (
-                OperatorErrorCode.DEADLINE_EXCEEDED
-                if status in {"expired", "deadline_exceeded"}
-                else OperatorErrorCode.TASK_FAILED
+        error_categories = {
+            "failed": OperatorErrorCode.TASK_FAILED,
+            "canceled": OperatorErrorCode.TASK_FAILED,
+            "cancelled": OperatorErrorCode.TASK_FAILED,
+            "rejected": OperatorErrorCode.REMOTE_REJECTED,
+            "expired": OperatorErrorCode.DEADLINE_EXCEEDED,
+            "deadline_exceeded": OperatorErrorCode.DEADLINE_EXCEEDED,
+            "timed_out": OperatorErrorCode.DEADLINE_EXCEEDED,
+        }
+        known_nonterminal = {"submitted", "pending", "working", "running", "leased"}
+        if status == "completed" or status in known_nonterminal:
+            error_category = None
+        else:
+            error_category = error_categories.get(
+                status, OperatorErrorCode.TASK_INDETERMINATE
             )
         return OperatorCompletionResult(
             task_id=task_id,

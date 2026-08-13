@@ -191,7 +191,7 @@ def _service(
     state: FakeState,
     *,
     config: FleetConfig | None = None,
-    keryx: FakeKeryx | None = None,
+    keryx: Any | None = None,
 ) -> OperatorService:
     return OperatorService(
         state=state, config=config or _config(), keryx=keryx or FakeKeryx()
@@ -311,6 +311,48 @@ def test_submit_exact_preserves_exact_peer_without_waiting() -> None:
     assert result.resolved_target is not None
     assert result.resolved_target.identity.device_id == "device-a"
     assert result.routed_to == "peer-current"
+
+
+@pytest.mark.parametrize("status", ["submitted", "working"])
+def test_task_inspection_preserves_nonterminal_state(status: str) -> None:
+    class NonterminalTask:
+        class Status:
+            value = status
+
+        status = Status()
+        metadata: dict[str, str] = {}
+
+    class NonterminalHandle:
+        async def refresh(self) -> NonterminalTask:
+            return NonterminalTask()
+
+    class NonterminalKeryx:
+        async def send_task(self, *_args, **_kwargs):
+            raise AssertionError("task inspection must not submit work")
+
+        def task_handle(self, task_id: str) -> NonterminalHandle:
+            assert task_id == "task-test"
+            return NonterminalHandle()
+
+    result = asyncio.run(
+        _service(FakeState([_managed_node()]), keryx=NonterminalKeryx()).inspect_task(
+            "task-test"
+        )
+    )
+    assert result.terminal_state == status
+    assert result.error_category is None
+
+
+def test_unknown_task_status_is_indeterminate() -> None:
+    class UnknownTask:
+        class Status:
+            value = "future_status"
+
+        status = Status()
+        metadata: dict[str, str] = {}
+
+    result = OperatorService._completion(UnknownTask(), task_id="task-test")
+    assert result.error_category is OperatorErrorCode.TASK_INDETERMINATE
 
 
 def test_error_details_are_debuggable_but_public_message_redacts_secrets() -> None:
