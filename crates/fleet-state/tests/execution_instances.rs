@@ -162,12 +162,34 @@ fn generation_fences_stale_writers_and_terminal_state_cannot_regress() {
         ),
         Err(StateError::InvalidTransition(_))
     ));
-    let cleaned = store
-        .transition_execution_instance(
+    assert!(matches!(
+        store.transition_execution_instance(
             "instance-1",
             prepared.generation,
             ExecutionInstancePhase::Cleaned,
             1_200,
+        ),
+        Err(StateError::InvalidTransition(_))
+    ));
+    let pending = store
+        .transition_execution_instance(
+            "instance-1",
+            prepared.generation,
+            ExecutionInstancePhase::CleanupPending {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-1".into(),
+                keryx_task_id: None,
+                reason: "cleanup required".into(),
+            },
+            1_200,
+        )
+        .unwrap();
+    let cleaned = store
+        .transition_execution_instance(
+            "instance-1",
+            pending.generation,
+            ExecutionInstancePhase::Cleaned,
+            1_300,
         )
         .unwrap();
     assert_eq!(cleaned.recovery(), ExecutionInstanceRecovery::NoAction);
@@ -180,7 +202,7 @@ fn generation_fences_stale_writers_and_terminal_state_cannot_regress() {
                 realization_id: "container-1".into(),
                 keryx_task_id: "task-1".into(),
             },
-            1_300,
+            1_400,
         ),
         Err(StateError::InvalidTransition(_))
     ));
@@ -201,6 +223,7 @@ fn cleanup_pending_is_durable_until_cleanup_is_proven() {
             ExecutionInstancePhase::CleanupPending {
                 backend_kind: "fleet.dev/docker-oci".into(),
                 realization_id: "container-1".into(),
+                keryx_task_id: None,
                 reason: "provider unavailable".into(),
             },
             1_100,
@@ -215,4 +238,105 @@ fn cleanup_pending_is_durable_until_cleanup_is_proven() {
         store.get_execution_instance("instance-1").unwrap().unwrap(),
         pending
     );
+}
+
+#[test]
+fn duplicated_idempotency_column_corruption_fails_closed() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("fleet.sqlite3");
+    let store = FleetStateStore::open(&path).unwrap();
+    store
+        .reserve_execution_instance(&instance("request-1"))
+        .unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE execution_instances SET idempotency_key = 'forged-key' WHERE instance_id = 'instance-1'",
+            [],
+        )
+        .unwrap();
+
+    assert!(matches!(
+        store.get_execution_instance("instance-1"),
+        Err(StateError::CorruptState(_))
+    ));
+}
+
+#[test]
+fn backend_realization_and_keryx_task_have_one_durable_owner() {
+    let temporary = tempdir().unwrap();
+    let store = FleetStateStore::open(temporary.path().join("fleet.sqlite3")).unwrap();
+    let first = store
+        .reserve_execution_instance(&instance("request-1"))
+        .unwrap()
+        .instance;
+    let second = ExecutionInstance::reserve(
+        "instance-2".into(),
+        "request-2".into(),
+        first.recipe_hash.clone(),
+        first.capabilities_hash.clone(),
+        first.target.clone(),
+        1_000,
+    )
+    .unwrap();
+    store.reserve_execution_instance(&second).unwrap();
+    let first_prepared = store
+        .transition_execution_instance(
+            "instance-1",
+            first.generation,
+            ExecutionInstancePhase::Prepared {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-1".into(),
+            },
+            1_100,
+        )
+        .unwrap();
+    assert!(matches!(
+        store.transition_execution_instance(
+            "instance-2",
+            second.generation,
+            ExecutionInstancePhase::Prepared {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-1".into(),
+            },
+            1_100,
+        ),
+        Err(StateError::InvalidTransition(_))
+    ));
+    store
+        .transition_execution_instance(
+            "instance-1",
+            first_prepared.generation,
+            ExecutionInstancePhase::Running {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-1".into(),
+                keryx_task_id: "task-1".into(),
+            },
+            1_200,
+        )
+        .unwrap();
+    let second_prepared = store
+        .transition_execution_instance(
+            "instance-2",
+            second.generation,
+            ExecutionInstancePhase::Prepared {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-2".into(),
+            },
+            1_200,
+        )
+        .unwrap();
+    assert!(matches!(
+        store.transition_execution_instance(
+            "instance-2",
+            second_prepared.generation,
+            ExecutionInstancePhase::Running {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-2".into(),
+                keryx_task_id: "task-1".into(),
+            },
+            1_300,
+        ),
+        Err(StateError::InvalidTransition(_))
+    ));
 }

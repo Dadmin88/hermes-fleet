@@ -236,9 +236,16 @@ def _phase(value: object) -> dict[str, Any]:
             "keryx_task_id",
             "reason",
         },
-        "cleanup_pending": {"kind", "backend_kind", "realization_id", "reason"},
+        "cleanup_pending": {
+            "kind",
+            "backend_kind",
+            "realization_id",
+            "reason",
+        },
         "cleaned": {"kind"},
     }[kind]
+    if kind == "cleanup_pending" and "keryx_task_id" in value:
+        fields = fields | {"keryx_task_id"}
     if set(value) != fields:
         raise ValueError("execution phase is invalid")
     for field in ("backend_kind", "realization_id", "keryx_task_id"):

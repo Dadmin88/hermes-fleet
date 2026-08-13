@@ -99,6 +99,7 @@ fn indeterminate_and_cleanup_states_preserve_fail_closed_recovery() {
             ExecutionInstancePhase::CleanupPending {
                 backend_kind: "fleet.dev/docker-oci".into(),
                 realization_id: "container-1".into(),
+                keryx_task_id: None,
                 reason: "cleanup outcome unavailable".into(),
             },
             1_200,
@@ -153,6 +154,67 @@ fn uncertainty_after_realization_preserves_known_provenance() {
                 },
                 1_200,
             )
+            .is_ok()
+    );
+}
+
+#[test]
+fn cleanup_requires_pending_proof_and_retains_known_task_provenance() {
+    let prepared = reserved()
+        .transition(
+            ExecutionInstancePhase::Prepared {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-1".into(),
+            },
+            1_100,
+        )
+        .unwrap();
+    assert!(
+        prepared
+            .transition(ExecutionInstancePhase::Cleaned, 1_200)
+            .is_err()
+    );
+    let running = prepared
+        .transition(
+            ExecutionInstancePhase::Running {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-1".into(),
+                keryx_task_id: "task-1".into(),
+            },
+            1_200,
+        )
+        .unwrap();
+    assert!(
+        running
+            .transition(
+                ExecutionInstancePhase::CleanupPending {
+                    backend_kind: "fleet.dev/docker-oci".into(),
+                    realization_id: "container-1".into(),
+                    keryx_task_id: None,
+                    reason: "cleanup required".into(),
+                },
+                1_300,
+            )
+            .is_err()
+    );
+    let pending = running
+        .transition(
+            ExecutionInstancePhase::CleanupPending {
+                backend_kind: "fleet.dev/docker-oci".into(),
+                realization_id: "container-1".into(),
+                keryx_task_id: Some("task-1".into()),
+                reason: "cleanup required".into(),
+            },
+            1_300,
+        )
+        .unwrap();
+    assert_eq!(
+        pending.recovery(),
+        ExecutionInstanceRecovery::RetryBackendCleanup
+    );
+    assert!(
+        pending
+            .transition(ExecutionInstancePhase::Cleaned, 1_400)
             .is_ok()
     );
 }

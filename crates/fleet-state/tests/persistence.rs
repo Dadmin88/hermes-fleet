@@ -54,7 +54,7 @@ fn fresh_database_migrates_explicit_schema_and_rejects_future_versions() {
     let temporary = tempdir().unwrap();
     let path = temporary.path().join("fleet.sqlite3");
     let store = FleetStateStore::open(&path).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 6);
+    assert_eq!(store.schema_version().unwrap(), 7);
 
     let connection = rusqlite::Connection::open(&path).unwrap();
     let tables = connection
@@ -80,11 +80,11 @@ fn fresh_database_migrates_explicit_schema_and_rejects_future_versions() {
             "workflow_versions"
         ]
     );
-    connection.pragma_update(None, "user_version", 7).unwrap();
+    connection.pragma_update(None, "user_version", 8).unwrap();
     drop(connection);
     assert!(matches!(
         FleetStateStore::open(&path),
-        Err(StateError::UnsupportedSchema(7))
+        Err(StateError::UnsupportedSchema(8))
     ));
 }
 
