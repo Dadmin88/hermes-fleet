@@ -420,3 +420,91 @@ fn malformed_schema_and_contradictory_rows_fail_closed() {
             .is_err()
     );
 }
+
+#[test]
+fn valid_version_six_upgrades_to_owned_version_seven() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("valid-v6.sqlite3");
+    FleetStateStore::open(&path).unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP INDEX execution_instances_backend_realization_owner;
+             DROP INDEX execution_instances_keryx_task_owner;
+             DROP TABLE fleet_state_schema;
+             CREATE TABLE fleet_state_schema (
+                 version INTEGER PRIMARY KEY CHECK (version = 6)
+             ) STRICT;
+             INSERT INTO fleet_state_schema(version) VALUES (6);
+             PRAGMA user_version = 6;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = FleetStateStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 7);
+}
+
+#[test]
+fn version_six_is_validated_before_ownership_migration() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("malformed-v6.sqlite3");
+    FleetStateStore::open(&path).unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP INDEX execution_instances_backend_realization_owner;
+             DROP INDEX execution_instances_keryx_task_owner;
+             DROP TABLE execution_instances;
+             CREATE TABLE execution_instances (
+                 instance_id TEXT PRIMARY KEY,
+                 idempotency_key TEXT NOT NULL UNIQUE,
+                 generation INTEGER NOT NULL,
+                 state_json TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL
+             ) STRICT;
+             DROP TABLE fleet_state_schema;
+             CREATE TABLE fleet_state_schema (
+                 version INTEGER PRIMARY KEY CHECK (version = 6)
+             ) STRICT;
+             INSERT INTO fleet_state_schema(version) VALUES (6);
+             PRAGMA user_version = 6;",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        FleetStateStore::open(&path),
+        Err(StateError::CorruptState(_))
+    ));
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+}
+
+#[test]
+fn version_seven_requires_exact_ownership_indexes() {
+    for index in [
+        "execution_instances_backend_realization_owner",
+        "execution_instances_keryx_task_owner",
+    ] {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join(format!("missing-{index}.sqlite3"));
+        FleetStateStore::open(&path).unwrap();
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!("DROP INDEX {index}"))
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            FleetStateStore::open(&path),
+            Err(StateError::CorruptState(_))
+        ));
+    }
+}
