@@ -1,3 +1,4 @@
+use fleet_domain::destination_admission::AuthorizationProof;
 use fleet_domain::{
     AdmissionDecision, DestinationAdmissionContext, DestinationAdmissionRequest,
     DestinationAdmissionStatus, ExecutionInstance, ManagedNodeIdentity, NodeReadiness,
@@ -14,6 +15,18 @@ fn identity() -> ManagedNodeIdentity {
     }
 }
 
+fn authorization_proof() -> AuthorizationProof {
+    AuthorizationProof {
+        authenticated_sender: "requester-1".into(),
+        requester: "requester-1".into(),
+        operation: "fleet.hermes.run".into(),
+        recipe_hash: "sha256:".to_owned() + &"1".repeat(64),
+        policy_digest: "sha256:".to_owned() + &"3".repeat(64),
+        deadline_ms: 2_000,
+        secret_refs_digest: "sha256:".to_owned() + &"4".repeat(64),
+    }
+}
+
 fn request() -> DestinationAdmissionRequest {
     DestinationAdmissionRequest {
         instance_id: "instance-1".into(),
@@ -23,6 +36,14 @@ fn request() -> DestinationAdmissionRequest {
         target: identity(),
         operation: "fleet.hermes.run".into(),
         deadline_ms: 2_000,
+        authorization: authorization_proof(),
+    }
+}
+
+fn request_with_proof(proof: AuthorizationProof) -> DestinationAdmissionRequest {
+    DestinationAdmissionRequest {
+        authorization: proof,
+        ..request()
     }
 }
 
@@ -31,7 +52,7 @@ fn context() -> DestinationAdmissionContext {
         current_target: identity(),
         managed_active: true,
         authenticated_keryx_binding: true,
-        operation_authorized: true,
+        current_policy_digest: "sha256:".to_owned() + &"3".repeat(64),
         readiness: NodeReadiness {
             alive: true,
             fresh: true,
@@ -75,7 +96,7 @@ fn stale_generation_policy_revocation_and_binding_loss_fail_closed() {
     );
 
     let mut denied = context();
-    denied.operation_authorized = false;
+    denied.current_policy_digest = "sha256:".to_owned() + &"4".repeat(64);
     assert_eq!(
         admit_destination(&request, &denied).unwrap_err(),
         DestinationAdmissionStatus::PolicyDenied
@@ -86,6 +107,56 @@ fn stale_generation_policy_revocation_and_binding_loss_fail_closed() {
     assert_eq!(
         admit_destination(&request, &unbound).unwrap_err(),
         DestinationAdmissionStatus::BindingUnavailable
+    );
+}
+
+#[test]
+fn authorization_sender_must_match_requester() {
+    let mut forged = authorization_proof();
+    forged.authenticated_sender = "other-sender".into();
+    assert_eq!(
+        admit_destination(&request_with_proof(forged), &context()).unwrap_err(),
+        DestinationAdmissionStatus::PolicyDenied
+    );
+}
+
+#[test]
+fn stale_policy_digest_is_rejected_against_destination_context() {
+    let mut stale = context();
+    stale.current_policy_digest = "sha256:".to_owned() + &"4".repeat(64);
+    assert_eq!(
+        admit_destination(&request(), &stale).unwrap_err(),
+        DestinationAdmissionStatus::PolicyDenied
+    );
+}
+
+#[test]
+fn authorization_recipe_hash_must_match_the_request() {
+    let mut substituted = authorization_proof();
+    substituted.recipe_hash = "sha256:".to_owned() + &"9".repeat(64);
+    assert_eq!(
+        admit_destination(&request_with_proof(substituted), &context()).unwrap_err(),
+        DestinationAdmissionStatus::PolicyDenied
+    );
+}
+
+#[test]
+fn authorization_deadline_must_match_the_request() {
+    let mut mismatched = authorization_proof();
+    mismatched.deadline_ms = 1_999;
+    assert_eq!(
+        admit_destination(&request_with_proof(mismatched), &context()).unwrap_err(),
+        DestinationAdmissionStatus::PolicyDenied
+    );
+}
+
+#[test]
+fn malformed_secret_references_digest_is_rejected_before_admission() {
+    let mut malformed = authorization_proof();
+    malformed.secret_refs_digest = "not-a-sha256-digest".into();
+    assert_eq!(
+        admit_destination(&request_with_proof(malformed), &context()).unwrap_err(),
+        DestinationAdmissionStatus::InvalidRequest
     );
 }
 

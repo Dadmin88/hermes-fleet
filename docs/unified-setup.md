@@ -18,26 +18,38 @@ exact-bundle availability to the check; it does not silently mutate authority.
 
 `fleet node adopt` resolves the target against the local Tailscale provider
 observation, requires exactly one online stable provider identity, verifies
-non-interactive SSH, captures an installer-owned rollback snapshot, transfers
-an exact worker bundle, then delegates doctor/install to
+non-interactive SSH and unprivileged Python/systemd prerequisites, transfers
+an exact verified worker bundle, stages the bundled Fleet bootstrap helper,
+captures an installer-owned rollback snapshot, then delegates doctor/install to
 `hermes-fleet-node`. It never invokes the Nodescale owner/adoption/trust tools
 and therefore reports `trusted=false`, `managed=false`, and
 `execution_authorized=false` until those independent owner-controlled stages
 are completed.
 
-The current V1 worker convergence requires `hermes-fleet-node` to already be
-available on the target. A completely bare host must first receive the
-versioned Fleet bootstrap artifact. This is an explicit blocker, not a reason
-to fall back to a developer checkout, direct database writes, or fabricated
-identity.
+The target does not need a preinstalled Fleet helper, Hermes runtime, or Fleet
+systemd units. The verified bundle supplies exact Fleet/Keryx wheels and
+binaries, a Git-archived pinned Hermes source tree, and canonical user units
+for Keryx, the loopback Hermes Runs API, and Fleet. The target must already
+provide Python 3.11+ with `venv`/`ensurepip`, systemd user services, Tailscale,
+login persistence (`loginctl ... Linger=yes`), and the selected OCI runtime;
+missing host-level prerequisites fail before setup mutation. Enabling linger
+is an explicit owner/administrator action; setup detects but does not escalate
+privileges to enable it.
 
 ## Idempotency and rollback
 
-The worker installer verifies every bundle hash, preserves an existing Keryx
-daemon credential, rejects inconsistent credentials before mutation, records
-a private rollback snapshot of files it owns, and only restarts changed
-services in dependency order. Re-running the same accepted bundle does not
-rotate identity or regenerate credentials.
+The worker installer verifies every bundle hash, preserves existing scoped
+credentials, rejects inconsistent credentials before mutation, records a
+private rollback snapshot of files it owns, and restores owned files, the
+isolated `fleet-worker` profile, and service enable/active state after a
+post-mutation failure. Re-running the same accepted bundle does not rotate
+identity, regenerate credentials, or restart unchanged services.
+
+The dedicated `fleet-worker` profile is created empty without cloning the
+operator's default profile or model credentials. The Keryx daemon token is
+visible only to Keryx/Fleet consumers; the loopback Runs API key is visible
+only to Hermes/Fleet consumers. Model/provider credentials remain a separate,
+explicit scoped provisioning step.
 
 ## Authority boundary
 

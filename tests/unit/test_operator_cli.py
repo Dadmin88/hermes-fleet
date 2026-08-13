@@ -11,6 +11,7 @@ import pytest
 
 from hermes_fleet import operator_cli
 from hermes_fleet.operator import (
+    ExactRecipeRequest,
     OperatorCompletionResult,
     OperatorError,
     OperatorErrorCode,
@@ -64,12 +65,16 @@ class FakeOperator:
         assert target == "worker-a"
         return READINESS
 
-    async def run_exact(self, target: str, prompt: str, *, deadline_seconds: int):
-        assert (target, prompt, deadline_seconds) == ("worker-a", "do work", 45)
+    async def run_exact(self, request: ExactRecipeRequest):
+        assert request.target == "worker-a"
+        assert request.prompt == "do work"
+        assert request.deadline_seconds == 45
+        assert request.recipe.agent.name == "acceptance"
+        assert request.agency_source.revision == "a" * 40
         return OperatorCompletionResult(
             task_id="task-test",
             terminal_state="completed",
-            requested_target=target,
+            requested_target=request.target,
             operation="fleet.hermes.run",
             deadline_ms=45_000,
             result="done",
@@ -111,12 +116,48 @@ def _invoke(argv: list[str], *, context: FakeContext | None = None):
     return code, output, error, ctx
 
 
+def _recipe_file(tmp_path: Path) -> Path:
+    path = tmp_path / "recipe.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "fleet.recipe.v1",
+                "agent": {
+                    "kind": "agency_profile",
+                    "name": "acceptance",
+                    "version": "1.0.0",
+                },
+                "environment": {"os": ["linux"], "architecture": ["x86_64"]},
+                "resources": {"cpu_millis": 1000, "memory_bytes": 1000},
+                "security": {"isolation": "process", "network": "provider"},
+                "extensions": {},
+            }
+        )
+    )
+    return path
+
+
 def test_parser_exposes_only_phase2_operator_commands() -> None:
     parser = _parser()
     assert vars(parser.parse_args(["nodes", "--json"]))["command"] == "nodes"
     assert vars(parser.parse_args(["node", "show", "worker-a"]))["target"] == "worker-a"
     assert vars(parser.parse_args(["readiness", "worker-a"]))["target"] == "worker-a"
-    run = vars(parser.parse_args(["run", "worker-a", "do work", "--detach"]))
+    run = vars(
+        parser.parse_args(
+            [
+                "run",
+                "worker-a",
+                "do work",
+                "--detach",
+                "--recipe",
+                "/tmp/recipe.json",
+                "--agency-repository",
+                "https://example.invalid/agency.git",
+                "--agency-revision",
+                "a" * 40,
+            ]
+        )
+    )
     assert run["wait"] is False
     assert (
         vars(parser.parse_args(["task", "show", "task-test"]))["task_id"] == "task-test"
@@ -134,9 +175,24 @@ def test_json_output_is_encoded_from_structured_models() -> None:
     assert ctx.closed is True
 
 
-def test_run_wait_reports_structured_terminal_success() -> None:
+def test_run_wait_reports_structured_terminal_success(tmp_path: Path) -> None:
+    recipe = _recipe_file(tmp_path)
     code, output, error, _ = _invoke(
-        ["run", "worker-a", "do work", "--wait", "--deadline", "45", "--json"]
+        [
+            "run",
+            "worker-a",
+            "do work",
+            "--wait",
+            "--deadline",
+            "45",
+            "--recipe",
+            str(recipe),
+            "--agency-repository",
+            "https://example.invalid/agency.git",
+            "--agency-revision",
+            "a" * 40,
+            "--json",
+        ]
     )
     assert code == 0
     assert error == []
@@ -155,22 +211,34 @@ def test_run_wait_reports_structured_terminal_success() -> None:
     }
 
 
-def test_detach_returns_durable_task_identity_without_waiting() -> None:
+def test_detach_returns_durable_task_identity_without_waiting(tmp_path: Path) -> None:
     class DetachOperator(FakeOperator):
-        async def submit_exact(
-            self, target: str, prompt: str, *, deadline_seconds: int
-        ):
+        async def submit_exact(self, request: ExactRecipeRequest):
             return OperatorCompletionResult(
                 task_id="task-detached",
                 terminal_state="submitted",
-                requested_target=target,
+                requested_target=request.target,
                 operation="fleet.hermes.run",
-                deadline_ms=deadline_seconds * 1000,
+                deadline_ms=request.deadline_seconds * 1000,
             )
 
     context = FakeContext(operator=DetachOperator())
+    recipe = _recipe_file(tmp_path)
     code, output, error, _ = _invoke(
-        ["run", "worker-a", "do work", "--detach", "--json"], context=context
+        [
+            "run",
+            "worker-a",
+            "do work",
+            "--detach",
+            "--recipe",
+            str(recipe),
+            "--agency-repository",
+            "https://example.invalid/agency.git",
+            "--agency-revision",
+            "a" * 40,
+            "--json",
+        ],
+        context=context,
     )
     assert code == 0
     assert error == []

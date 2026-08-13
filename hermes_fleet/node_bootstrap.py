@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import io
 import json
 import os
 import platform
@@ -14,6 +16,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.error
 import urllib.request
@@ -26,13 +29,25 @@ from urllib.parse import urlparse
 
 SCHEMA = "hermes-fleet-worker-bundle.v1"
 RECEIPT_SCHEMA = "hermes-fleet-worker-install-receipt.v1"
-KERYX_REVISION = "1a569219517ea3f6ea216967f4dcc23dcaf5c822"
-FLEET_REVISION = "6d1e0748f9a90a575b617fd2044ee65d52e344f2"
-NODESCALE_REVISION = "c0a9a7c873d7086375ac53245e6fd689a3686c7d"
+KERYX_REVISION = "b29e66d8966d444e583b0085a81309d52b157d1d"
+NODESCALE_REVISION = "ee4dc0fed28502a27d35344e4b3c7f9e31ae2ef8"
 HERMES_REVISION = "a991dfc25daf68994c21d6adcdfbafb1b3dc23cf"
-ENV_FILES = ("keryxd.env", "keryx-node.env", "fleet-node.env")
-UNITS = ("keryxd.service", "keryx-node.service", "fleet-node.service")
+ENV_FILES = (
+    "keryxd.env",
+    "keryx-node.env",
+    "fleet-managed-projection.env",
+    "fleet-node.env",
+    "hermes-api.env",
+)
+UNITS = (
+    "keryxd.service",
+    "keryx-node.service",
+    "hermes-fleet-api.service",
+    "fleet-managed-projection.service",
+    "fleet-node.service",
+)
 TOKEN_KEY = "HERMES_KERYX_DAEMON_TOKEN"
+API_KEY = "API_SERVER_KEY"
 SECRET_KEY_RE = re.compile(r"(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)", re.I)
 
 
@@ -167,6 +182,7 @@ def load_bundle(bundle: Path) -> dict[str, Any]:
         "platform",
         "revisions",
         "artifacts",
+        "units",
         "service_scope",
     }
     if type(document) is not dict or set(document) != required:
@@ -190,8 +206,10 @@ def load_bundle(bundle: Path) -> dict[str, Any]:
     if type(artifacts) is not dict or set(artifacts) != {
         "keryxd",
         "keryx-node",
+        "fleet-managed-control",
         "keryx-wheel",
         "fleet-wheel",
+        "hermes-source",
     }:
         raise ValueError("bundle artifacts are invalid")
     for name, item in artifacts.items():
@@ -203,7 +221,36 @@ def load_bundle(bundle: Path) -> dict[str, Any]:
         artifact = bundle / relative
         if not artifact.is_file() or _sha256(artifact) != item["sha256"]:
             raise ValueError(f"bundle artifact {name} failed SHA-256 verification")
+    units = document["units"]
+    if type(units) is not dict or set(units) != set(UNITS):
+        raise ValueError("bundle worker units are invalid")
+    if document["service_scope"] != list(UNITS):
+        raise ValueError("bundle service scope is invalid")
+    for name in UNITS:
+        item = units[name]
+        if type(item) is not dict or set(item) != {"path", "sha256"}:
+            raise ValueError(f"bundle unit {name} is invalid")
+        relative = Path(item["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"bundle unit {name} path is unsafe")
+        unit = bundle / relative
+        if not unit.is_file() or _sha256(unit) != item["sha256"]:
+            raise ValueError(f"bundle unit {name} failed SHA-256 verification")
+    if document["bundle_id"] != _bundle_id(revisions, artifacts, units):
+        raise ValueError("bundle identity does not match its verified contents")
     return document
+
+
+def _bundle_id(
+    revisions: dict[str, str],
+    artifacts: dict[str, dict[str, str]],
+    units: dict[str, dict[str, str]],
+) -> str:
+    identity_input = json.dumps(
+        {"revisions": revisions, "artifacts": artifacts, "units": units},
+        sort_keys=True,
+    ).encode()
+    return f"worker-v1-{hashlib.sha256(identity_input).hexdigest()[:16]}"
 
 
 class Doctor:
@@ -366,7 +413,7 @@ class Doctor:
     def _keryx(self) -> list[Check]:
         checks: list[Check] = []
         manifest = load_bundle(self.bundle) if self.bundle else None
-        for name in ("keryxd", "keryx-node"):
+        for name in ("keryxd", "keryx-node", "fleet-managed-control"):
             path = self.install / "bin" / name
             present = path.is_file()
             expected = (
@@ -376,7 +423,7 @@ class Doctor:
             detail = "missing" if not present else _sha256(path)
             checks.append(
                 Check(
-                    f"keryx.{name}_identity",
+                    f"runtime.{name}_identity",
                     matches and expected is not None,
                     "match"
                     if matches and expected
@@ -404,7 +451,10 @@ class Doctor:
                 "supported" if sdk.returncode == 0 else "missing",
             )
         )
-        envs = [_read_env(self.config / name) for name in ENV_FILES]
+        envs = [
+            _read_env(self.config / name)
+            for name in ("keryxd.env", "keryx-node.env", "fleet-node.env")
+        ]
         present = all(values.get(TOKEN_KEY) for values in envs)
         equal = present and len({values[TOKEN_KEY] for values in envs}) == 1
         permissions = all(
@@ -466,6 +516,24 @@ class Doctor:
                 "keryx.edge_registry",
                 edge and bool(self._registry_hostname()),
                 "running" if edge else "unhealthy",
+            )
+        )
+        managed_control = (
+            self._command(
+                [
+                    "systemctl",
+                    "--user",
+                    "is-active",
+                    "fleet-managed-projection.service",
+                ]
+            ).returncode
+            == 0
+        )
+        checks.append(
+            Check(
+                "fleet.managed_control",
+                managed_control,
+                "running" if managed_control else "unhealthy",
             )
         )
         return checks
@@ -571,13 +639,47 @@ class Installer:
         manifest = load_bundle(self.bundle)  # all preflight happens before mutation
         self._preflight()
         self._runtime_preflight()
+        for directory in (self.config, self.install / "bin", self.state, self.units):
+            directory.mkdir(parents=True, exist_ok=True)
         snapshot = self._snapshot_root()
         self._snapshot_touched(snapshot)
         token = self._existing_token() or secrets.token_urlsafe(48)
+        api_key = self._existing_api_key() or secrets.token_urlsafe(48)
         try:
             self._install_artifacts(manifest)
+            self._converge_execution_profile()
             for filename in ENV_FILES:
-                if _write_env(self.config / filename, {TOKEN_KEY: token}):
+                values: dict[str, str] = {}
+                if filename not in {
+                    "hermes-api.env",
+                    "fleet-managed-projection.env",
+                }:
+                    values[TOKEN_KEY] = token
+                if filename in {"fleet-node.env", "hermes-api.env"}:
+                    values[API_KEY] = api_key
+                if filename == "hermes-api.env":
+                    values["API_SERVER_ENABLED"] = "true"
+                    values["API_SERVER_HOST"] = "127.0.0.1"
+                    values["API_SERVER_PORT"] = "8642"
+                runtime = Path(f"/run/user/{os.getuid()}/hermes-fleet")
+                if filename == "fleet-managed-projection.env":
+                    runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    values.update(
+                        {
+                            "FLEET_MANAGED_PROJECTION_SOCKET": str(
+                                runtime / "managed-control.sock"
+                            ),
+                            "FLEET_MANAGED_PROJECTION_DATABASE": str(
+                                self.state / "managed-control.sqlite3"
+                            ),
+                            "FLEET_MANAGED_PROJECTION_ALLOWED_UID": str(os.getuid()),
+                        }
+                    )
+                if filename == "fleet-node.env":
+                    values["FLEET_OBSERVATION_SOCKET"] = str(
+                        runtime / "managed-control.sock"
+                    )
+                if _write_env(self.config / filename, values):
                     self.changes.append(f"env:{filename}")
             changed_before_services = bool(self.changes)
             if changed_before_services:
@@ -598,27 +700,26 @@ class Installer:
                 raise RuntimeError(f"registry DNS precondition failed: {dns.status}")
             if changed_before_services:
                 self._restart("keryx-node.service")
+                self._restart("hermes-fleet-api.service")
+                self._restart("fleet-managed-projection.service")
                 self._restart("fleet-node.service")
             self._write_receipt(manifest)
             return Doctor(home=self.home, bundle=self.bundle, runner=self.runner).run()
         except BaseException:
+            self._restore_snapshot(snapshot)
             raise
 
     def _preflight(self) -> None:
         if platform.machine() != "x86_64" or shutil.which("systemctl") is None:
             raise RuntimeError("unsupported worker platform")
-        for directory in (self.config, self.install / "bin", self.state, self.units):
-            directory.mkdir(parents=True, exist_ok=True)
         for name in ENV_FILES:
             path = self.config / name
             if path.exists() and (not path.is_file() or path.is_symlink()):
                 raise RuntimeError(f"unsafe environment path: {name}")
         for name in UNITS:
             path = self.units / name
-            if not path.is_file() or path.is_symlink():
-                raise RuntimeError(
-                    f"canonical systemd unit is missing or unsafe: {name}"
-                )
+            if path.exists() and (not path.is_file() or path.is_symlink()):
+                raise RuntimeError(f"unsafe systemd unit path: {name}")
         existing = [
             values.get(TOKEN_KEY)
             for values in (_read_env(self.config / name) for name in ENV_FILES)
@@ -629,7 +730,7 @@ class Installer:
 
     def _runtime_preflight(self) -> None:
         doctor = Doctor(home=self.home, bundle=self.bundle, runner=self.runner)
-        checks = doctor._tailscale() + doctor._hermes() + doctor._fleet()
+        checks = doctor._tailscale() + doctor._fleet()
         failed = [item for item in checks if item.blocker and not item.ok]
         if failed:
             raise RuntimeError(f"runtime preflight failed: {failed[0].name}")
@@ -641,13 +742,156 @@ class Installer:
         return root
 
     def _snapshot_touched(self, root: Path) -> None:
-        paths = [self.install / "bin/keryxd", self.install / "bin/keryx-node"]
-        paths += [self.config / name for name in ENV_FILES]
-        paths += [self.units / name for name in UNITS]
+        paths = self._owned_paths()
+
+        inventory: dict[str, str] = {}
         for path in paths:
             if path.is_file():
+                inventory[str(path)] = "file"
                 relative = str(path).lstrip("/").replace("/", "__")
                 shutil.copy2(path, root / relative)
+            elif path.is_dir() and not path.is_symlink():
+                inventory[str(path)] = "directory"
+                relative = str(path).lstrip("/").replace("/", "__")
+                shutil.copytree(path, root / relative, symlinks=True)
+            else:
+                inventory[str(path)] = "absent"
+        _atomic_write(
+            root / "inventory.json",
+            (json.dumps(inventory, sort_keys=True) + "\n").encode(),
+            0o600,
+        )
+        service_state = {
+            name: {
+                "enabled": self.runner.run(
+                    ["systemctl", "--user", "is-enabled", name]
+                ).returncode
+                == 0,
+                "active": self.runner.run(
+                    ["systemctl", "--user", "is-active", name]
+                ).returncode
+                == 0,
+            }
+            for name in UNITS
+        }
+        _atomic_write(
+            root / "services.json",
+            (json.dumps(service_state, sort_keys=True) + "\n").encode(),
+            0o600,
+        )
+
+    def _owned_paths(self) -> list[Path]:
+        paths = [
+            self.install / "bin/keryxd",
+            self.install / "bin/keryx-node",
+            self.install / "bin/fleet-managed-control",
+            self.install / "venv",
+            self.install / "hermes-source",
+            self.home / ".hermes/profiles/fleet-worker",
+            self.home / ".hermes/profiles/fleet-execution",
+            self.state / "install-receipt.json",
+        ]
+        paths += [self.config / name for name in ENV_FILES]
+        paths += [self.units / name for name in UNITS]
+        return paths
+
+    def _converge_execution_profile(self) -> None:
+        worker = self.home / ".hermes/profiles/fleet-worker"
+        slot = self.home / ".hermes/profiles/fleet-execution"
+        worker.mkdir(parents=True, mode=0o700, exist_ok=True)
+        slot.mkdir(parents=True, mode=0o700, exist_ok=True)
+        worker.chmod(0o700)
+        slot.chmod(0o700)
+        config = (
+            b"gateway:\n"
+            b"  multiplex_profile_allowlist:\n"
+            b"    - fleet-execution\n"
+            b"  multiplex_profiles: true\n"
+        )
+        marker = b"hermes-fleet.execution-slot.v1\n"
+        config_path = worker / "config.yaml"
+        marker_path = slot / ".fleet-execution-slot"
+        if not config_path.is_file() or config_path.read_bytes() != config:
+            _atomic_write(config_path, config, 0o600)
+            self.changes.append("profile:fleet-worker-config")
+        if not marker_path.is_file() or marker_path.read_bytes() != marker:
+            if any(slot.iterdir()):
+                raise RuntimeError("execution profile slot contains foreign state")
+            _atomic_write(marker_path, marker, 0o600)
+            self.changes.append("profile:fleet-execution-slot")
+        elif stat.S_IMODE(marker_path.stat().st_mode) != 0o600:
+            marker_path.chmod(0o600)
+            self.changes.append("profile:fleet-execution-slot-mode")
+
+    def _restore_snapshot(self, root: Path) -> None:
+        try:
+            inventory = json.loads(
+                (root / "inventory.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError("worker rollback inventory is unavailable") from error
+        if type(inventory) is not dict:
+            raise RuntimeError("worker rollback inventory is invalid")
+        owned = {str(path) for path in self._owned_paths()}
+        if set(inventory) != owned:
+            raise RuntimeError("worker rollback inventory has invalid paths")
+        for raw_path, kind in inventory.items():
+            if type(raw_path) is not str or kind not in {"file", "directory", "absent"}:
+                raise RuntimeError("worker rollback inventory is invalid")
+            path = Path(raw_path)
+            saved = root / raw_path.lstrip("/").replace("/", "__")
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+            if kind == "file":
+                if not saved.is_file():
+                    raise RuntimeError("worker rollback snapshot is incomplete")
+                _atomic_write(
+                    path,
+                    saved.read_bytes(),
+                    stat.S_IMODE(saved.stat().st_mode),
+                )
+            elif kind == "directory":
+                if not saved.is_dir() or saved.is_symlink():
+                    raise RuntimeError("worker rollback snapshot is incomplete")
+                shutil.copytree(saved, path, symlinks=True)
+        self._run(["systemctl", "--user", "daemon-reload"])
+        self._restore_services(root)
+
+    def _restore_services(self, root: Path) -> None:
+        try:
+            state = json.loads((root / "services.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                "worker rollback service state is unavailable"
+            ) from error
+        if type(state) is not dict or set(state) != set(UNITS):
+            raise RuntimeError("worker rollback service state is invalid")
+        for name in UNITS:
+            item = state[name]
+            if (
+                type(item) is not dict
+                or set(item) != {"enabled", "active"}
+                or any(type(item[key]) is not bool for key in item)
+            ):
+                raise RuntimeError("worker rollback service state is invalid")
+            self._run(
+                [
+                    "systemctl",
+                    "--user",
+                    "enable" if item["enabled"] else "disable",
+                    name,
+                ]
+            )
+            self._run(
+                [
+                    "systemctl",
+                    "--user",
+                    "start" if item["active"] else "stop",
+                    name,
+                ]
+            )
 
     def _existing_token(self) -> str | None:
         for name in ENV_FILES:
@@ -656,8 +900,25 @@ class Installer:
                 return token
         return None
 
+    def _existing_api_key(self) -> str | None:
+        for name in ("fleet-node.env", "hermes-api.env"):
+            value = _read_env(self.config / name).get(API_KEY)
+            if value:
+                return value
+        return None
+
     def _install_artifacts(self, manifest: dict[str, Any]) -> None:
-        for name in ("keryxd", "keryx-node"):
+        for name in UNITS:
+            source = self.bundle / manifest["units"][name]["path"]
+            destination = self.units / name
+            if (
+                destination.is_file()
+                and _sha256(destination) == manifest["units"][name]["sha256"]
+            ):
+                continue
+            _atomic_write(destination, source.read_bytes(), 0o644)
+            self.changes.append(f"unit:{name}")
+        for name in ("keryxd", "keryx-node", "fleet-managed-control"):
             source = self.bundle / manifest["artifacts"][name]["path"]
             destination = self.install / "bin" / name
             if (
@@ -670,10 +931,10 @@ class Installer:
         venv_python = self.install / "venv/bin/python"
         if not venv_python.exists():
             self._run([sys.executable, "-m", "venv", str(self.install / "venv")])
-        wheels = [
-            self.bundle / manifest["artifacts"][name]["path"]
-            for name in ("keryx-wheel", "fleet-wheel")
-        ]
+        keryx_wheel = self.bundle / manifest["artifacts"]["keryx-wheel"]["path"]
+        fleet_wheel = self.bundle / manifest["artifacts"]["fleet-wheel"]["path"]
+        hermes_archive = self.bundle / manifest["artifacts"]["hermes-source"]["path"]
+        hermes_source = self.install / "hermes-source"
         expected_receipt = self.state / "install-receipt.json"
         current = None
         if expected_receipt.is_file():
@@ -688,6 +949,21 @@ class Installer:
             for name in manifest["artifacts"]
         }
         if current != wanted:
+            if hermes_source.exists():
+                shutil.rmtree(hermes_source)
+            hermes_source.mkdir(parents=True)
+            with tarfile.open(hermes_archive, mode="r:gz") as archive:
+                archive.extractall(hermes_source, filter="data")
+            self._run(
+                [
+                    str(venv_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--force-reinstall",
+                    str(keryx_wheel),
+                ]
+            )
             self._run(
                 [
                     str(venv_python),
@@ -696,9 +972,32 @@ class Installer:
                     "install",
                     "--force-reinstall",
                     "--no-deps",
-                    *(str(path) for path in wheels),
+                    str(fleet_wheel),
                 ]
             )
+            self._run(
+                [
+                    str(venv_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--force-reinstall",
+                    "--editable",
+                    str(hermes_source),
+                ]
+            )
+            profile = self.home / ".hermes/profiles/fleet-worker"
+            if not profile.is_dir():
+                self._run(
+                    [
+                        str(self.install / "venv/bin/hermes"),
+                        "profile",
+                        "create",
+                        "fleet-worker",
+                        "--no-skills",
+                        "--no-alias",
+                    ]
+                )
             self.changes.append("python-runtime")
 
     def _restart(self, unit: str) -> None:
@@ -753,17 +1052,31 @@ def build_bundle(
     *,
     fleet_source: Path,
     keryx_source: Path,
+    hermes_source: Path,
     output: Path,
     runner: Runner | None = None,
 ) -> Path:
     runner = runner or SubprocessRunner()
+    _require_clean_source(fleet_source, runner)
+    _require_clean_source(keryx_source, runner)
+    _require_clean_source(hermes_source, runner)
     fleet_revision = _git_head(fleet_source, runner)
     if _git_head(keryx_source, runner) != KERYX_REVISION:
         raise RuntimeError("bundle sources are not at accepted revisions")
+    if _git_head(hermes_source, runner) != HERMES_REVISION:
+        raise RuntimeError("bundle sources are not at accepted revisions")
     output.mkdir(parents=True, exist_ok=False)
+    frozen_root = output / "frozen-sources"
+    frozen_root.mkdir()
+    fleet_frozen = frozen_root / "fleet"
+    keryx_frozen = frozen_root / "keryx"
+    _freeze_git_source(fleet_source, fleet_revision, fleet_frozen, runner)
+    _freeze_git_source(keryx_source, KERYX_REVISION, keryx_frozen, runner)
     cargo_target = output / "cargo-target"
+    fleet_cargo_target = output / "fleet-cargo-target"
     fleet_dist = output / "fleet-dist"
     keryx_dist = output / "keryx-dist"
+
     commands = [
         (
             [
@@ -776,8 +1089,22 @@ def build_bundle(
                 "-p",
                 "keryx-relay",
             ],
-            keryx_source,
+            keryx_frozen,
             {"CARGO_TARGET_DIR": str(cargo_target)},
+        ),
+        (
+            [
+                "cargo",
+                "build",
+                "--locked",
+                "--release",
+                "-p",
+                "fleet-control",
+                "--bin",
+                "fleet-managed-control",
+            ],
+            fleet_frozen,
+            {"CARGO_TARGET_DIR": str(fleet_cargo_target)},
         ),
         (
             [
@@ -787,9 +1114,9 @@ def build_bundle(
                 "--wheel",
                 "--outdir",
                 str(keryx_dist),
-                str(keryx_source / "sdk/python"),
+                str(keryx_frozen / "sdk/python"),
             ],
-            keryx_source,
+            keryx_frozen,
             None,
         ),
         (
@@ -800,9 +1127,9 @@ def build_bundle(
                 "--wheel",
                 "--outdir",
                 str(fleet_dist),
-                str(fleet_source),
+                str(fleet_frozen),
             ],
-            fleet_source,
+            fleet_frozen,
             None,
         ),
     ]
@@ -822,6 +1149,7 @@ def build_bundle(
     sources = {
         "keryxd": cargo_target / "release/keryxd",
         "keryx-node": cargo_target / "release/keryx-node",
+        "fleet-managed-control": fleet_cargo_target / "release/fleet-managed-control",
         "keryx-wheel": next(keryx_dist.glob("*.whl")),
         "fleet-wheel": next(fleet_dist.glob("*.whl")),
     }
@@ -833,18 +1161,39 @@ def build_bundle(
             "path": str(destination.relative_to(output)),
             "sha256": _sha256(destination),
         }
+    archived = subprocess.run(
+        ["git", "-C", str(hermes_source), "archive", "--format=tar", "HEAD"],
+        capture_output=True,
+        timeout=180,
+    )
+    if archived.returncode != 0:
+        raise RuntimeError("unable to archive exact Hermes source revision")
+    hermes_archive = artifact_dir / "hermes-source.tar.gz"
+    hermes_archive.write_bytes(gzip.compress(archived.stdout, mtime=0))
+    artifacts["hermes-source"] = {
+        "path": str(hermes_archive.relative_to(output)),
+        "sha256": _sha256(hermes_archive),
+    }
+    unit_dir = output / "units"
+    unit_dir.mkdir()
+    source_units = fleet_frozen / "ops/systemd"
+    units: dict[str, dict[str, str]] = {}
+    for name in UNITS:
+        destination = unit_dir / name
+        shutil.copy2(source_units / name, destination)
+        units[name] = {
+            "path": str(destination.relative_to(output)),
+            "sha256": _sha256(destination),
+        }
     revisions = {
         "fleet": fleet_revision,
         "keryx": KERYX_REVISION,
         "nodescale": NODESCALE_REVISION,
         "hermes": HERMES_REVISION,
     }
-    identity_input = json.dumps(
-        {"revisions": revisions, "artifacts": artifacts}, sort_keys=True
-    ).encode()
     manifest = {
         "schema": SCHEMA,
-        "bundle_id": f"worker-v1-{hashlib.sha256(identity_input).hexdigest()[:16]}",
+        "bundle_id": _bundle_id(revisions, artifacts, units),
         "role": "worker",
         "platform": [
             "linux-x86_64-debian",
@@ -854,6 +1203,7 @@ def build_bundle(
         ],
         "revisions": revisions,
         "artifacts": artifacts,
+        "units": units,
         "service_scope": list(UNITS),
     }
     _atomic_write(
@@ -865,11 +1215,46 @@ def build_bundle(
     return output
 
 
+def _freeze_git_source(
+    source: Path, revision: str, destination: Path, runner: Runner
+) -> None:
+    del runner
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise RuntimeError("source revision is invalid")
+    archived = subprocess.run(
+        ["git", "-C", str(source), "archive", revision],
+        capture_output=True,
+        timeout=180,
+    )
+    payload = archived.stdout
+    if (
+        archived.returncode != 0
+        or type(payload) not in (bytes, bytearray)
+        or not payload
+    ):
+        raise RuntimeError("unable to freeze exact source revision")
+    destination.mkdir(parents=True, exist_ok=False)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(bytes(payload)), mode="r:") as archive:
+            archive.extractall(destination, filter="data")
+    except (OSError, tarfile.TarError, ValueError) as error:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise RuntimeError("exact source archive is invalid") from error
+
+
 def _git_head(path: Path, runner: Runner) -> str:
     result = runner.run(["git", "-C", str(path), "rev-parse", "HEAD"])
     if result.returncode != 0:
         raise RuntimeError("unable to resolve source revision")
     return result.stdout.strip()
+
+
+def _require_clean_source(path: Path, runner: Runner) -> None:
+    result = runner.run(
+        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=all"]
+    )
+    if result.returncode != 0 or result.stdout.strip():
+        raise RuntimeError("bundle source must be an exact clean Git checkout")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -884,6 +1269,7 @@ def _parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser("build-bundle")
     build.add_argument("--fleet-source", type=Path, required=True)
     build.add_argument("--keryx-source", type=Path, required=True)
+    build.add_argument("--hermes-source", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -909,6 +1295,7 @@ def main() -> None:
     build_bundle(
         fleet_source=args.fleet_source,
         keryx_source=args.keryx_source,
+        hermes_source=args.hermes_source,
         output=args.output,
     )
     print(args.output)

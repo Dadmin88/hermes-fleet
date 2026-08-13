@@ -77,7 +77,8 @@ A user-service deployment can use a layout such as:
 
 ```text
 $HOME/.local/share/hermes-fleet/bin/       installed Keryx/Fleet executables
-$HOME/.local/share/hermes-fleet/venv/      Python runtime when required
+$HOME/.local/share/hermes-fleet/venv/      exact Fleet/Keryx/Hermes runtime
+$HOME/.local/share/hermes-fleet/hermes-source/ pinned Hermes source
 $HOME/.local/state/hermes-fleet/           Fleet and Keryx durable state
 $HOME/.config/hermes-fleet/                non-Git service configuration
 $HOME/.config/systemd/user/                 user service units
@@ -107,7 +108,7 @@ Validate that:
 
 ## Keryx requirements
 
-Fleet depends on public Keryx behavior rather than Keryx database internals. The Python package and worker bundle pin the SDK and daemon/edge artifacts to immutable Keryx commit `1a569219517ea3f6ea216967f4dcc23dcaf5c822`. Worker convergence must verify artifact hashes from the bundle rather than infer provenance from package version or service health.
+Fleet depends on public Keryx behavior rather than Keryx database internals. The Python package and worker bundle pin the SDK and daemon/edge artifacts to immutable Keryx commit `b29e66d8966d444e583b0085a81309d52b157d1d`. The bundle also carries an exact `git archive` of the pinned Hermes revision because Hermes intentionally does not publish wheels for this developer/deployment path. The bundle builder rejects dirty source trees before producing artifacts, and worker convergence verifies artifact hashes rather than inferring provenance from package version or service health.
 
 Before enabling Fleet traffic, verify:
 
@@ -127,6 +128,15 @@ The bundled worker reads its service environment from the site-owned `fleet-node
 - `FLEET_CONTROLLER_PEER_IDS`: a comma-separated, non-empty set of exact controller peer IDs used for sender authorization and controller-route observations;
 - `KERYX_NODE_TOKEN`: the worker's secret Keryx node token;
 - `API_SERVER_KEY`: the secret credential for the loopback Hermes Runs API.
+
+Destination-local file secrets use paired, site-owned settings in the same
+owner-only environment file: `FLEET_SECRET_FILE_<NAME>` is an absolute source
+path and `FLEET_SECRET_FILE_<NAME>_DESTINATION` is one plain filename under the
+execution-owned Hermes profile. The Recipe and execution package refer only to
+`secret://worker/file/<NAME>`; source paths and bytes never cross Fleet or
+Keryx. Fleet resolves and copies a regular, same-UID, `0600`, single-link file
+only after destination admission, and removes the copy with the execution
+profile. The installer preserves these site-owned mappings across convergence.
 
 Observation publishing is optional. Local publishing requires the atomic set `FLEET_OBSERVATION_SOCKET`, `NODESCALE_NETWORK_ID`, and `NODESCALE_DEVICE_ID`. Remote publishing instead requires `FLEET_REMOTE_OBSERVATION_ENDPOINT`, `FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID`, `HERMES_KERYX_REGISTRY_CA_CERT`, `NODESCALE_NETWORK_ID`, and `NODESCALE_DEVICE_ID`. The remote endpoint must be `https://`; Fleet reuses Keryx's configured relay/registry CA trust material and never falls back to plaintext. The socket must match the Rust managed-control unit, and the two IDs must match an active managed projection. Keep the environment file outside Git with mode `0600`; do not place tokens in the unit or inventory.
 

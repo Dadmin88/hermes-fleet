@@ -31,12 +31,15 @@ class _RunsAPI:
                 api.requests.append(
                     ("POST", self.path, self.headers.get("Authorization", ""), body)
                 )
-                if self.path == "/v1/runs":
+                route = self.path
+                if route.startswith("/p/"):
+                    route = "/" + route.split("/", 3)[3]
+                if route == "/v1/runs":
                     if api.post_delay_seconds:
                         time.sleep(api.post_delay_seconds)
                     self._json(202, {"run_id": "run-test", "status": "started"})
                     return
-                if self.path == "/v1/runs/run-test/stop":
+                if route == "/v1/runs/run-test/stop":
                     if api.stop_delay_seconds:
                         time.sleep(api.stop_delay_seconds)
                     self._json(200, {"run_id": "run-test", "status": "stopping"})
@@ -48,10 +51,13 @@ class _RunsAPI:
                 api.requests.append(
                     ("GET", self.path, self.headers.get("Authorization", ""), None)
                 )
-                if self.path == "/health":
+                route = self.path
+                if route.startswith("/p/"):
+                    route = "/" + route.split("/", 3)[3]
+                if route == "/health":
                     self._json(200, {"status": "ok"})
                     return
-                if self.path == "/v1/capabilities":
+                if route == "/v1/capabilities":
                     self._json(
                         200,
                         {
@@ -64,7 +70,7 @@ class _RunsAPI:
                         },
                     )
                     return
-                if self.path != "/v1/runs/run-test":
+                if route == "/v1/runs/missing-run":
                     self._json(404, {"error": {"message": "not found"}})
                     return
                 status = (
@@ -117,6 +123,52 @@ def test_hermes_runs_client_returns_authenticated_terminal_text() -> None:
         {"input": "Inspect the repo."},
     )
     assert all(request[2] == "Bearer secret-token-for-test" for request in api.requests)
+
+
+def test_hermes_runs_client_scopes_requests_to_validated_profile_prefix() -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    with api.serve() as endpoint:
+        client = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="secret-token-for-test",
+            profile="fleet-exec-abc123",
+            poll_interval_seconds=0.001,
+        )
+        client.run(prompt="Inspect the exact package.", timeout_seconds=1)
+
+    assert [path for _method, path, _auth, _body in api.requests] == [
+        "/p/fleet-exec-abc123/v1/runs",
+        "/p/fleet-exec-abc123/v1/runs/run-test",
+    ]
+
+
+def test_hermes_runs_client_inspects_completed_result_without_mutation() -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    api = _RunsAPI([{"status": "completed", "output": "FX8_OK"}])
+    with api.serve() as endpoint:
+        result = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="secret-token-for-test",
+        ).inspect("run-test")
+
+    assert result.status == "completed"
+    assert result.text == "FX8_OK"
+    assert [request[0] for request in api.requests] == ["GET"]
+
+
+@pytest.mark.parametrize("profile", ["../default", "bad/name", " bad", ""])
+def test_hermes_runs_client_rejects_unsafe_profile(profile: str) -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    with pytest.raises(ValueError, match="profile"):
+        HermesRunsClient(
+            endpoint="http://127.0.0.1:8642",
+            api_key="secret-token-for-test",
+            profile=profile,
+        )
 
 
 def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:

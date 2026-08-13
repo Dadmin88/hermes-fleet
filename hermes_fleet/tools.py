@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, cast
 
+from .agency_snapshot import AgencySource
+from .config import get_fleet_dir
 from .controller import FleetController, FleetOperationResult
 from .controller_runtime import run_controller_action
+from .desktop_api import DesktopApiClient
 from .live_inventory import list_live_nodes
+from .operator import ExactRecipeRequest, OperatorService
+from .recipes import FleetRecipe
 
 TOOLSET = "fleet"
 
@@ -69,6 +75,15 @@ FLEET_RUN_SCHEMA = _schema(
     {
         "name": _NAME,
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
+        "recipe": {"type": "object", "additionalProperties": True},
+        "agency_repository": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "agency_revision": {"type": "string", "minLength": 40, "maxLength": 64},
+        "secret_refs": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 256},
+            "maxItems": 32,
+            "default": [],
+        },
         "deadline_seconds": {
             "type": "integer",
             "minimum": 1,
@@ -76,7 +91,7 @@ FLEET_RUN_SCHEMA = _schema(
             "default": 120,
         },
     },
-    ("name", "prompt"),
+    ("name", "prompt", "recipe", "agency_repository", "agency_revision"),
 )
 FLEET_GET_TASK_SCHEMA = _schema(
     "fleet_get_task",
@@ -232,14 +247,36 @@ async def fleet_run(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
         values = _arguments(args)
         name = values["name"]
         prompt = values["prompt"]
+        recipe = values["recipe"]
+        agency_repository = values["agency_repository"]
+        agency_revision = values["agency_revision"]
+        secret_refs = values.get("secret_refs", [])
         deadline = values.get("deadline_seconds", 120)
 
         async def action(node, config):
-            return await FleetController(
-                keryx=cast(Any, node), config=config
-            ).run_hermes(name, prompt, deadline_seconds=deadline)
+            socket_value = os.environ.get("FLEET_MANAGED_PROJECTION_SOCKET")
+            socket_path = (
+                Path(socket_value).expanduser()
+                if socket_value
+                else get_fleet_dir() / "managed-projection.sock"
+            )
+            operator = OperatorService(
+                state=DesktopApiClient(socket_path=socket_path),
+                config=config,
+                keryx=cast(Any, node),
+            )
+            return await operator.run_exact(
+                ExactRecipeRequest(
+                    target=name,
+                    prompt=prompt,
+                    recipe=FleetRecipe.from_dict(recipe),
+                    agency_source=AgencySource(agency_repository, agency_revision),
+                    secret_refs=tuple(secret_refs),
+                    deadline_seconds=deadline,
+                )
+            )
 
-        return _success(_operation_data(await _run_action(action)))
+        return _success(asdict(await _run_action(action)))
     except (KeyError, TypeError, ValueError):
         return _failure("INVALID_REQUEST", "Fleet run request is invalid.")
     except Exception:

@@ -13,7 +13,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/state/hermes-fleet
+ReadWritePaths=%h/.local/state/hermes-fleet %h/.hermes/profiles/fleet-execution
 
 [Install]
 WantedBy=default.target

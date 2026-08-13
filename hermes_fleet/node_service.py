@@ -6,6 +6,8 @@ import argparse
 import asyncio
 import logging
 import os
+import platform
+import re
 import signal
 import time
 from collections.abc import Callable, Mapping
@@ -13,18 +15,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-import grpc
-from keryx.task import TaskResultUnavailableError
-
 from ._paths import is_concrete_path
-from .config import get_fleet_dir, load_fleet_config
+from .backend_capabilities import BackendCapabilities
+from .config import get_fleet_dir, get_hermes_home, load_fleet_config
+from .destination_recipe_execution import DestinationRecipeExecutor
+from .execution_control import ExecutionControlClient
 from .fleet_node import FleetNodeWorker
 from .hermes_runs import HermesRunsClient
+from .host_profile_capabilities import host_profile_capabilities
 from .models import FleetDefaults, NodeConfig, _require_exact_type
 from .observation import ObservationClient, build_observation
 from .profile_inventory import scan_profile_distributions
+from .profile_runtime import DestinationSecretResolver, ProfileHermesRuntime
 from .remote_observation import RemoteObservationConfig, RemoteObservationPublisher
-from .run_binding import RunBindingStore
 from .selection import select_nodes
 
 logger = logging.getLogger(__name__)
@@ -38,8 +41,6 @@ class _Node(Protocol):
     def on_task(self, handler: object) -> None: ...
 
     async def list_peers(self) -> list[dict[str, Any]]: ...
-
-    def task_handle(self, task_id: str) -> Any: ...
 
     async def start_registration(self, *, ttl_seconds: int) -> dict[str, object]: ...
 
@@ -69,6 +70,7 @@ class NodeRuntimeConfig:
     hermes_endpoint: str
     hermes_api_key: str = field(repr=False)
     binding_path: Path
+    profiles_root: Path
     keryx_node_token: str = field(repr=False)
     registration_ttl_seconds: int = 300
     advertise_observation_publish: bool = False
@@ -79,6 +81,7 @@ class NodeRuntimeConfig:
     managed_network_id: str | None = None
     managed_device_id: str | None = None
     observation_interval_seconds: int = 30
+    file_secret_sources: tuple[tuple[str, Path, str], ...] = ()
 
     def __post_init__(self) -> None:
         _require_exact_type(self.target, NodeConfig, "target must be a NodeConfig")
@@ -96,6 +99,11 @@ class NodeRuntimeConfig:
             or not self.binding_path.is_absolute()
         ):
             raise ValueError("binding_path must be an absolute Path")
+        if (
+            not is_concrete_path(self.profiles_root)
+            or not self.profiles_root.is_absolute()
+        ):
+            raise ValueError("profiles_root must be an absolute Path")
         if type(self.keryx_node_token) is not str or not self.keryx_node_token:
             raise ValueError("keryx_node_token must be nonempty")
         if (
@@ -162,6 +170,22 @@ class NodeRuntimeConfig:
             or self.observation_interval_seconds > 3_600
         ):
             raise ValueError("observation_interval_seconds must be between 5 and 3600")
+        if type(self.file_secret_sources) is not tuple:
+            raise ValueError("file secret sources must be a tuple")
+        references: set[str] = set()
+        for item in self.file_secret_sources:
+            if (
+                type(item) is not tuple
+                or len(item) != 3
+                or type(item[0]) is not str
+                or not isinstance(item[1], Path)
+                or not item[1].is_absolute()
+                or type(item[2]) is not str
+            ):
+                raise ValueError("file secret source is invalid")
+            if item[0] in references:
+                raise ValueError("file secret references must be unique")
+            references.add(item[0])
 
 
 _KERYX_BASELINE_PROTOCOL_FEATURES = (
@@ -209,44 +233,76 @@ async def _keryx_signals(
     return controller_routable, True
 
 
-_INDETERMINATE_GRACE_MS = 300_000
-_TERMINAL_TASK_STATES = frozenset({"completed", "failed", "canceled", "rejected"})
-
-
-async def _reconcile_indeterminate_bindings(
-    bindings: RunBindingStore,
-    node: _Node,
-    hermes: Any,
+def _build_recipe_executor(
+    runtime: NodeRuntimeConfig,
     *,
-    now_ms: int | None = None,
-) -> None:
-    """Resolve only uncertainty disproven by task and exact-run authority."""
-    current_ms = int(time.time() * 1_000) if now_ms is None else now_ms
-    for binding, updated_at_ms in bindings.indeterminate_bindings():
-        try:
-            handle = node.task_handle(binding.task_id)
-            try:
-                task = await handle.refresh()
-            except TaskResultUnavailableError:
-                task = handle
-        except (OSError, RuntimeError, ValueError, KeyError, grpc.RpcError):
-            continue
-        task_state = getattr(getattr(task, "status", None), "value", None)
-        if task_state not in _TERMINAL_TASK_STATES:
-            continue
-        if binding.run_id is not None:
-            try:
-                run_state = await asyncio.to_thread(hermes.status, binding.run_id)
-            except (OSError, RuntimeError, ValueError):
-                continue
-            if run_state not in {"terminal", "missing"}:
-                continue
-        elif current_ms - updated_at_ms < _INDETERMINATE_GRACE_MS:
-            continue
-        try:
-            bindings.resolve_indeterminate(binding.task_id)
-        except ValueError:
-            continue
+    execution_control_factory: Callable[..., Any] = ExecutionControlClient,
+    profile_runtime_factory: Callable[..., Any] = ProfileHermesRuntime,
+    secret_resolver_factory: Callable[..., Any] = DestinationSecretResolver,
+    executor_factory: Callable[..., Any] = DestinationRecipeExecutor,
+    hermes_factory: Callable[..., Any] = HermesRunsClient,
+    host_capabilities_factory: Callable[[], Any] | None = None,
+    backend_capabilities: BackendCapabilities | None = None,
+    now_ms: Callable[[], int] | None = None,
+) -> Any | None:
+    """Build destination FX8 authority only for a complete local managed node."""
+    if (
+        runtime.observation_socket is None
+        or runtime.managed_network_id is None
+        or runtime.managed_device_id is None
+    ):
+        return None
+    capabilities = (
+        backend_capabilities
+        if backend_capabilities is not None
+        else (host_capabilities_factory or _live_host_capabilities)()
+    )
+    profile_runtime = profile_runtime_factory(
+        profiles_root=runtime.profiles_root,
+        runs_factory=lambda profile: hermes_factory(
+            endpoint=runtime.hermes_endpoint,
+            api_key=runtime.hermes_api_key,
+            profile=profile,
+        ),
+    )
+    return executor_factory(
+        execution_control=execution_control_factory(
+            socket_path=runtime.observation_socket
+        ),
+        runtime=profile_runtime,
+        secret_resolver=secret_resolver_factory(
+            allowed_references=runtime.target.policy.allowed_secret_references,
+            file_sources={
+                reference: (source, destination_name)
+                for reference, source, destination_name in runtime.file_secret_sources
+            },
+        ),
+        current_policy_digest=lambda: runtime.target.policy.content_hash,
+        current_capabilities_hash=lambda: capabilities.content_hash,
+        now_ms=now_ms or (lambda: int(time.time() * 1_000)),
+    )
+
+
+def _live_host_capabilities() -> BackendCapabilities:
+    logical_cpus = os.cpu_count()
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        physical_pages = os.sysconf("SC_PHYS_PAGES")
+    except (OSError, ValueError):
+        page_size = physical_pages = 0
+    if type(logical_cpus) is not int or logical_cpus < 1:
+        raise RuntimeError("host logical CPU capacity is unavailable")
+    if type(page_size) is not int or type(physical_pages) is not int:
+        raise RuntimeError("host memory capacity is unavailable")
+    memory_bytes = page_size * physical_pages
+    if memory_bytes < 1:
+        raise RuntimeError("host memory capacity is unavailable")
+    return host_profile_capabilities(
+        logical_cpus=logical_cpus,
+        memory_bytes=memory_bytes,
+        operating_system=platform.system().lower(),
+        architecture=platform.machine().lower(),
+    )
 
 
 async def run_node_service(
@@ -260,6 +316,7 @@ async def run_node_service(
     remote_observation_factory: Callable[..., _Observation] = (
         RemoteObservationPublisher
     ),
+    recipe_executor_factory: Callable[[NodeRuntimeConfig], Any | None] | None = None,
 ) -> None:
     """Run one registered Keryx worker until shutdown or worker failure."""
     if type(runtime) is not NodeRuntimeConfig:
@@ -328,12 +385,16 @@ async def run_node_service(
             if not capacity_updates.full():
                 capacity_updates.put_nowait(None)
 
-        bindings = RunBindingStore(runtime.binding_path)
+        backend_capabilities = _live_host_capabilities()
+        recipe_executor = (
+            _build_recipe_executor(runtime, backend_capabilities=backend_capabilities)
+            if recipe_executor_factory is None
+            else recipe_executor_factory(runtime)
+        )
         worker = FleetNodeWorker(
             target=runtime.target,
             defaults=runtime.defaults,
             hermes=hermes,
-            bindings=bindings,
             controller_peer_ids=runtime.controller_peer_ids,
             advertised_operations=tuple(
                 operation for operation, _description in expected_specs
@@ -343,10 +404,18 @@ async def run_node_service(
                 if runtime.observation_socket is not None and observer is not None
                 else None
             ),
+            admission_generation_inspector=(
+                observer.admission_generation if observer is not None else None
+            ),
+            managed_network_id=runtime.managed_network_id,
+            managed_device_id=runtime.managed_device_id,
             capacity_observer=capacity_observer if observer is not None else None,
+            recipe_executor=recipe_executor,
+            backend_capabilities=(
+                backend_capabilities if recipe_executor is not None else None
+            ),
         )
         worker.bind(node)
-        await _reconcile_indeterminate_bindings(bindings, node, hermes)
         registration = await node.start_registration(
             ttl_seconds=runtime.registration_ttl_seconds
         )
@@ -385,7 +454,6 @@ async def run_node_service(
                     runtime.controller_peer_ids,
                     hermes,
                     worker,
-                    bindings,
                     capacity_updates,
                     shutdown,
                     runtime.observation_interval_seconds,
@@ -511,7 +579,6 @@ async def _observation_loop(
     controller_peer_ids: tuple[str, ...],
     hermes: Any,
     worker: _ObservedWorker,
-    bindings: RunBindingStore,
     capacity_updates: asyncio.Queue[None],
     shutdown: asyncio.Event,
     interval_seconds: float,
@@ -528,7 +595,7 @@ async def _observation_loop(
         admission_generation = await _admission_generation(observer)
         if admission_generation is None:
             continue
-        await _reconcile_indeterminate_bindings(bindings, node, hermes)
+
         try:
             health = await asyncio.to_thread(hermes.health)
         except (OSError, RuntimeError, ValueError) as error:
@@ -657,6 +724,7 @@ def _runtime_from_args(
         remote_observation_ca_cert_path = Path(
             environment["HERMES_KERYX_REGISTRY_CA_CERT"]
         )
+    file_secret_sources = _file_secret_sources(environment)
     return NodeRuntimeConfig(
         target=selected[0],
         defaults=config.defaults,
@@ -664,6 +732,7 @@ def _runtime_from_args(
         hermes_endpoint=args.hermes_endpoint,
         hermes_api_key=api_key,
         binding_path=binding_path,
+        profiles_root=get_hermes_home() / "profiles",
         keryx_node_token=node_token,
         registration_ttl_seconds=args.registration_ttl,
         advertise_observation_publish=advertise_observation_publish,
@@ -674,7 +743,47 @@ def _runtime_from_args(
         managed_network_id=managed_network_id,
         managed_device_id=managed_device_id,
         observation_interval_seconds=args.observation_interval,
+        file_secret_sources=file_secret_sources,
     )
+
+
+def _file_secret_sources(
+    environment: Mapping[str, str],
+) -> tuple[tuple[str, Path, str], ...]:
+    prefix = "FLEET_SECRET_FILE_"
+    suffix = "_DESTINATION"
+    result: list[tuple[str, Path, str]] = []
+    for key in sorted(environment):
+        if not key.startswith(prefix) or key.endswith(suffix):
+            continue
+        name = key[len(prefix) :]
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", name) is None:
+            raise ValueError("file secret source name is invalid")
+        source_text = environment[key]
+        destination_name = environment.get(key + suffix, "")
+        source = Path(source_text).expanduser()
+        if (
+            not source_text
+            or not source.is_absolute()
+            or ".." in source.parts
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", destination_name)
+            is None
+        ):
+            raise ValueError("file secret source is invalid")
+        result.append((f"secret://worker/file/{name}", source, destination_name))
+    configured_destinations = {
+        key[: -len(suffix)]
+        for key in environment
+        if key.startswith(prefix) and key.endswith(suffix)
+    }
+    configured_sources = {
+        key
+        for key in environment
+        if key.startswith(prefix) and not key.endswith(suffix)
+    }
+    if configured_destinations != configured_sources:
+        raise ValueError("file secret source is invalid")
+    return tuple(result)
 
 
 def _build_card(include_hermes_run: bool) -> object:

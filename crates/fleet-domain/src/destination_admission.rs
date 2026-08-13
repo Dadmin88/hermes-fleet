@@ -4,6 +4,30 @@ use crate::{ExecutionInstance, ManagedNodeIdentity, NodeReadiness};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AuthorizationProof {
+    pub authenticated_sender: String,
+    pub requester: String,
+    pub operation: String,
+    pub recipe_hash: String,
+    pub policy_digest: String,
+    pub deadline_ms: u64,
+    pub secret_refs_digest: String,
+}
+
+impl AuthorizationProof {
+    fn is_valid(&self) -> bool {
+        valid_identifier(&self.authenticated_sender)
+            && valid_identifier(&self.requester)
+            && self.operation == "fleet.hermes.run"
+            && self.deadline_ms > 0
+            && valid_hash(&self.recipe_hash)
+            && valid_hash(&self.policy_digest)
+            && valid_hash(&self.secret_refs_digest)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DestinationAdmissionRequest {
     pub instance_id: String,
     pub idempotency_key: String,
@@ -12,6 +36,7 @@ pub struct DestinationAdmissionRequest {
     pub target: ManagedNodeIdentity,
     pub operation: String,
     pub deadline_ms: u64,
+    pub authorization: AuthorizationProof,
 }
 
 impl DestinationAdmissionRequest {
@@ -29,7 +54,7 @@ pub struct DestinationAdmissionContext {
     pub current_target: ManagedNodeIdentity,
     pub managed_active: bool,
     pub authenticated_keryx_binding: bool,
-    pub operation_authorized: bool,
+    pub current_policy_digest: String,
     pub readiness: NodeReadiness,
     pub available_worker_slots: u32,
     pub capabilities_hash: String,
@@ -73,6 +98,7 @@ pub fn admit_destination(
     }
     if context.evaluated_at_ms == 0
         || !valid_identity(&context.current_target)
+        || !valid_hash(&context.current_policy_digest)
         || !valid_hash(&context.capabilities_hash)
         || context.readiness.fresh != context.readiness.observation_age_ms.is_some()
     {
@@ -90,7 +116,12 @@ pub fn admit_destination(
     if !context.authenticated_keryx_binding {
         return Err(DestinationAdmissionStatus::BindingUnavailable);
     }
-    if !context.operation_authorized {
+    if request.authorization.authenticated_sender != request.authorization.requester
+        || request.authorization.operation != request.operation
+        || request.authorization.recipe_hash != request.recipe_hash
+        || request.authorization.deadline_ms != request.deadline_ms
+        || request.authorization.policy_digest != context.current_policy_digest
+    {
         return Err(DestinationAdmissionStatus::PolicyDenied);
     }
     if !context.readiness.fresh {
@@ -124,6 +155,7 @@ fn valid_request(request: &DestinationAdmissionRequest) -> bool {
         && valid_hash(&request.recipe_hash)
         && valid_hash(&request.capabilities_hash)
         && valid_identity(&request.target)
+        && request.authorization.is_valid()
 }
 
 fn valid_identity(identity: &ManagedNodeIdentity) -> bool {

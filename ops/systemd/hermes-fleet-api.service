@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/hermes-fleet/hermes-api.env
-ExecStart=%h/.local/bin/hermes -p admin gateway run
+ExecStart=%h/.local/share/hermes-fleet/venv/bin/hermes -p fleet-worker gateway run
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

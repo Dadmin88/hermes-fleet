@@ -72,6 +72,12 @@ class ExactRunRequest(BaseModel):
     target: str = Field(min_length=1, max_length=512)
     prompt: str = Field(min_length=1, max_length=65_536)
     deadline_seconds: int = Field(alias="deadlineSeconds", ge=1, le=900)
+    recipe: dict[str, object]
+    agency_repository: str = Field(
+        alias="agencyRepository", min_length=1, max_length=2048
+    )
+    agency_revision: str = Field(alias="agencyRevision", min_length=40, max_length=64)
+    secret_refs: list[str] = Field(alias="secretRefs", max_length=32)
 
 
 async def open_operator_context():
@@ -392,11 +398,20 @@ async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
     context = None
     try:
         context = await open_operator_context()
-        result = await context.operator.submit_exact(
-            request.target,
-            request.prompt,
+        operator_module = importlib.import_module("hermes_fleet.operator")
+        recipe_module = importlib.import_module("hermes_fleet.recipes")
+        agency_module = importlib.import_module("hermes_fleet.agency_snapshot")
+        exact_request = operator_module.ExactRecipeRequest(
+            target=request.target,
+            prompt=request.prompt,
+            recipe=recipe_module.FleetRecipe.from_dict(request.recipe),
+            agency_source=agency_module.AgencySource(
+                request.agency_repository, request.agency_revision
+            ),
+            secret_refs=tuple(request.secret_refs),
             deadline_seconds=request.deadline_seconds,
         )
+        result = await context.operator.submit_exact(exact_request)
         response = _run_document(result, submission_stages_observed=True)
         return response
     except Exception as error:

@@ -34,6 +34,7 @@ use fleet_domain::{
     ApplyOutcome, DestinationAdmissionContext, DestinationAdmissionRequest, ExecutionInstance,
     ExecutionInstancePhase, FleetOperation, Generation, ManagedNodeIdentity, ManagedNodeState,
     ManagedOperation, NodeObservation, ProjectionDocument, ReadinessPolicy, admit_destination,
+    destination_admission::AuthorizationProof,
     workflow::{WorkflowDocument, reject_duplicate_json_members},
 };
 use fleet_state::{
@@ -446,7 +447,7 @@ enum Request {
     WorkflowUpdate(WorkflowUpdateRequest),
     WorkflowList(WorkflowListRequest),
     WorkflowDelete(WorkflowDeleteRequest),
-    ExecutionReserveAdmit(ExecutionReserveAdmitRequest),
+    ExecutionReserveAdmit(Box<ExecutionReserveAdmitRequest>),
     ExecutionGet(ExecutionGetRequest),
     ExecutionTransition(ExecutionTransitionRequest),
 }
@@ -646,7 +647,8 @@ struct ExecutionReserveAdmitRequest {
     kind: ExecutionReserveAdmitKind,
     instance: ExecutionInstance,
     operation: String,
-    operation_authorized: bool,
+    authorization: AuthorizationProof,
+    current_policy_digest: String,
     current_capabilities_hash: String,
     deadline_ms: u64,
 }
@@ -1287,12 +1289,13 @@ fn dispatch_result(
                     target: request.instance.target.clone(),
                     operation: request.operation,
                     deadline_ms: request.deadline_ms,
+                    authorization: request.authorization,
                 },
                 &DestinationAdmissionContext {
                     current_target: current_identity,
                     managed_active: current.managed_state == ManagedNodeState::Active,
                     authenticated_keryx_binding: authenticated_binding,
-                    operation_authorized: request.operation_authorized,
+                    current_policy_digest: request.current_policy_digest,
                     readiness: current.readiness,
                     available_worker_slots: current.available_worker_slots.unwrap_or_default(),
                     capabilities_hash: request.current_capabilities_hash,

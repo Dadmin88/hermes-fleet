@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import TypeVar, cast
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_SECRET_REFERENCE = re.compile(r"^secret://worker/(env|file)/([A-Z][A-Z0-9_]{0,127})$")
+_RESERVED_SECRET_ENV = frozenset(
+    {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "HERMES_HOME", "PYTHONPATH"}
+)
 _PEER_ID_LIMIT = 256
 _OPERATIONS = frozenset(
     {"fleet.health", "fleet.inventory", "fleet.message", "fleet.hermes.run"}
@@ -73,6 +79,7 @@ class NodePolicy(FleetDefaults):
     """Default-deny operation and resource limits for one configured Keryx peer."""
 
     allowed_operations: tuple[str, ...] = ()
+    allowed_secret_references: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         super(NodePolicy, self).__post_init__()
@@ -84,6 +91,39 @@ class NodePolicy(FleetDefaults):
         if any(operation not in _OPERATIONS for operation in normalized):
             raise ValueError("allowed_operations contains an unsupported operation")
         object.__setattr__(self, "allowed_operations", normalized)
+        if type(self.allowed_secret_references) not in (list, tuple) or not all(
+            type(reference) is str for reference in self.allowed_secret_references
+        ):
+            raise ValueError(
+                "allowed_secret_references must be a list or tuple of strings"
+            )
+        references = tuple(sorted(set(self.allowed_secret_references)))
+        if any(
+            (match := _SECRET_REFERENCE.fullmatch(reference)) is None
+            or (match.group(1) == "env" and match.group(2) in _RESERVED_SECRET_ENV)
+            for reference in references
+        ):
+            raise ValueError("allowed_secret_references contains an invalid reference")
+        object.__setattr__(self, "allowed_secret_references", references)
+
+    @property
+    def content_hash(self) -> str:
+        """Canonical semantic identity for destination-verifiable authority."""
+        payload = json.dumps(
+            {
+                "allowed_operations": list(self.allowed_operations),
+                "allowed_secret_references": list(self.allowed_secret_references),
+                "max_deadline_seconds": self.max_deadline_seconds,
+                "max_export_paths": self.max_export_paths,
+                "max_payload_bytes": self.max_payload_bytes,
+                "max_prompt_chars": self.max_prompt_chars,
+                "schema": "fleet.node-policy.v1",
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

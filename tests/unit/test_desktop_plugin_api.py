@@ -7,6 +7,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
@@ -23,6 +24,29 @@ def _load_api():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _exact_run_request(module):
+    return module.ExactRunRequest(
+        target="fleet-node-" + "a" * 64,
+        prompt="Report current status.",
+        deadlineSeconds=120,
+        recipe={
+            "schema": "fleet.recipe.v1",
+            "agent": {
+                "kind": "agency_profile",
+                "name": "acceptance",
+                "version": "1.0.0",
+            },
+            "environment": {"os": ["linux"], "architecture": ["x86_64"]},
+            "resources": {"cpu_millis": 1000, "memory_bytes": 1000},
+            "security": {"isolation": "process", "network": "provider"},
+            "extensions": {},
+        },
+        agencyRepository="https://example.invalid/agency.git",
+        agencyRevision="a" * 40,
+        secretRefs=[],
+    )
 
 
 def test_observation_config_reads_strict_profile_file(monkeypatch, tmp_path) -> None:
@@ -318,7 +342,7 @@ def test_exact_run_route_uses_operator_service_and_returns_public_timeline(
     monkeypatch,
 ) -> None:
     module = _load_api()
-    calls: list[tuple[str, str, int]] = []
+    calls: list[Any] = []
 
     class Result:
         task_id = "task-example"
@@ -328,10 +352,8 @@ def test_exact_run_route_uses_operator_service_and_returns_public_timeline(
         error_category = None
 
     class Operator:
-        async def submit_exact(
-            self, target: str, prompt: str, *, deadline_seconds: int
-        ):
-            calls.append((target, prompt, deadline_seconds))
+        async def submit_exact(self, request):
+            calls.append(request)
             return Result()
 
     class Context:
@@ -344,18 +366,14 @@ def test_exact_run_route_uses_operator_service_and_returns_public_timeline(
         return Context()
 
     monkeypatch.setattr(module, "open_operator_context", open_context)
-    request = module.ExactRunRequest(
-        target="fleet-node-" + "a" * 64,
-        prompt="Report current status.",
-        deadlineSeconds=120,
-    )
+    request = _exact_run_request(module)
 
     response = asyncio.run(module.submit_exact_run(request))
 
-    assert calls == [
-        ("fleet-node-" + "a" * 64, "Report current status.", 120),
-        ("closed", "", 0),
-    ]
+    assert calls[0].target == "fleet-node-" + "a" * 64
+    assert calls[0].recipe.agent.name == "acceptance"
+    assert calls[0].agency_source.revision == "a" * 40
+    assert calls[1] == ("closed", "", 0)
     assert response == {
         "schema": "fleet.desktop-run.v1",
         "taskId": "task-example",
@@ -456,11 +474,7 @@ def test_policy_denial_uses_real_operator_enum_and_http_403(monkeypatch) -> None
         return Context()
 
     monkeypatch.setattr(module, "open_operator_context", open_context)
-    request = module.ExactRunRequest(
-        target="fleet-node-" + "a" * 64,
-        prompt="Report current status.",
-        deadlineSeconds=120,
-    )
+    request = _exact_run_request(module)
 
     with pytest.raises(module.HTTPException) as captured:
         asyncio.run(module.submit_exact_run(request))
@@ -489,11 +503,7 @@ def test_close_failure_does_not_mask_policy_denial(monkeypatch) -> None:
         return Context()
 
     monkeypatch.setattr(module, "open_operator_context", open_context)
-    request = module.ExactRunRequest(
-        target="fleet-node-" + "a" * 64,
-        prompt="Report current status.",
-        deadlineSeconds=120,
-    )
+    request = _exact_run_request(module)
 
     with pytest.raises(module.HTTPException) as captured:
         asyncio.run(module.submit_exact_run(request))
@@ -527,11 +537,7 @@ def test_close_failure_does_not_turn_successful_submission_into_retryable_error(
         return Context()
 
     monkeypatch.setattr(module, "open_operator_context", open_context)
-    request = module.ExactRunRequest(
-        target="fleet-node-" + "a" * 64,
-        prompt="Report current status.",
-        deadlineSeconds=120,
-    )
+    request = _exact_run_request(module)
 
     response = asyncio.run(module.submit_exact_run(request))
     assert response["taskId"] == "task-example"

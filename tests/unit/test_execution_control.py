@@ -53,6 +53,18 @@ def instance() -> dict:
     }
 
 
+def authorization() -> dict:
+    return {
+        "authenticated_sender": "requester-1",
+        "requester": "requester-1",
+        "operation": "fleet.hermes.run",
+        "recipe_hash": "sha256:" + "1" * 64,
+        "policy_digest": "sha256:" + "3" * 64,
+        "deadline_ms": 2000,
+        "secret_refs_digest": "sha256:" + "4" * 64,
+    }
+
+
 def test_client_reserves_admits_reads_and_transitions(tmp_path: Path) -> None:
     from hermes_fleet.execution_control import ExecutionControlClient
 
@@ -80,13 +92,16 @@ def test_client_reserves_admits_reads_and_transitions(tmp_path: Path) -> None:
     client = ExecutionControlClient(socket_path=path)
     result = client.reserve_admit(
         instance(),
-        operation_authorized=True,
+        authorization=authorization(),
+        current_policy_digest="sha256:" + "3" * 64,
         current_capabilities_hash="sha256:" + "2" * 64,
         deadline_ms=2000,
     )
     thread.join(2)
     assert result == admitted["result"]
     assert captured[0]["kind"] == "reserve_admit"
+    assert captured[0]["authorization"] == authorization()
+    assert captured[0]["current_policy_digest"] == "sha256:" + "3" * 64
     assert captured[0]["current_capabilities_hash"] == "sha256:" + "2" * 64
 
     captured.clear()
@@ -140,7 +155,8 @@ def test_client_preserves_typed_denial_without_treating_it_as_transport_failure(
     thread = _serve_once(path, response, [])
     result = ExecutionControlClient(socket_path=path).reserve_admit(
         instance(),
-        operation_authorized=True,
+        authorization=authorization(),
+        current_policy_digest="sha256:" + "3" * 64,
         current_capabilities_hash="sha256:" + "2" * 64,
         deadline_ms=2000,
     )
@@ -178,7 +194,8 @@ def test_client_rejects_incomplete_or_extended_admission_decisions(
     with pytest.raises(RuntimeError, match="invalid admission decision"):
         ExecutionControlClient(socket_path=path).reserve_admit(
             instance(),
-            operation_authorized=True,
+            authorization=authorization(),
+            current_policy_digest="sha256:" + "3" * 64,
             current_capabilities_hash="sha256:" + "2" * 64,
             deadline_ms=2000,
         )
@@ -225,7 +242,8 @@ def test_client_rejects_admission_decision_not_bound_to_request(
     with pytest.raises(RuntimeError, match="invalid admission decision"):
         ExecutionControlClient(socket_path=path).reserve_admit(
             instance(),
-            operation_authorized=True,
+            authorization=authorization(),
+            current_policy_digest="sha256:" + "3" * 64,
             current_capabilities_hash="sha256:" + "2" * 64,
             deadline_ms=2000,
         )
@@ -242,7 +260,8 @@ def test_client_rejects_invalid_inputs_and_backend_documents(tmp_path: Path) -> 
     with pytest.raises(ValueError):
         client.reserve_admit(
             instance(),
-            operation_authorized=True,
+            authorization=authorization(),
+            current_policy_digest="sha256:" + "3" * 64,
             current_capabilities_hash="not-a-hash",
             deadline_ms=2000,
         )

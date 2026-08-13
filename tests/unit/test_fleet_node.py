@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +10,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from hermes_fleet.agency_materialization import ImmutableAgencyBundle
+from hermes_fleet.execution_package import MEDIA_TYPE as EXECUTION_PACKAGE_MEDIA_TYPE
+from hermes_fleet.execution_package import (
+    ExactExecutionPackage,
+    serialize_execution_package,
+)
+from hermes_fleet.recipes import ResolvedRecipe
 
 
 def _payload(operation: str, input_data: dict[str, Any] | None = None) -> str:
@@ -57,6 +65,8 @@ class _IncomingTask:
     metadata: dict[str, str] = field(default_factory=dict)
     completed: list[Any] | None = None
     failed: str | None = None
+    package_payload: bytes | None = None
+    package_media_type: str | None = None
 
     def __post_init__(self) -> None:
         if not self.metadata:
@@ -64,19 +74,91 @@ class _IncomingTask:
 
     @property
     def messages(self) -> list[Any]:
-        return [
-            SimpleNamespace(
-                parts=[
-                    SimpleNamespace(text=self.payload, raw=b"", media_type="text/plain")
-                ]
-            )
-        ]
+        if self.package_payload is not None:
+            return [
+                SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(
+                            text="",
+                            raw=self.package_payload,
+                            media_type=self.package_media_type,
+                        )
+                    ]
+                )
+            ]
+        parts = [SimpleNamespace(text=self.payload, raw=b"", media_type="text/plain")]
+        return [SimpleNamespace(parts=parts)]
 
     async def complete(self, artifacts: list[Any]) -> None:
         self.completed = artifacts
 
     async def fail(self, error: str) -> None:
         self.failed = error
+
+
+def _execution_package(*, admission_generation: int = 9) -> ExactExecutionPackage:
+    agency_payload = b"exact immutable Agency package"
+    recipe = ResolvedRecipe.from_dict(
+        {
+            "schema": "fleet.resolved-recipe.v1",
+            "recipe_hash": "sha256:" + "1" * 64,
+            "agent": {
+                "kind": "agency_profile",
+                "repository": "https://example.invalid/agency.git",
+                "revision": "a" * 40,
+                "name": "acceptance",
+                "version": "1.0.0",
+                "content_digest": "sha256:" + "2" * 64,
+            },
+            "extensions": {},
+        }
+    )
+    return ExactExecutionPackage(
+        execution_id="task-1",
+        idempotency_key="operator-request-1",
+        resolved_recipe=recipe,
+        capabilities_hash="sha256:" + "3" * 64,
+        target={
+            "source": "nodescale",
+            "network_id": "network-1",
+            "device_id": "device-1",
+            "binding_generation": 7,
+            "admission_generation": admission_generation,
+        },
+        authorization={
+            "requester": "peer-controller-1",
+            "operation": "fleet.hermes.run",
+            "resolved_recipe_hash": recipe.content_hash,
+            "policy_digest": "sha256:" + "4" * 64,
+            "deadline_ms": 2_000_000_000_000,
+            "secret_refs": [],
+        },
+        prompt="Return a short text result.",
+        agency_bundle=ImmutableAgencyBundle(
+            resolved=recipe.agent,
+            archive_sha256="sha256:" + hashlib.sha256(agency_payload).hexdigest(),
+            payload=agency_payload,
+        ),
+    )
+
+
+def _packaged_incoming(
+    package: ExactExecutionPackage, *, metadata_overrides: dict[str, str] | None = None
+) -> _IncomingTask:
+    metadata = {
+        "fleet.operation": "fleet.hermes.run",
+        "fleet.execution_package_hash": package.content_hash,
+        "fleet_deadline_ms": str(package.authorization["deadline_ms"]),
+        "skill": "fleet.hermes.run",
+        **(metadata_overrides or {}),
+    }
+    return _IncomingTask(
+        _payload("fleet.hermes.run"),
+        "fleet.hermes.run",
+        metadata=metadata,
+        package_payload=serialize_execution_package(package),
+        package_media_type=EXECUTION_PACKAGE_MEDIA_TYPE,
+    )
 
 
 class _Hermes:
@@ -128,11 +210,15 @@ def _worker(
     now_ms=None,
     advertised_operations=None,
     readiness_inspector=None,
+    admission_generation_inspector=None,
+    managed_network_id=None,
+    managed_device_id=None,
     capacity_observer=None,
+    recipe_executor=None,
+    backend_capabilities=None,
 ):
     from hermes_fleet.fleet_node import FleetNodeWorker
     from hermes_fleet.models import FleetDefaults, NodeConfig, NodePolicy
-    from hermes_fleet.run_binding import RunBindingStore
 
     target = NodeConfig(
         name="vps",
@@ -150,12 +236,16 @@ def _worker(
         target=target,
         defaults=FleetDefaults(),
         hermes=hermes,
-        bindings=RunBindingStore(state_path),
         controller_peer_ids=("peer-controller-1",),
         advertised_operations=advertised_operations,
         now_ms=now_ms or (lambda: 10_000),
         readiness_inspector=readiness_inspector,
+        admission_generation_inspector=admission_generation_inspector,
+        managed_network_id=managed_network_id,
+        managed_device_id=managed_device_id,
         capacity_observer=capacity_observer,
+        recipe_executor=recipe_executor,
+        backend_capabilities=backend_capabilities,
     )
 
 
@@ -164,20 +254,71 @@ def _completed_text(incoming: _IncomingTask) -> str:
     return incoming.completed[0]["parts"][0]["text"]
 
 
-def test_fleet_node_binds_one_keryx_task_to_one_hermes_run(tmp_path) -> None:
-    operation = "fleet.hermes.run"
-    incoming = _IncomingTask(_payload(operation), operation)
+def test_packaged_execution_delegates_to_destination_executor_before_legacy_binding(
+    tmp_path,
+) -> None:
+    package = _execution_package()
+    incoming = _packaged_incoming(package)
+    events: list[str] = []
+
+    class Executor:
+        async def execute(self, *, package, authenticated_sender, incoming):
+            events.append("destination_admission")
+            assert package == _execution_package()
+            assert authenticated_sender == "peer-controller-1"
+            await incoming.complete(
+                [
+                    {
+                        "name": "hermes-result.txt",
+                        "parts": [{"text": "fx8-result", "media_type": "text/plain"}],
+                    }
+                ]
+            )
+
     hermes = _Hermes()
+    worker = _worker(
+        hermes,
+        tmp_path / "bindings.db",
+        admission_generation_inspector=lambda: 9,
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+        recipe_executor=Executor(),
+    )
 
-    asyncio.run(_worker(hermes, tmp_path / "bindings.db").handle_task(incoming))
+    asyncio.run(worker.handle_task(incoming))
 
-    assert hermes.start_calls == [("Return a short text result.", "fleet:vps:task-1")]
-    assert hermes.start_timeouts == [4.0]
-    assert hermes.wait_calls == [("run-vps-1", 4.0)]
-    assert incoming.failed is None
-    assert _completed_text(incoming) == "terminal answer"
-    assert incoming.completed is not None
-    assert incoming.completed[0]["name"] == "hermes-result.txt"
+    assert events == ["destination_admission"]
+    assert _completed_text(incoming) == "fx8-result"
+    assert hermes.start_calls == []
+
+
+def test_packaged_execution_updates_worker_capacity_without_binding_ledger(
+    tmp_path,
+) -> None:
+    incoming = _packaged_incoming(_execution_package())
+    capacity: list[int] = []
+
+    class Executor:
+        async def execute(self, *, package, authenticated_sender, incoming):
+            assert worker.active_worker_count == 1
+            await incoming.complete([])
+
+    async def observe(active: int) -> None:
+        capacity.append(active)
+
+    worker = _worker(
+        _Hermes(),
+        tmp_path / "unused.db",
+        recipe_executor=Executor(),
+        admission_generation_inspector=lambda: 9,
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+        capacity_observer=observe,
+    )
+    asyncio.run(worker.handle_task(incoming))
+
+    assert capacity == [1, 0]
+    assert worker.active_worker_count == 0
 
 
 def test_fleet_node_rejects_policy_allowed_operation_when_not_advertised(
@@ -197,166 +338,6 @@ def test_fleet_node_rejects_policy_allowed_operation_when_not_advertised(
     assert incoming.completed is None
     assert incoming.failed == "Fleet operation is not currently available"
     assert hermes.start_calls == []
-
-
-def test_fleet_node_deadline_cancellation_is_terminal_for_exact_binding(
-    tmp_path,
-) -> None:
-    from hermes_fleet.hermes_runs import HermesRunDeadlineExceeded
-    from hermes_fleet.run_binding import RunBindingStore
-
-    class DeadlineHermes(_Hermes):
-        def wait(self, *, run_id: str, timeout_seconds: float):
-            self.wait_calls.append((run_id, timeout_seconds))
-            raise HermesRunDeadlineExceeded("Hermes run exceeded Fleet deadline")
-
-    operation = "fleet.hermes.run"
-    state_path = tmp_path / "bindings.db"
-    incoming = _IncomingTask(_payload(operation), operation)
-    hermes = DeadlineHermes()
-
-    asyncio.run(_worker(hermes, state_path).handle_task(incoming))
-
-    binding = RunBindingStore(state_path).get("task-1")
-    assert binding is not None
-    assert binding.state == "cancelled"
-    assert binding.run_id == "run-vps-1"
-    assert incoming.completed is None
-    assert incoming.failed == "Fleet Hermes execution exceeded deadline"
-
-    duplicate = _IncomingTask(_payload(operation), operation)
-    asyncio.run(_worker(hermes, state_path).handle_task(duplicate))
-    assert len(hermes.start_calls) == 1
-    assert duplicate.failed == "Fleet Hermes execution was cancelled"
-
-
-def test_fleet_node_replays_completion_when_deadline_transition_loses(
-    tmp_path,
-) -> None:
-    from hermes_fleet.hermes_runs import HermesRunDeadlineExceeded
-    from hermes_fleet.run_binding import RunBindingStore
-
-    state_path = tmp_path / "bindings.db"
-
-    class CompletingDeadlineHermes(_Hermes):
-        def wait(self, *, run_id: str, timeout_seconds: float):
-            self.wait_calls.append((run_id, timeout_seconds))
-            RunBindingStore(state_path).complete("task-1", run_id, "winner")
-            raise HermesRunDeadlineExceeded("Hermes run exceeded Fleet deadline")
-
-    operation = "fleet.hermes.run"
-    incoming = _IncomingTask(_payload(operation), operation)
-
-    asyncio.run(_worker(CompletingDeadlineHermes(), state_path).handle_task(incoming))
-
-    assert incoming.failed is None
-    assert _completed_text(incoming) == "winner"
-    binding = RunBindingStore(state_path).get("task-1")
-    assert binding is not None
-    assert binding.state == "completed"
-
-
-def test_fleet_node_fails_cancelled_when_late_completion_transition_loses(
-    tmp_path,
-) -> None:
-    from hermes_fleet.hermes_runs import HermesRunResult
-    from hermes_fleet.run_binding import RunBindingStore
-
-    state_path = tmp_path / "bindings.db"
-
-    class CancellingResultHermes(_Hermes):
-        def wait(self, *, run_id: str, timeout_seconds: float):
-            self.wait_calls.append((run_id, timeout_seconds))
-            RunBindingStore(state_path).mark_cancelled("task-1", run_id)
-            return HermesRunResult(run_id=run_id, text="late result")
-
-    operation = "fleet.hermes.run"
-    incoming = _IncomingTask(_payload(operation), operation)
-
-    asyncio.run(_worker(CancellingResultHermes(), state_path).handle_task(incoming))
-
-    assert incoming.completed is None
-    assert incoming.failed == "Fleet Hermes execution was cancelled"
-    binding = RunBindingStore(state_path).get("task-1")
-    assert binding is not None
-    assert binding.state == "cancelled"
-
-
-def test_fleet_node_replays_completion_when_indeterminate_transition_loses(
-    tmp_path,
-) -> None:
-    from hermes_fleet.hermes_runs import HermesRunError
-    from hermes_fleet.run_binding import RunBindingStore
-
-    state_path = tmp_path / "bindings.db"
-
-    class CompletingErrorHermes(_Hermes):
-        def wait(self, *, run_id: str, timeout_seconds: float):
-            self.wait_calls.append((run_id, timeout_seconds))
-            RunBindingStore(state_path).complete("task-1", run_id, "winner")
-            raise HermesRunError("observation failed after completion")
-
-    operation = "fleet.hermes.run"
-    incoming = _IncomingTask(_payload(operation), operation)
-
-    asyncio.run(_worker(CompletingErrorHermes(), state_path).handle_task(incoming))
-
-    assert incoming.failed is None
-    assert _completed_text(incoming) == "winner"
-    binding = RunBindingStore(state_path).get("task-1")
-    assert binding is not None
-    assert binding.state == "completed"
-
-
-def test_fleet_node_replays_completed_binding_without_second_run(tmp_path) -> None:
-    operation = "fleet.hermes.run"
-    state_path = tmp_path / "bindings.db"
-    hermes = _Hermes()
-    worker = _worker(hermes, state_path)
-    first = _IncomingTask(_payload(operation), operation)
-    reclaimed = _IncomingTask(_payload(operation), operation)
-
-    asyncio.run(worker.handle_task(first))
-    asyncio.run(worker.handle_task(reclaimed))
-
-    assert len(hermes.start_calls) == 1
-    assert len(hermes.wait_calls) == 1
-    assert _completed_text(reclaimed) == "terminal answer"
-
-
-def test_fleet_node_resumes_known_run_without_second_start(tmp_path) -> None:
-    from hermes_fleet.run_binding import RunBindingStore
-
-    operation = "fleet.hermes.run"
-    state_path = tmp_path / "bindings.db"
-    bindings = RunBindingStore(state_path)
-    bindings.reserve("task-1")
-    bindings.bind_run("task-1", "run-vps-1")
-    hermes = _Hermes()
-    incoming = _IncomingTask(_payload(operation), operation)
-
-    asyncio.run(_worker(hermes, state_path).handle_task(incoming))
-
-    assert hermes.start_calls == []
-    assert hermes.wait_calls == [("run-vps-1", 4.0)]
-    assert _completed_text(incoming) == "terminal answer"
-
-
-def test_fleet_node_fails_closed_on_uncertain_creating_binding(tmp_path) -> None:
-    from hermes_fleet.run_binding import RunBindingStore
-
-    operation = "fleet.hermes.run"
-    state_path = tmp_path / "bindings.db"
-    RunBindingStore(state_path).reserve("task-1")
-    hermes = _Hermes()
-    incoming = _IncomingTask(_payload(operation), operation)
-
-    asyncio.run(_worker(hermes, state_path).handle_task(incoming))
-
-    assert hermes.start_calls == []
-    assert hermes.wait_calls == []
-    assert incoming.failed == "Fleet execution binding is indeterminate"
-    assert RunBindingStore(state_path).get("task-1").state == "indeterminate"
 
 
 def test_fleet_node_message_returns_safe_ack_without_calling_hermes(tmp_path) -> None:
@@ -414,6 +395,33 @@ def test_fleet_node_health_and_inventory_never_start_hermes(tmp_path) -> None:
         "node": {"name": "vps", "peer_id": "peer-vps", "version": "0.1.0"},
         "operation": "fleet.inventory",
         "status": "ok",
+    }
+
+
+def test_inventory_publishes_exact_backend_capabilities_only_when_enabled(
+    tmp_path,
+) -> None:
+    from hermes_fleet.host_profile_capabilities import host_profile_capabilities
+
+    capabilities = host_profile_capabilities(
+        logical_cpus=2,
+        memory_bytes=1_000_000,
+        operating_system="linux",
+        architecture="x86_64",
+    )
+    worker = _worker(
+        _Hermes(),
+        tmp_path / "bindings.db",
+        backend_capabilities=capabilities,
+    )
+    inventory = _IncomingTask(_payload("fleet.inventory"), "fleet.inventory")
+
+    asyncio.run(worker.handle_task(inventory))
+
+    response = json.loads(_completed_text(inventory))
+    assert response["execution_backend"] == {
+        "content_hash": capabilities.content_hash,
+        "document": capabilities.to_dict(),
     }
 
 
@@ -492,6 +500,80 @@ def test_fleet_node_rejects_keryx_metadata_mismatch_without_calling_hermes(
     assert incoming.failed == "Fleet delivery metadata does not match envelope"
 
 
+def test_fleet_node_admits_exact_immutable_execution_package_before_binding(
+    tmp_path,
+) -> None:
+    package = _execution_package()
+    incoming = _packaged_incoming(package)
+    hermes = _Hermes()
+
+    class Executor:
+        def __init__(self) -> None:
+            self.package = None
+
+        async def execute(self, *, package, authenticated_sender, incoming):
+            self.package = package
+            assert authenticated_sender == "peer-controller-1"
+            await incoming.complete([])
+
+    executor = Executor()
+
+    asyncio.run(
+        _worker(
+            hermes,
+            tmp_path / "bindings.db",
+            admission_generation_inspector=lambda: 9,
+            managed_network_id="network-1",
+            managed_device_id="device-1",
+            recipe_executor=executor,
+        ).handle_task(incoming)
+    )
+
+    assert incoming.failed is None
+    assert executor.package == package
+    assert hermes.start_calls == []
+
+
+@pytest.mark.parametrize(
+    "incoming, generation, network_id, device_id",
+    [
+        (
+            _packaged_incoming(
+                _execution_package(),
+                metadata_overrides={
+                    "fleet.execution_package_hash": "sha256:" + "0" * 64
+                },
+            ),
+            9,
+            "network-1",
+            "device-1",
+        ),
+        (_packaged_incoming(_execution_package()), 8, "network-1", "device-1"),
+        (_packaged_incoming(_execution_package()), 9, "network-other", "device-1"),
+        (_packaged_incoming(_execution_package()), 9, "network-1", "device-other"),
+    ],
+)
+def test_fleet_node_rejects_package_authority_mismatch_before_binding(
+    tmp_path, incoming, generation, network_id, device_id
+) -> None:
+    hermes = _Hermes()
+    state_path = tmp_path / "bindings.db"
+
+    asyncio.run(
+        _worker(
+            hermes,
+            state_path,
+            admission_generation_inspector=lambda: generation,
+            managed_network_id=network_id,
+            managed_device_id=device_id,
+        ).handle_task(incoming)
+    )
+
+    assert incoming.failed == "Fleet execution package is not admitted"
+    assert hermes.start_calls == []
+    assert not state_path.exists()
+
+
 @pytest.mark.parametrize("deadline", (None, "not-a-deadline", "9223372036854775808"))
 def test_fleet_node_rejects_missing_or_malformed_absolute_deadline(
     tmp_path,
@@ -519,8 +601,6 @@ def test_fleet_node_rejects_invalid_task_identity_before_binding(
     tmp_path,
     task_id,
 ) -> None:
-    from hermes_fleet.run_binding import RunBindingStore
-
     operation = "fleet.hermes.run"
     state_path = tmp_path / "bindings.db"
     incoming = _IncomingTask(_payload(operation), operation, task_id=task_id)
@@ -530,7 +610,7 @@ def test_fleet_node_rejects_invalid_task_identity_before_binding(
 
     assert hermes.start_calls == []
     assert incoming.failed == "Fleet delivery has invalid Keryx task identity"
-    assert RunBindingStore(state_path).get("task-1") is None
+    assert not state_path.exists()
 
 
 def test_fleet_node_rejects_deferred_export_paths_without_calling_hermes(
@@ -570,54 +650,6 @@ def test_fleet_node_rejects_expired_absolute_deadline_without_calling_hermes(
 
     assert hermes.start_calls == []
     assert incoming.failed == "Fleet task deadline has expired"
-
-
-def test_fleet_node_rechecks_deadline_immediately_before_run_start(tmp_path) -> None:
-    operation = "fleet.hermes.run"
-    incoming = _IncomingTask(_payload(operation), operation)
-    hermes = _Hermes()
-    clock = iter((10_000, 14_000))
-
-    asyncio.run(
-        _worker(
-            hermes,
-            tmp_path / "bindings.db",
-            now_ms=lambda: next(clock),
-        ).handle_task(incoming)
-    )
-
-    assert hermes.start_calls == []
-    assert incoming.failed == "Fleet Hermes submission is indeterminate"
-
-
-def test_fleet_node_bounds_stop_after_bound_run_deadline(tmp_path) -> None:
-    from hermes_fleet.run_binding import RunBindingStore
-
-    binding_path = tmp_path / "bindings.db"
-    store = RunBindingStore(binding_path)
-    store.reserve("task-bound")
-    store.bind_run("task-bound", "run-bound")
-    operation = "fleet.hermes.run"
-    incoming = _IncomingTask(
-        _payload(operation),
-        operation,
-        task_id="task-bound",
-        metadata=_metadata(operation, fleet_deadline_ms="10020"),
-    )
-    hermes = _Hermes()
-    clock = iter((10_000, 10_021))
-
-    asyncio.run(
-        _worker(
-            hermes,
-            binding_path,
-            now_ms=lambda: next(clock),
-        ).handle_task(incoming)
-    )
-
-    assert incoming.failed == "Fleet task deadline has expired"
-    assert hermes.stop_calls == ["run-bound"]
-    assert hermes.stop_timeouts == [0.25]
 
 
 def test_fleet_node_normalizes_invalid_remote_envelopes(tmp_path) -> None:
@@ -699,89 +731,3 @@ def test_fleet_node_health_and_inventory_add_readiness_when_observation_is_confi
     malformed = _IncomingTask(_payload("fleet.inventory"), "fleet.inventory")
     asyncio.run(malformed_worker.handle_task(malformed))
     assert "readiness" not in json.loads(_completed_text(malformed))
-
-
-def test_restart_capacity_fails_closed_for_unresolved_durable_binding(tmp_path) -> None:
-    from hermes_fleet.run_binding import RunBindingStore
-
-    binding_path = tmp_path / "bindings.db"
-    store = RunBindingStore(binding_path)
-    store.reserve("task-restart")
-    store.bind_run("task-restart", "run-restart")
-    worker = _worker(_Hermes(), binding_path)
-
-    assert worker.active_worker_count == 0
-    assert worker.observed_active_worker_count == 1
-
-    store.complete("task-restart", "run-restart", "done")
-    assert worker.observed_active_worker_count == 0
-
-
-def test_restart_unresolved_binding_blocks_a_distinct_new_execution(tmp_path) -> None:
-    from hermes_fleet.run_binding import RunBindingStore
-
-    binding_path = tmp_path / "bindings.db"
-    store = RunBindingStore(binding_path)
-    store.reserve("task-restart")
-    store.bind_run("task-restart", "run-restart")
-    hermes = _Hermes()
-    incoming = _IncomingTask(
-        _payload("fleet.hermes.run"),
-        "fleet.hermes.run",
-        task_id="task-new",
-    )
-
-    asyncio.run(_worker(hermes, binding_path).handle_task(incoming))
-
-    assert incoming.failed == "Fleet worker has no available execution slot"
-    assert hermes.start_calls == []
-    assert store.get("task-new") is None
-
-
-def test_bound_hermes_runs_are_counted_for_worker_capacity(tmp_path) -> None:
-    class Node:
-        handler = None
-
-        def on_task(self, handler) -> None:
-            self.handler = handler
-
-    class BlockingHermes(_Hermes):
-        def __init__(self) -> None:
-            super().__init__()
-            self.entered = threading.Event()
-            self.release = threading.Event()
-
-        def wait(self, *, run_id: str, timeout_seconds: float):
-            self.wait_calls.append((run_id, timeout_seconds))
-            self.entered.set()
-            assert self.release.wait(1)
-            from hermes_fleet.hermes_runs import HermesRunResult
-
-            return HermesRunResult(run_id=run_id, text="terminal answer")
-
-    hermes = BlockingHermes()
-    capacity = []
-
-    async def observe(active_workers: int) -> None:
-        capacity.append(active_workers)
-
-    worker = _worker(
-        hermes,
-        tmp_path / "bindings.db",
-        capacity_observer=observe,
-    )
-    node = Node()
-    worker.bind(node)
-    incoming = _IncomingTask(_payload("fleet.hermes.run"), "fleet.hermes.run")
-
-    async def exercise() -> None:
-        assert node.handler is not None
-        task = asyncio.create_task(node.handler(incoming))
-        assert await asyncio.to_thread(hermes.entered.wait, 1)
-        assert worker.active_worker_count == 1
-        hermes.release.set()
-        await task
-        assert worker.active_worker_count == 0
-
-    asyncio.run(exercise())
-    assert capacity == [1, 0]

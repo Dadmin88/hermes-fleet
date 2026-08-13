@@ -166,6 +166,18 @@ fn instance() -> Value {
     })
 }
 
+fn authorization(instance: &Value, deadline_ms: u64) -> Value {
+    json!({
+        "authenticated_sender":"peer-controller-1",
+        "requester":"peer-controller-1",
+        "operation":"fleet.hermes.run",
+        "recipe_hash":instance["recipe_hash"],
+        "policy_digest":format!("sha256:{}", "3".repeat(64)),
+        "deadline_ms":deadline_ms,
+        "secret_refs_digest":format!("sha256:{}", "4".repeat(64))
+    })
+}
+
 #[test]
 fn local_control_reserves_admits_transitions_and_restores_exact_instance() {
     let root = private_tempdir();
@@ -181,7 +193,8 @@ fn local_control_reserves_admits_transitions_and_restores_exact_instance() {
             "kind":"reserve_admit",
             "instance":desired,
             "operation":"fleet.hermes.run",
-            "operation_authorized":true,
+            "authorization":authorization(&desired, deadline),
+            "current_policy_digest":format!("sha256:{}", "3".repeat(64)),
             "current_capabilities_hash":format!("sha256:{}", "2".repeat(64)),
             "deadline_ms":deadline
         }),
@@ -198,7 +211,8 @@ fn local_control_reserves_admits_transitions_and_restores_exact_instance() {
             "kind":"reserve_admit",
             "instance":admitted["result"]["instance"],
             "operation":"fleet.hermes.run",
-            "operation_authorized":true,
+            "authorization":authorization(&admitted["result"]["instance"], deadline),
+            "current_policy_digest":format!("sha256:{}", "3".repeat(64)),
             "current_capabilities_hash":format!("sha256:{}", "2".repeat(64)),
             "deadline_ms":deadline
         }),
@@ -237,6 +251,7 @@ fn local_admission_fails_closed_on_stale_generation_policy_and_capacity() {
 
     let mut stale = instance();
     stale["target"]["binding_generation"] = json!(6);
+    let stale_deadline = now_ms() + 60_000;
     let rejected = transact(
         &service.socket,
         json!({
@@ -244,9 +259,10 @@ fn local_admission_fails_closed_on_stale_generation_policy_and_capacity() {
             "kind":"reserve_admit",
             "instance":stale,
             "operation":"fleet.hermes.run",
-            "operation_authorized":true,
+            "authorization":authorization(&stale, stale_deadline),
+            "current_policy_digest":format!("sha256:{}", "3".repeat(64)),
             "current_capabilities_hash":format!("sha256:{}", "2".repeat(64)),
-            "deadline_ms":now_ms()+60_000
+            "deadline_ms":stale_deadline
         }),
     );
     assert_eq!(rejected["result"]["decision"]["status"], "stale_target");
@@ -261,6 +277,7 @@ fn local_admission_fails_closed_on_stale_generation_policy_and_capacity() {
     let mut denied_instance = instance();
     denied_instance["instance_id"] = json!("instance-2");
     denied_instance["idempotency_key"] = json!("request-2");
+    let denied_deadline = now_ms() + 60_000;
     let denied = transact(
         &service.socket,
         json!({
@@ -268,9 +285,10 @@ fn local_admission_fails_closed_on_stale_generation_policy_and_capacity() {
             "kind":"reserve_admit",
             "instance":denied_instance,
             "operation":"fleet.hermes.run",
-            "operation_authorized":false,
+            "authorization":authorization(&denied_instance, denied_deadline),
+            "current_policy_digest":format!("sha256:{}", "0".repeat(64)),
             "current_capabilities_hash":format!("sha256:{}", "2".repeat(64)),
-            "deadline_ms":now_ms()+60_000
+            "deadline_ms":denied_deadline
         }),
     );
     assert_eq!(denied["result"]["decision"]["status"], "policy_denied");
@@ -278,6 +296,7 @@ fn local_admission_fails_closed_on_stale_generation_policy_and_capacity() {
     let mut drifted_instance = instance();
     drifted_instance["instance_id"] = json!("instance-3");
     drifted_instance["idempotency_key"] = json!("request-3");
+    let drifted_deadline = now_ms() + 60_000;
     let drifted = transact(
         &service.socket,
         json!({
@@ -285,9 +304,10 @@ fn local_admission_fails_closed_on_stale_generation_policy_and_capacity() {
             "kind":"reserve_admit",
             "instance":drifted_instance,
             "operation":"fleet.hermes.run",
-            "operation_authorized":true,
+            "authorization":authorization(&drifted_instance, drifted_deadline),
+            "current_policy_digest":format!("sha256:{}", "3".repeat(64)),
             "current_capabilities_hash":format!("sha256:{}", "3".repeat(64)),
-            "deadline_ms":now_ms()+60_000
+            "deadline_ms":drifted_deadline
         }),
     );
     assert_eq!(

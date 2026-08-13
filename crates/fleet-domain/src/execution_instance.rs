@@ -22,26 +22,36 @@ pub enum ExecutionInstancePhase {
         backend_kind: String,
         realization_id: String,
         keryx_task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hermes_run_id: Option<String>,
     },
     Completed {
         backend_kind: String,
         realization_id: String,
         keryx_task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hermes_run_id: Option<String>,
     },
     Failed {
         backend_kind: String,
         realization_id: String,
         keryx_task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hermes_run_id: Option<String>,
     },
     Cancelled {
         backend_kind: String,
         realization_id: String,
         keryx_task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hermes_run_id: Option<String>,
     },
     Indeterminate {
         backend_kind: Option<String>,
         realization_id: Option<String>,
         keryx_task_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hermes_run_id: Option<String>,
         reason: String,
     },
     CleanupPending {
@@ -49,6 +59,8 @@ pub enum ExecutionInstancePhase {
         realization_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keryx_task_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hermes_run_id: Option<String>,
         reason: String,
     },
     Cleaned,
@@ -238,6 +250,18 @@ fn require_matching_provenance(
             return Err(InvalidExecutionInstance);
         }
     }
+    if let Some(from_run) = hermes_run(from) {
+        let Some(to_run) = hermes_run(to) else {
+            return if matches!(to, ExecutionInstancePhase::Cleaned) {
+                Ok(())
+            } else {
+                Err(InvalidExecutionInstance)
+            };
+        };
+        if from_run != to_run {
+            return Err(InvalidExecutionInstance);
+        }
+    }
     Ok(())
 }
 
@@ -299,6 +323,18 @@ fn keryx_task(phase: &ExecutionInstancePhase) -> Option<&str> {
     }
 }
 
+fn hermes_run(phase: &ExecutionInstancePhase) -> Option<&str> {
+    match phase {
+        ExecutionInstancePhase::Running { hermes_run_id, .. }
+        | ExecutionInstancePhase::Completed { hermes_run_id, .. }
+        | ExecutionInstancePhase::Failed { hermes_run_id, .. }
+        | ExecutionInstancePhase::Cancelled { hermes_run_id, .. }
+        | ExecutionInstancePhase::Indeterminate { hermes_run_id, .. }
+        | ExecutionInstancePhase::CleanupPending { hermes_run_id, .. } => hermes_run_id.as_deref(),
+        _ => None,
+    }
+}
+
 fn validate_phase(phase: &ExecutionInstancePhase) -> Result<(), InvalidExecutionInstance> {
     if let Some((backend, realization)) = backend_provenance(phase) {
         validate_identifier(backend)?;
@@ -310,12 +346,16 @@ fn validate_phase(phase: &ExecutionInstancePhase) -> Result<(), InvalidExecution
     if let Some(task_id) = keryx_task(phase) {
         validate_identifier(task_id)?;
     }
+    if let Some(run_id) = hermes_run(phase) {
+        validate_identifier(run_id)?;
+    }
     match phase {
         ExecutionInstancePhase::Indeterminate {
             backend_kind,
             realization_id,
             keryx_task_id,
             reason,
+            ..
         } => {
             if backend_kind.is_some() != realization_id.is_some()
                 || (keryx_task_id.is_some() && backend_kind.is_none())

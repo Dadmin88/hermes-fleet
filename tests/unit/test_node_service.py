@@ -31,6 +31,7 @@ def _runtime(tmp_path):
         hermes_endpoint="http://127.0.0.1:8642",
         hermes_api_key="test-api-key",
         binding_path=tmp_path / "run-bindings.sqlite3",
+        profiles_root=tmp_path / "profiles",
         keryx_node_token="test-node-token",
     )
 
@@ -240,6 +241,115 @@ def test_fleet_node_service_registers_four_operations_and_stops_cleanly(
     assert node.node_token == "test-node-token"
 
 
+def test_destination_recipe_executor_is_built_only_for_managed_local_worker(
+    tmp_path,
+) -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import _build_recipe_executor
+
+    runtime = replace(
+        _runtime(tmp_path),
+        observation_socket=tmp_path / "managed-control.sock",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    created: dict[str, Any] = {}
+
+    class Control:
+        def __init__(self, *, socket_path):
+            created["socket"] = socket_path
+
+    class ProfileRuntime:
+        def __init__(self, *, profiles_root, runs_factory):
+            created["profiles_root"] = profiles_root
+            created["runs"] = runs_factory("fleet-execution")
+
+    class Secrets:
+        def __init__(self, *, allowed_references, file_sources):
+            created["allowed"] = allowed_references
+            created["file_sources"] = file_sources
+
+    class Executor:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    value = _build_recipe_executor(
+        runtime,
+        execution_control_factory=Control,
+        profile_runtime_factory=ProfileRuntime,
+        secret_resolver_factory=Secrets,
+        executor_factory=Executor,
+        hermes_factory=lambda **kwargs: SimpleNamespace(**kwargs),
+        host_capabilities_factory=lambda: SimpleNamespace(
+            content_hash="sha256:" + "3" * 64
+        ),
+        now_ms=lambda: 10_000,
+    )
+
+    assert isinstance(value, Executor)
+    assert created["socket"] == runtime.observation_socket
+    assert created["profiles_root"] == tmp_path / "profiles"
+    assert created["runs"].profile == "fleet-execution"
+    assert created["allowed"] == runtime.target.policy.allowed_secret_references
+    assert created["file_sources"] == {}
+    assert created["current_policy_digest"]() == runtime.target.policy.content_hash
+    assert created["current_capabilities_hash"]() == "sha256:" + "3" * 64
+
+
+def test_destination_recipe_executor_is_unavailable_without_local_managed_control(
+    tmp_path,
+) -> None:
+    from hermes_fleet.node_service import _build_recipe_executor
+
+    assert _build_recipe_executor(_runtime(tmp_path)) is None
+
+
+def test_file_secret_sources_are_destination_local_and_provider_neutral() -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import _file_secret_sources
+
+    values = _file_secret_sources(
+        {
+            "FLEET_SECRET_FILE_HERMES_AUTH": "/srv/hermes-worker/auth.json",
+            "FLEET_SECRET_FILE_HERMES_AUTH_DESTINATION": "auth.json",
+        }
+    )
+
+    assert values == (
+        (
+            "secret://worker/file/HERMES_AUTH",
+            Path("/srv/hermes-worker/auth.json"),
+            "auth.json",
+        ),
+    )
+    assert replace(_runtime(Path("/tmp/fleet-test")), file_secret_sources=values)
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"FLEET_SECRET_FILE_HERMES_AUTH": "relative/auth.json"},
+        {"FLEET_SECRET_FILE_HERMES_AUTH": "/safe/auth.json"},
+        {"FLEET_SECRET_FILE_HERMES_AUTH_DESTINATION": "auth.json"},
+        {
+            "FLEET_SECRET_FILE_bad": "/safe/auth.json",
+            "FLEET_SECRET_FILE_bad_DESTINATION": "auth.json",
+        },
+        {
+            "FLEET_SECRET_FILE_HERMES_AUTH": "/safe/auth.json",
+            "FLEET_SECRET_FILE_HERMES_AUTH_DESTINATION": "../auth.json",
+        },
+    ],
+)
+def test_file_secret_sources_reject_incomplete_or_unsafe_mapping(environment) -> None:
+    from hermes_fleet.node_service import _file_secret_sources
+
+    with pytest.raises(ValueError, match="file secret source"):
+        _file_secret_sources(environment)
+
+
 def test_fleet_node_service_rejects_wrong_local_keryx_identity(tmp_path) -> None:
     from hermes_fleet.node_service import run_node_service
 
@@ -420,6 +530,7 @@ def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
             shutdown=shutdown,
             hermes_factory=lambda **kwargs: _Hermes(healthy=False, **kwargs),
             observation_factory=Observer,
+            recipe_executor_factory=lambda runtime: None,
         )
 
     asyncio.run(exercise())
@@ -633,6 +744,7 @@ def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) ->
             shutdown=shutdown,
             hermes_factory=_Hermes,
             observation_factory=Observer,
+            recipe_executor_factory=lambda runtime: None,
         )
 
     asyncio.run(exercise())
@@ -658,59 +770,6 @@ def test_fleet_node_service_publishes_initial_scheduler_observation(tmp_path) ->
     assert observer.samples[1]["keryx"] == "unavailable"
     assert observer.samples[1]["worker"] == "unavailable"
     assert created_nodes[0].stopped is True
-
-
-def test_node_service_initial_capacity_includes_unresolved_restart_binding(
-    tmp_path,
-) -> None:
-    from dataclasses import replace
-
-    from hermes_fleet.node_service import run_node_service
-    from hermes_fleet.run_binding import RunBindingStore
-
-    runtime = replace(
-        _runtime(tmp_path),
-        observation_socket=tmp_path / "fleet.sock",
-        managed_network_id="network-1",
-        managed_device_id="device-1",
-    )
-    bindings = RunBindingStore(runtime.binding_path)
-    bindings.reserve("task-before-restart")
-    bindings.bind_run("task-before-restart", "run-before-restart")
-    samples: list[dict[str, Any]] = []
-
-    class Observer:
-        def __init__(self, **_kwargs) -> None:
-            pass
-
-        def publish(self, observation: dict[str, Any]) -> str:
-            samples.append(observation)
-            return "recorded"
-
-        def inspect(self) -> dict[str, Any]:
-            return {}
-
-        def admission_generation(self) -> int:
-            return 7
-
-    async def exercise() -> None:
-        shutdown = asyncio.Event()
-        shutdown.set()
-        await run_node_service(
-            runtime,
-            card_factory=_card_factory([]),
-            node_factory=_Node,
-            shutdown=shutdown,
-            hermes_factory=_Hermes,
-            observation_factory=Observer,
-        )
-
-    asyncio.run(exercise())
-
-    assert samples[0]["capacity"] == {
-        "active_workers": 1,
-        "max_workers": 1,
-    }
 
 
 def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
@@ -756,9 +815,6 @@ def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
                 ("peer-controller",),
                 _Hermes(),
                 worker,
-                __import__(
-                    "hermes_fleet.run_binding", fromlist=["RunBindingStore"]
-                ).RunBindingStore(tmp_path / "loop-bindings.sqlite3"),
                 capacity_updates,
                 shutdown,
                 0.01,
