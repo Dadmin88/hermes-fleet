@@ -138,6 +138,19 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
 
 
+def test_hermes_runs_client_classifies_exact_run_without_mutation() -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    api = _RunsAPI([{"status": "running"}, {"status": "completed", "output": "done"}])
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="secret-token-for-test")
+        assert client.status("run-test") == "running"
+        assert client.status("run-test") == "terminal"
+        assert client.status("missing-run") == "missing"
+
+    assert all(method == "GET" for method, _path, _auth, _body in api.requests)
+
+
 def test_hermes_runs_client_health_shares_one_absolute_request_budget(
     monkeypatch,
 ) -> None:

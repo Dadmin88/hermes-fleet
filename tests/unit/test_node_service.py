@@ -71,6 +71,9 @@ class _Node:
             )
         return peers
 
+    def task_handle(self, _task_id: str):
+        raise KeyError("task not found")
+
     def on_task(self, handler) -> None:
         self.handler = handler
 
@@ -384,6 +387,7 @@ def test_remote_observation_uses_existing_node_lifecycle(tmp_path) -> None:
 
     def node_factory(**kwargs):
         node = _Node(**kwargs)
+        node.include_controller = False
         created_nodes.append(node)
         return node
 
@@ -411,9 +415,56 @@ def test_remote_observation_uses_existing_node_lifecycle(tmp_path) -> None:
     assert publisher.config.device_id == "device-1"
     assert len(publisher.samples) == 2
     assert publisher.samples[0]["admission_generation"] == 11
+    assert publisher.samples[0]["network"] == "reachable"
+    assert publisher.samples[0]["keryx"] == "available"
     assert publisher.samples[0]["worker"] == "available"
     assert publisher.samples[1]["worker"] == "unavailable"
     assert publisher.closed is True
+
+
+def test_remote_observation_acquire_failure_publishes_no_fresh_sample(tmp_path) -> None:
+    from dataclasses import replace
+
+    from hermes_fleet.node_service import run_node_service
+
+    runtime = replace(
+        _runtime(tmp_path),
+        remote_observation_endpoint="https://relay.example:50052",
+        remote_observation_target_peer_id="peer-katana",
+        remote_observation_ca_cert_path=tmp_path / "relay-ca.pem",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    samples: list[dict[str, Any]] = []
+
+    class Publisher:
+        def __init__(self, _config) -> None:
+            pass
+
+        def admission_generation(self) -> int:
+            raise RuntimeError("exact controller acquire failed")
+
+        def publish(self, observation: dict[str, Any]) -> str:
+            samples.append(observation)
+            return "published"
+
+        def close(self) -> None:
+            pass
+
+    async def exercise() -> None:
+        shutdown = asyncio.Event()
+        shutdown.set()
+        await run_node_service(
+            runtime,
+            card_factory=_card_factory([]),
+            node_factory=_Node,
+            shutdown=shutdown,
+            hermes_factory=_Hermes,
+            remote_observation_factory=Publisher,
+        )
+
+    asyncio.run(exercise())
+    assert samples == []
 
 
 def test_remote_observation_requires_complete_tls_configuration(tmp_path) -> None:
@@ -586,6 +637,7 @@ def test_node_service_initial_capacity_includes_unresolved_restart_binding(
 
 def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     from hermes_fleet import node_service
 
@@ -626,10 +678,14 @@ def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
                 ("peer-controller",),
                 _Hermes(),
                 worker,
+                __import__(
+                    "hermes_fleet.run_binding", fromlist=["RunBindingStore"]
+                ).RunBindingStore(tmp_path / "loop-bindings.sqlite3"),
                 capacity_updates,
                 shutdown,
                 0.01,
                 True,
+                False,
             )
         )
 

@@ -212,6 +212,22 @@ class HermesRunsClient:
                 raise HermesRunError("Hermes returned an unsupported run status")
             time.sleep(min(self._poll_interval_seconds, remaining))
 
+    def status(self, run_id: str) -> str:
+        """Return a bounded exact-run lifecycle classification without mutation."""
+        if type(run_id) is not str or not run_id:
+            raise ValueError("Hermes run ID must be a nonempty string")
+        status_code, document = self._request_json("GET", f"/v1/runs/{run_id}")
+        if status_code == 404:
+            return "missing"
+        if status_code != 200:
+            raise HermesRunError("Hermes run status is unavailable")
+        state = document.get("status")
+        if state in _ACTIVE_STATES or state == "waiting_for_approval":
+            return "running"
+        if state in {"completed", "failed", "cancelled"}:
+            return "terminal"
+        raise HermesRunError("Hermes returned an unsupported run status")
+
     def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None:
         """Request and confirm cooperative stop for one exact known run."""
         if type(run_id) is not str or not run_id:
