@@ -468,6 +468,39 @@ def test_policy_denial_uses_real_operator_enum_and_http_403(monkeypatch) -> None
     assert captured.value.detail["code"] == "POLICY_DENIED"
 
 
+def test_close_failure_does_not_mask_policy_denial(monkeypatch) -> None:
+    module = _load_api()
+    operator_module = importlib.import_module("hermes_fleet.operator")
+
+    class Operator:
+        async def submit_exact(self, *_args, **_kwargs):
+            raise operator_module.OperatorError(
+                operator_module.OperatorErrorCode.POLICY_DENIED,
+                "Operation is not allowed.",
+            )
+
+    class Context:
+        operator = Operator()
+
+        async def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    async def open_context():
+        return Context()
+
+    monkeypatch.setattr(module, "open_operator_context", open_context)
+    request = module.ExactRunRequest(
+        target="fleet-node-" + "a" * 64,
+        prompt="Report current status.",
+        deadlineSeconds=120,
+    )
+
+    with pytest.raises(module.HTTPException) as captured:
+        asyncio.run(module.submit_exact_run(request))
+    assert captured.value.status_code == 403
+    assert captured.value.detail["code"] == "POLICY_DENIED"
+
+
 def test_close_failure_does_not_turn_successful_submission_into_retryable_error(
     monkeypatch,
 ) -> None:

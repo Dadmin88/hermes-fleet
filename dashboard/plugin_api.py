@@ -390,7 +390,6 @@ async def overview() -> dict[str, Any]:
 async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
     """Submit exact-target Hermes work through the shared operator service."""
     context = None
-    submission_succeeded = False
     try:
         context = await open_operator_context()
         result = await context.operator.submit_exact(
@@ -399,7 +398,6 @@ async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
             deadline_seconds=request.deadline_seconds,
         )
         response = _run_document(result, submission_stages_observed=True)
-        submission_succeeded = True
         return response
     except Exception as error:
         operator_module = importlib.import_module("hermes_fleet.operator")
@@ -421,15 +419,12 @@ async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
         ) from error
     finally:
         if context is not None:
-            if submission_succeeded:
-                try:
-                    await context.close()
-                except Exception:
-                    # The durable task already exists. Preserve its identity so
-                    # the client reattaches instead of retrying submission.
-                    pass
-            else:
+            try:
                 await context.close()
+            except Exception:
+                # Cleanup is secondary to the route's response. Never hide a
+                # durable task identity or a truthful operator error with it.
+                pass
 
 
 @router.get("/tasks/{task_id}")
