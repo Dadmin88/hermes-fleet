@@ -415,7 +415,7 @@ def test_task_route_reattaches_without_resubmission(monkeypatch) -> None:
 
 @pytest.mark.parametrize(
     ("category", "expected"),
-    [("task_failed", "failed"), ("task_indeterminate", "indeterminate")],
+    [("TASK_FAILED", "failed"), ("TASK_INDETERMINATE", "indeterminate")],
 )
 def test_run_document_distinguishes_terminal_failure_from_indeterminate(
     category, expected
@@ -433,6 +433,76 @@ def test_run_document_distinguishes_terminal_failure_from_indeterminate(
 
     assert document["errorCategory"] == category
     assert document["stages"][-1] == {"id": "completion", "state": expected}
+
+
+def test_policy_denial_uses_real_operator_enum_and_http_403(monkeypatch) -> None:
+    module = _load_api()
+    operator_module = importlib.import_module("hermes_fleet.operator")
+
+    class Operator:
+        async def submit_exact(self, *_args, **_kwargs):
+            raise operator_module.OperatorError(
+                operator_module.OperatorErrorCode.POLICY_DENIED,
+                "Operation is not allowed.",
+            )
+
+    class Context:
+        operator = Operator()
+
+        async def close(self) -> None:
+            return None
+
+    async def open_context():
+        return Context()
+
+    monkeypatch.setattr(module, "open_operator_context", open_context)
+    request = module.ExactRunRequest(
+        target="fleet-node-" + "a" * 64,
+        prompt="Report current status.",
+        deadlineSeconds=120,
+    )
+
+    with pytest.raises(module.HTTPException) as captured:
+        asyncio.run(module.submit_exact_run(request))
+    assert captured.value.status_code == 403
+    assert captured.value.detail["code"] == "POLICY_DENIED"
+
+
+def test_close_failure_does_not_turn_successful_submission_into_retryable_error(
+    monkeypatch,
+) -> None:
+    module = _load_api()
+
+    class Result:
+        task_id = "task-example"
+        terminal_state = "submitted"
+        run_id = None
+        result = None
+        error_category = None
+
+    class Operator:
+        async def submit_exact(self, *_args, **_kwargs):
+            return Result()
+
+    class Context:
+        operator = Operator()
+
+        async def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    async def open_context():
+        return Context()
+
+    monkeypatch.setattr(module, "open_operator_context", open_context)
+    request = module.ExactRunRequest(
+        target="fleet-node-" + "a" * 64,
+        prompt="Report current status.",
+        deadlineSeconds=120,
+    )
+
+    response = asyncio.run(module.submit_exact_run(request))
+    assert response["taskId"] == "task-example"
+    assert response["state"] == "submitted"
 
 
 def test_websocket_authorization_delegates_to_hermes_canonical_gate(monkeypatch):

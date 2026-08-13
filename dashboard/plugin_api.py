@@ -100,7 +100,7 @@ def _run_document(
     error_category = _enum_value(getattr(result, "error_category", None))
     if not terminal:
         completion_state = "pending"
-    elif error_category == "task_indeterminate":
+    elif error_category == "TASK_INDETERMINATE":
         completion_state = "indeterminate"
     elif error_category is not None:
         completion_state = "failed"
@@ -390,6 +390,7 @@ async def overview() -> dict[str, Any]:
 async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
     """Submit exact-target Hermes work through the shared operator service."""
     context = None
+    submission_succeeded = False
     try:
         context = await open_operator_context()
         result = await context.operator.submit_exact(
@@ -397,14 +398,16 @@ async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
             request.prompt,
             deadline_seconds=request.deadline_seconds,
         )
-        return _run_document(result, submission_stages_observed=True)
+        response = _run_document(result, submission_stages_observed=True)
+        submission_succeeded = True
+        return response
     except Exception as error:
         operator_module = importlib.import_module("hermes_fleet.operator")
         operator_error = getattr(operator_module, "OperatorError")
         if isinstance(error, operator_error):
             public_error: Any = error
             code = _enum_value(public_error.code)
-            status = 403 if code == "policy_denied" else 409
+            status = 403 if code == "POLICY_DENIED" else 409
             raise HTTPException(
                 status_code=status,
                 detail={"code": code, "message": public_error.public_message},
@@ -418,7 +421,15 @@ async def submit_exact_run(request: ExactRunRequest) -> dict[str, Any]:
         ) from error
     finally:
         if context is not None:
-            await context.close()
+            if submission_succeeded:
+                try:
+                    await context.close()
+                except Exception:
+                    # The durable task already exists. Preserve its identity so
+                    # the client reattaches instead of retrying submission.
+                    pass
+            else:
+                await context.close()
 
 
 @router.get("/tasks/{task_id}")
