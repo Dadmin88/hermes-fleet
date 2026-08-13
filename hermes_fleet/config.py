@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from yaml.resolver import BaseResolver
 
 from ._paths import is_concrete_path
 from .models import FleetDefaults, NodeConfig, NodePolicy
+
+_TARGET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 class FleetConfigError(ValueError):
@@ -58,7 +61,6 @@ class ManagedTargetPolicy:
             ("source", self.source),
             ("network_id", self.network_id),
             ("device_id", self.device_id),
-            ("target_name", self.target_name),
         ):
             if (
                 type(value) is not str
@@ -70,6 +72,13 @@ class ManagedTargetPolicy:
                 )
             ):
                 raise ValueError(f"{label} must be a bounded identity string")
+        if (
+            type(self.target_name) is not str
+            or _TARGET_NAME.fullmatch(self.target_name) is None
+        ):
+            raise ValueError(
+                "target_name must use lowercase letters, digits, and hyphens"
+            )
         if type(self.policy) is not NodePolicy:
             raise ValueError("policy must be a NodePolicy")
 

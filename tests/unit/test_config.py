@@ -212,6 +212,29 @@ managed_targets:
         load_fleet_config(path)
 
 
+def test_schema_v2_rejects_target_name_that_exact_node_envelopes_cannot_use(
+    tmp_path,
+) -> None:
+    from hermes_fleet.config import FleetConfigError, load_fleet_config
+
+    path = tmp_path / "nodes.yaml"
+    path.write_text(
+        """schema_version: 2
+defaults: {}
+nodes: []
+managed_targets:
+  - source: nodescale
+    network_id: network-test
+    device_id: device-a
+    target_name: Not Valid
+    policy: {}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(FleetConfigError, match="target_name"):
+        load_fleet_config(path)
+
+
 @pytest.mark.parametrize(
     "field",
     (
