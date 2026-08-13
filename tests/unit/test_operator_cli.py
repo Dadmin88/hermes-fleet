@@ -28,7 +28,7 @@ IDENTITY = OperatorIdentity(
     network_id="network-test",
     device_id="device-a",
     stable_id=f"fleet-node-{'a' * 64}",
-    display_name="Worker A",
+    display_name="worker-a",
     alias="worker-a",
 )
 READINESS = OperatorReadiness(
