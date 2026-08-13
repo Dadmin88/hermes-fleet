@@ -37,6 +37,20 @@ def test_unresolved_count_fails_closed_for_recoverable_and_unknown_runs(
     assert running.unresolved_count() == 0
 
 
+def test_resolved_indeterminate_binding_no_longer_consumes_capacity(tmp_path) -> None:
+    from hermes_fleet.run_binding import RunBindingStore
+
+    store = RunBindingStore(tmp_path / "bindings.sqlite3")
+    store.reserve("task-1")
+    store.mark_indeterminate("task-1")
+
+    resolved = store.resolve_indeterminate("task-1")
+
+    assert resolved.state == "resolved"
+    assert store.unresolved_count() == 0
+    assert store.resolve_indeterminate("task-1") == resolved
+
+
 def test_run_binding_records_a_known_hermes_run_for_resume(tmp_path) -> None:
     from hermes_fleet.run_binding import RunBindingStore
 

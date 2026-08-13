@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+import grpc
+
 from ._paths import is_concrete_path
 from .config import get_fleet_dir, load_fleet_config
 from .fleet_node import FleetNodeWorker
@@ -35,6 +37,8 @@ class _Node(Protocol):
     def on_task(self, handler: object) -> None: ...
 
     async def list_peers(self) -> list[dict[str, Any]]: ...
+
+    def task_handle(self, task_id: str) -> Any: ...
 
     async def start_registration(self, *, ttl_seconds: int) -> dict[str, object]: ...
 
@@ -194,6 +198,42 @@ async def _keryx_signals(
     return controller_routable, True
 
 
+_INDETERMINATE_GRACE_MS = 300_000
+_TERMINAL_TASK_STATES = frozenset({"completed", "failed", "canceled", "rejected"})
+
+
+async def _reconcile_indeterminate_bindings(
+    bindings: RunBindingStore,
+    node: _Node,
+    hermes: Any,
+    *,
+    now_ms: int | None = None,
+) -> None:
+    """Resolve only uncertainty disproven by task and exact-run authority."""
+    current_ms = int(time.time() * 1_000) if now_ms is None else now_ms
+    for binding, updated_at_ms in bindings.indeterminate_bindings():
+        try:
+            task = await node.task_handle(binding.task_id).refresh()
+            task_state = getattr(getattr(task, "status", None), "value", None)
+        except (OSError, RuntimeError, ValueError, KeyError, grpc.RpcError):
+            continue
+        if task_state not in _TERMINAL_TASK_STATES:
+            continue
+        if binding.run_id is not None:
+            try:
+                run_state = await asyncio.to_thread(hermes.status, binding.run_id)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if run_state not in {"terminal", "missing"}:
+                continue
+        elif current_ms - updated_at_ms < _INDETERMINATE_GRACE_MS:
+            continue
+        try:
+            bindings.resolve_indeterminate(binding.task_id)
+        except ValueError:
+            continue
+
+
 async def run_node_service(
     runtime: NodeRuntimeConfig,
     *,
@@ -270,11 +310,12 @@ async def run_node_service(
             if not capacity_updates.full():
                 capacity_updates.put_nowait(None)
 
+        bindings = RunBindingStore(runtime.binding_path)
         worker = FleetNodeWorker(
             target=runtime.target,
             defaults=runtime.defaults,
             hermes=hermes,
-            bindings=RunBindingStore(runtime.binding_path),
+            bindings=bindings,
             controller_peer_ids=runtime.controller_peer_ids,
             advertised_operations=tuple(
                 operation for operation, _description in expected_specs
@@ -287,6 +328,7 @@ async def run_node_service(
             capacity_observer=capacity_observer if observer is not None else None,
         )
         worker.bind(node)
+        await _reconcile_indeterminate_bindings(bindings, node, hermes)
         registration = await node.start_registration(
             ttl_seconds=runtime.registration_ttl_seconds
         )
@@ -303,9 +345,12 @@ async def run_node_service(
             admission_generation = await _admission_generation(observer)
             if admission_generation is not None:
                 health = await asyncio.to_thread(hermes.health)
-                network_reachable, keryx_available = await _keryx_signals(
-                    node, runtime.controller_peer_ids
-                )
+                if runtime.remote_observation_endpoint is not None:
+                    network_reachable, keryx_available = True, True
+                else:
+                    network_reachable, keryx_available = await _keryx_signals(
+                        node, runtime.controller_peer_ids
+                    )
                 await _publish_observation(
                     observer,
                     health,
@@ -322,10 +367,12 @@ async def run_node_service(
                     runtime.controller_peer_ids,
                     hermes,
                     worker,
+                    bindings,
                     capacity_updates,
                     shutdown,
                     runtime.observation_interval_seconds,
                     include_hermes_run,
+                    runtime.remote_observation_endpoint is not None,
                 ),
                 name="fleet-node-observation",
             )
@@ -446,10 +493,12 @@ async def _observation_loop(
     controller_peer_ids: tuple[str, ...],
     hermes: Any,
     worker: _ObservedWorker,
+    bindings: RunBindingStore,
     capacity_updates: asyncio.Queue[None],
     shutdown: asyncio.Event,
     interval_seconds: float,
     worker_available: bool,
+    remote_observation: bool,
 ) -> None:
     while not shutdown.is_set():
         try:
@@ -461,14 +510,18 @@ async def _observation_loop(
         admission_generation = await _admission_generation(observer)
         if admission_generation is None:
             continue
+        await _reconcile_indeterminate_bindings(bindings, node, hermes)
         try:
             health = await asyncio.to_thread(hermes.health)
         except (OSError, RuntimeError, ValueError) as error:
             logger.warning("fleet-node Hermes observation failed: %s", error)
             health = None
-        network_reachable, keryx_available = await _keryx_signals(
-            node, controller_peer_ids
-        )
+        if remote_observation:
+            network_reachable, keryx_available = True, True
+        else:
+            network_reachable, keryx_available = await _keryx_signals(
+                node, controller_peer_ids
+            )
         await _publish_observation(
             observer,
             health,

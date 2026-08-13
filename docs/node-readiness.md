@@ -70,7 +70,9 @@ Resource observations are retained for placement policy, but the readiness deriv
 
 ### Keryx and network evidence
 
-The existing Fleet node worker obtains Keryx signals through the public SDK. A successful, well-formed `list_peers()` call marks the local Keryx control path available. Network reachability requires a distinct non-local peer whose ID exactly matches one of the configured controller peer IDs and whose public SDK `connected` field is `true`.
+In local observation mode, the Fleet node worker obtains Keryx signals through the public SDK. A successful, well-formed `list_peers()` call marks the local Keryx control path available. Network reachability requires a distinct non-local peer whose ID exactly matches one of the configured controller peer IDs and whose public SDK `connected` field is `true`.
+
+In authenticated remote observation mode, successful authority acquisition from the exact configured controller is the network and Keryx evidence for that publication sample. Failed acquisition publishes no fresh sample. Fleet does not use the daemon-local peer directory to describe this separate direct-control route.
 
 The always-present local self row and known-but-disconnected controller rows are not reachability evidence. The SDK does not expose a separate positive relay-routability fact through this call, so Fleet fails closed rather than inferring one. Failed or malformed peer inspection marks both facts unavailable instead of assuming health.
 
@@ -129,7 +131,7 @@ Multiple reasons can be returned when multiple observed layers are unavailable.
 
 A node that does not advertise `fleet.hermes.run` reports its Fleet worker unavailable and rejects that operation even when local policy would otherwise allow it. A node with zero available Fleet-owned execution slots is never scheduler-ready for another Fleet run. This is not a claim about global Hermes capacity or non-Fleet work.
 
-After process restart, durable `creating`, `running`, or `indeterminate` Hermes run bindings conservatively consume the Fleet-owned slot until their durable state becomes terminal; restart never resets uncertain capacity to free, and a distinct new execution is rejected while that slot remains consumed.
+After process restart, durable `creating`, `running`, or `indeterminate` Hermes run bindings conservatively consume the Fleet-owned slot. Bounded reconciliation retains current work fail-closed, but marks indeterminate history resolved when the Keryx task is terminal and the exact known Hermes run is terminal or absent. A runless indeterminate creation additionally requires a five-minute uncertainty grace period. Resolved rows remain as audit history without consuming capacity.
 
 Readiness is recomputed from persisted facts and the current time. It is not stored as a second authoritative state value, and workers do not submit `ready: true`.
 

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 _MAX_ID_CHARS = 256
 _MAX_RESULT_CHARS = 65_536
-_STATES = frozenset({"creating", "running", "completed", "cancelled", "indeterminate"})
+_STATES = frozenset(
+    {"creating", "running", "completed", "cancelled", "indeterminate", "resolved"}
+)
 _SCHEMA_SQL = """
 CREATE TABLE run_bindings (
     task_id TEXT PRIMARY KEY,
@@ -18,7 +21,9 @@ CREATE TABLE run_bindings (
     result_text TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (
-        state IN ('creating', 'running', 'completed', 'cancelled', 'indeterminate')
+        state IN (
+            'creating', 'running', 'completed', 'cancelled', 'indeterminate', 'resolved'
+        )
     )
 )
 """
@@ -75,7 +80,7 @@ class RunBindingStore:
             ).fetchone()
             if row is None:
                 connection.execute(_SCHEMA_SQL)
-            elif "'cancelled'" not in str(row[0]):
+            elif "'resolved'" not in str(row[0]):
                 connection.execute(
                     "ALTER TABLE run_bindings RENAME TO run_bindings_legacy"
                 )
@@ -171,6 +176,57 @@ class RunBindingStore:
             ).fetchone()
         assert row is not None
         return int(row[0])
+
+    def indeterminate_bindings(self) -> tuple[tuple[RunBinding, int], ...]:
+        """Return uncertain bindings with their durable update timestamps."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT task_id, state, run_id, result_text, updated_at
+                FROM run_bindings
+                WHERE state = 'indeterminate'
+                ORDER BY task_id
+                """
+            ).fetchall()
+        values = []
+        for row in rows:
+            binding = _binding(row[:4])
+            try:
+                updated = datetime.strptime(str(row[4]), "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=UTC
+                )
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    "binding store contains invalid timestamp"
+                ) from error
+            values.append((binding, int(updated.timestamp() * 1_000)))
+        return tuple(values)
+
+    def resolve_indeterminate(self, task_id: str) -> RunBinding:
+        """Retain proven terminal uncertainty without reserving execution capacity."""
+        task_id = _identifier(task_id, "task ID")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = self._get(connection, task_id, required=False)
+            if existing is None:
+                raise ValueError("task binding does not exist")
+            if existing.state == "resolved":
+                return existing
+            if existing.state != "indeterminate":
+                raise ValueError("only indeterminate bindings can be resolved")
+            cursor = connection.execute(
+                """
+                UPDATE run_bindings
+                SET state = 'resolved', updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ? AND state = 'indeterminate'
+                """,
+                (task_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("task binding changed terminal state")
+            resolved = self._get(connection, task_id)
+            assert resolved is not None
+            return resolved
 
     def bind_run(self, task_id: str, run_id: str) -> RunBinding:
         """Record the one known Hermes run created for a reserved task."""
