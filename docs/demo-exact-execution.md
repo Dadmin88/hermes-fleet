@@ -41,7 +41,7 @@ Confirm that readiness is current and `fleet.hermes.run` is explicitly present. 
 5. Enter a bounded, non-sensitive prompt such as:
 
    ```text
-   Report the current hostname, active Hermes profile name, and one sentence confirming this task ran on the selected worker. Do not include credentials, paths, network addresses, tokens, or machine identifiers.
+   Return exactly this non-identifying confirmation: "The bounded demo task completed on the selected worker." Do not include credentials, paths, network addresses, tokens, profile names, hostnames, or other machine identifiers.
    ```
 
 6. Select **Run on exact node** once.
