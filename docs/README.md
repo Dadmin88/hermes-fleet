@@ -31,6 +31,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 - [Fleet Desktop](desktop.md) - native Hermes Desktop packaging, Fleet Overview, Network/Membership operator surfaces, real-state projection, installation, and troubleshooting.
 - [Fleet Canvas topology](canvas.md) - truthful node graph, stable local layout, controls, accessibility, workflow-editor boundaries, and edge provenance.
 - [Exact-execution demo](demo-exact-execution.md) - safe repeatable recording sequence for the live graph, stable target, durable task, and truthful terminal timeline.
+- [Execution Fabric reconciliation](execution-fabric-reconciliation.md) - current shipped execution/workflow/profile boundaries and the exact FX1 contract scope.
 
 ### Operations and verification
 
