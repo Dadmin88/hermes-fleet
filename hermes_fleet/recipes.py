@@ -17,7 +17,7 @@ _MAX_DEPTH: Final[int] = 12
 _MAX_COLLECTION: Final[int] = 256
 _MAX_STRING: Final[int] = 16_384
 _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+_REVISION_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _EXTENSION_RE = re.compile(
@@ -47,13 +47,11 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _load(payload: str) -> dict[str, Any]:
-    if (
-        type(payload) is not str
-        or not payload
-        or len(payload.encode("utf-8")) > _MAX_DOCUMENT_BYTES
-    ):
+    if type(payload) is not str or not payload:
         raise RecipeError("Recipe document exceeds the supported bound")
     try:
+        if len(payload.encode("utf-8")) > _MAX_DOCUMENT_BYTES:
+            raise RecipeError("Recipe document exceeds the supported bound")
         value = json.loads(
             payload,
             object_pairs_hook=_unique_object,
@@ -73,11 +71,15 @@ def _exact_object(value: object, keys: set[str], label: str) -> dict[str, Any]:
 
 
 def _text(value: object, label: str, *, maximum: int = _MAX_TEXT) -> str:
+    try:
+        encoded_length = len(value.encode("utf-8")) if type(value) is str else -1
+    except UnicodeError as error:
+        raise RecipeError(f"{label} is invalid") from error
     if (
         type(value) is not str
         or not value
         or value != value.strip()
-        or len(value.encode("utf-8")) > maximum
+        or encoded_length > maximum
         or any(ord(character) < 32 for character in value)
     ):
         raise RecipeError(f"{label} is invalid")
@@ -112,8 +114,12 @@ def _json_value(value: object, *, depth: int = 0) -> Any:
     if value is None or type(value) in {bool, int, str}:
         if type(value) is int and not -(1 << 63) <= cast(int, value) <= (1 << 63) - 1:
             raise RecipeError("extension integer exceeds the supported bound")
-        if type(value) is str and len(cast(str, value).encode("utf-8")) > _MAX_STRING:
-            raise RecipeError("extension text exceeds the supported bound")
+        if type(value) is str:
+            try:
+                if len(cast(str, value).encode("utf-8")) > _MAX_STRING:
+                    raise RecipeError("extension text exceeds the supported bound")
+            except UnicodeError as error:
+                raise RecipeError("extension text is invalid") from error
         return value
     if type(value) is float:
         raise RecipeError("extension floating-point values are unsupported")
@@ -128,7 +134,11 @@ def _json_value(value: object, *, depth: int = 0) -> Any:
             raise RecipeError("extension object exceeds the supported bound")
         normalized: dict[str, Any] = {}
         for key, item in mapping.items():
-            if type(key) is not str or not key or len(key.encode("utf-8")) > _MAX_TEXT:
+            try:
+                key_length = len(key.encode("utf-8")) if type(key) is str else -1
+            except UnicodeError as error:
+                raise RecipeError("extension object key is invalid") from error
+            if type(key) is not str or not key or key_length > _MAX_TEXT:
                 raise RecipeError("extension object key is invalid")
             normalized[key] = _json_value(item, depth=depth + 1)
         return MappingProxyType(normalized)
@@ -180,6 +190,12 @@ class AgentRequirement:
     name: str
     version: str
 
+    def __post_init__(self) -> None:
+        if self.kind != "agency_profile":
+            raise RecipeError("agent requirement kind is unsupported")
+        _name(self.name, "agent name")
+        _text(self.version, "agent version", maximum=128)
+
     @classmethod
     def from_dict(cls, value: object) -> AgentRequirement:
         item = _exact_object(value, {"kind", "name", "version"}, "agent requirement")
@@ -200,6 +216,19 @@ class EnvironmentRequirement:
     os: tuple[str, ...]
     architecture: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if type(self.os) not in (list, tuple) or type(self.architecture) not in (
+            list,
+            tuple,
+        ):
+            raise RecipeError("environment requirement is invalid")
+        object.__setattr__(self, "os", _string_list(list(self.os), "operating systems"))
+        object.__setattr__(
+            self,
+            "architecture",
+            _string_list(list(self.architecture), "architectures"),
+        )
+
     @classmethod
     def from_dict(cls, value: object) -> EnvironmentRequirement:
         item = _exact_object(value, {"os", "architecture"}, "environment requirement")
@@ -216,6 +245,10 @@ class EnvironmentRequirement:
 class ResourceRequirement:
     cpu_millis: int
     memory_bytes: int
+
+    def __post_init__(self) -> None:
+        _positive_int(self.cpu_millis, "CPU requirement")
+        _positive_int(self.memory_bytes, "memory requirement")
 
     @classmethod
     def from_dict(cls, value: object) -> ResourceRequirement:
@@ -235,6 +268,10 @@ class ResourceRequirement:
 class SecurityRequirement:
     isolation: str
     network: str
+
+    def __post_init__(self) -> None:
+        _name(self.isolation, "isolation requirement")
+        _name(self.network, "network requirement")
 
     @classmethod
     def from_dict(cls, value: object) -> SecurityRequirement:
@@ -317,13 +354,19 @@ class ResolvedAgencyProfile:
 
     def __post_init__(self) -> None:
         _text(self.repository, "Agency repository", maximum=2048)
-        if _REVISION_RE.fullmatch(self.revision) is None:
+        if (
+            type(self.revision) is not str
+            or _REVISION_RE.fullmatch(self.revision) is None
+        ):
             raise RecipeError("Agency revision must be an exact full object ID")
         _name(self.name, "resolved agent name")
         _text(self.version, "resolved agent version", maximum=128)
         if any(character in self.version for character in "<>=~^*, "):
             raise RecipeError("resolved agent version must be exact")
-        if _HASH_RE.fullmatch(self.content_digest) is None:
+        if (
+            type(self.content_digest) is not str
+            or _HASH_RE.fullmatch(self.content_digest) is None
+        ):
             raise RecipeError("resolved content digest is invalid")
 
     @classmethod
@@ -337,7 +380,7 @@ class ResolvedAgencyProfile:
             raise RecipeError("resolved agent kind is unsupported")
         return cls(
             repository=_text(item["repository"], "Agency repository", maximum=2048),
-            revision=_text(item["revision"], "Agency revision", maximum=40),
+            revision=_text(item["revision"], "Agency revision", maximum=64),
             name=_name(item["name"], "resolved agent name"),
             version=_text(item["version"], "resolved agent version", maximum=128),
             content_digest=_text(item["content_digest"], "content digest", maximum=71),
@@ -361,7 +404,10 @@ class ResolvedRecipe:
     extensions: Mapping[str, Any]
 
     def __post_init__(self) -> None:
-        if _HASH_RE.fullmatch(self.recipe_hash) is None:
+        if (
+            type(self.recipe_hash) is not str
+            or _HASH_RE.fullmatch(self.recipe_hash) is None
+        ):
             raise RecipeError("Recipe hash is invalid")
         if type(self.agent) is not ResolvedAgencyProfile:
             raise RecipeError("resolved agent is invalid")
