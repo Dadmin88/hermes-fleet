@@ -4250,11 +4250,17 @@ const FLEET_RUN_TERMINAL_STATES = new Set([
 
 function ExactRunPanel({ node, ctx }) {
   const [prompt, setPrompt] = useState('')
+  const [recipeText, setRecipeText] = useState('')
+  const [agencyRepository, setAgencyRepository] = useState('')
+  const [agencyRevision, setAgencyRevision] = useState('')
   const [run, setRun] = useState(null)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const authorized = node.operations.includes('fleet.hermes.run')
-  const canSubmit = authorized && node.readiness.scheduler_ready && prompt.trim().length > 0 && !submitting
+  const canSubmit = authorized && node.readiness.scheduler_ready &&
+    prompt.trim().length > 0 && recipeText.trim().length > 0 &&
+    agencyRepository.trim().length > 0 && /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(agencyRevision.trim()) &&
+    !submitting
 
   useEffect(() => {
     const completion = run?.stages?.find(stage => stage.id === 'completion')
@@ -4280,12 +4286,17 @@ function ExactRunPanel({ node, ctx }) {
     setSubmitting(true)
     setError('')
     try {
+      const recipe = JSON.parse(recipeText)
       const result = await ctx.rest('/runs', {
         method: 'POST',
         body: {
           target: node.stable_id,
           prompt: prompt.trim(),
-          deadlineSeconds: 120
+          deadlineSeconds: 120,
+          recipe,
+          agencyRepository: agencyRepository.trim(),
+          agencyRevision: agencyRevision.trim(),
+          secretRefs: []
         }
       })
       setRun(result)
@@ -4315,6 +4326,34 @@ function ExactRunPanel({ node, ctx }) {
         onChange: event => setPrompt(event.target.value),
         placeholder: 'Describe the exact Hermes task…',
         className: 'w-full resize-y rounded-md border border-input bg-background p-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
+      }),
+      jsx('textarea', {
+        value: recipeText,
+        rows: 8,
+        maxLength: 262144,
+        disabled: submitting,
+        onChange: event => setRecipeText(event.target.value),
+        placeholder: 'Paste the complete fleet.recipe.v1 JSON document…',
+        'aria-label': 'Fleet Recipe JSON',
+        className: 'w-full resize-y rounded-md border border-input bg-background p-2 font-mono text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
+      }),
+      jsx('input', {
+        value: agencyRepository,
+        maxLength: 2048,
+        disabled: submitting,
+        onChange: event => setAgencyRepository(event.target.value),
+        placeholder: 'Pinned Agency repository URL',
+        'aria-label': 'Agency repository',
+        className: 'w-full rounded-md border border-input bg-background p-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
+      }),
+      jsx('input', {
+        value: agencyRevision,
+        maxLength: 64,
+        disabled: submitting,
+        onChange: event => setAgencyRevision(event.target.value),
+        placeholder: 'Full 40- or 64-character Agency revision',
+        'aria-label': 'Agency revision',
+        className: 'w-full rounded-md border border-input bg-background p-2 font-mono text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
       }),
       jsx(Button, {
         type: 'button',

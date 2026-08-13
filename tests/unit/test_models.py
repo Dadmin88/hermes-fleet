@@ -87,6 +87,14 @@ def test_remote_output_requires_exact_primitive_text() -> None:
         RemoteOutput(Text("hello"))
 
 
+def test_node_policy_accepts_provider_neutral_worker_file_secret_reference() -> None:
+    from hermes_fleet.models import NodePolicy
+
+    policy = NodePolicy(allowed_secret_references=("secret://worker/file/HERMES_AUTH",))
+
+    assert policy.allowed_secret_references == ("secret://worker/file/HERMES_AUTH",)
+
+
 def test_node_config_requires_an_exact_node_policy() -> None:
     """Nested policy subclasses are rejected at model construction."""
     from hermes_fleet.models import NodeConfig, NodePolicy
@@ -143,3 +151,46 @@ def test_models_reject_container_subclasses_before_iteration(field: str) -> None
                 peer_id="peer-alpha",
                 tags=ExplosiveTuple(("gpu",)),
             )
+
+
+def test_node_policy_digest_is_canonical_and_changes_with_authority() -> None:
+    from hermes_fleet.models import NodePolicy
+
+    first = NodePolicy(
+        allowed_operations=("fleet.health", "fleet.hermes.run"),
+        max_deadline_seconds=120,
+    )
+    equal = NodePolicy(
+        allowed_operations=("fleet.health", "fleet.hermes.run"),
+        max_deadline_seconds=120,
+    )
+    changed = NodePolicy(
+        allowed_operations=("fleet.health",),
+        max_deadline_seconds=120,
+    )
+    secret_changed = NodePolicy(
+        allowed_operations=("fleet.health", "fleet.hermes.run"),
+        allowed_secret_references=("secret://worker/env/OPENROUTER_API_KEY",),
+        max_deadline_seconds=120,
+    )
+
+    assert first.content_hash == equal.content_hash
+    assert first.content_hash.startswith("sha256:")
+    assert changed.content_hash != first.content_hash
+    assert secret_changed.content_hash != first.content_hash
+
+
+def test_node_policy_normalizes_and_validates_secret_references() -> None:
+    from hermes_fleet.models import NodePolicy
+
+    policy = NodePolicy(
+        allowed_secret_references=(
+            "secret://worker/env/OPENROUTER_API_KEY",
+            "secret://worker/env/OPENROUTER_API_KEY",
+        )
+    )
+    assert policy.allowed_secret_references == (
+        "secret://worker/env/OPENROUTER_API_KEY",
+    )
+    with pytest.raises(ValueError, match="allowed_secret_references"):
+        NodePolicy(allowed_secret_references=("secret://worker/env/PATH",))

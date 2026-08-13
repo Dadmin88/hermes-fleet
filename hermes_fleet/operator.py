@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+from .agency_snapshot import AgencySource
+from .backend_capabilities import BackendCapabilities
 from .config import FleetConfig, ManagedTargetPolicy
-from .controller import submit_communication
-from .models import NodeConfig
+from .controller import FleetController
+from .models import NodeConfig, NodePolicy
+from .recipe_execution import ExactRecipeSubmissionService
+from .recipes import FleetRecipe
 
 _SECRET = re.compile(r"(?i)(bearer|token|key|secret|password|credential)\s*[=:]\s*\S+")
 _PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s/]+/)+[^\s]*")
@@ -110,6 +115,40 @@ class OperatorCompletionResult:
     error_category: OperatorErrorCode | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ExactRecipeRequest:
+    target: str
+    prompt: str
+    recipe: FleetRecipe
+    agency_source: AgencySource
+    secret_refs: tuple[str, ...] = ()
+    deadline_seconds: int = 120
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.target) is not str
+            or not self.target
+            or self.target != self.target.strip()
+        ):
+            raise ValueError("target is invalid")
+        if type(self.prompt) is not str or not self.prompt or len(self.prompt) > 16_000:
+            raise ValueError("prompt is invalid")
+        if type(self.recipe) is not FleetRecipe:
+            raise ValueError("recipe is invalid")
+        if type(self.agency_source) is not AgencySource:
+            raise ValueError("Agency source is invalid")
+        if type(self.secret_refs) not in (tuple, list) or any(
+            type(reference) is not str for reference in self.secret_refs
+        ):
+            raise ValueError("secret references are invalid")
+        object.__setattr__(self, "secret_refs", tuple(self.secret_refs))
+        if (
+            type(self.deadline_seconds) is not int
+            or not 0 < self.deadline_seconds <= 900
+        ):
+            raise ValueError("deadline is invalid")
+
+
 class OperatorState(Protocol):
     def overview(self) -> dict[str, Any]: ...
 
@@ -122,7 +161,13 @@ class OperatorService:
     """Reusable application logic for future CLI and Desktop adapters."""
 
     def __init__(
-        self, *, state: OperatorState, config: FleetConfig, keryx: Any
+        self,
+        *,
+        state: OperatorState,
+        config: FleetConfig,
+        keryx: Any,
+        recipe_submission: ExactRecipeSubmissionService | None = None,
+        execution_id_factory: Any | None = None,
     ) -> None:
         if not callable(getattr(state, "overview", None)) or not callable(
             getattr(state, "inspect_projection", None)
@@ -135,6 +180,8 @@ class OperatorService:
         self._state = state
         self._config = config
         self._keryx = keryx
+        self._recipe_submission = recipe_submission or ExactRecipeSubmissionService()
+        self._execution_id_factory = execution_id_factory or (lambda: str(uuid.uuid4()))
 
     def list_nodes(self) -> tuple[OperatorNodeResult, ...]:
         overview = self._state.overview()
@@ -167,14 +214,10 @@ class OperatorService:
             )
         return resolved
 
-    async def run_exact(
-        self, target: str, prompt: str, *, deadline_seconds: int = 120
-    ) -> OperatorCompletionResult:
-        submission, resolved = await self._submit_exact(
-            target, prompt, deadline_seconds=deadline_seconds
-        )
+    async def run_exact(self, request: ExactRecipeRequest) -> OperatorCompletionResult:
+        submission, resolved = await self._submit_exact(request)
         try:
-            task = await submission.handle.wait(float(deadline_seconds) + 5.0)
+            task = await submission.handle.wait(float(request.deadline_seconds) + 5.0)
         except TimeoutError as error:
             raise OperatorError(
                 OperatorErrorCode.DEADLINE_EXCEEDED,
@@ -190,7 +233,7 @@ class OperatorService:
         return self._completion(
             task,
             task_id=submission.task_id,
-            requested_target=target,
+            requested_target=request.target,
             resolved_target=resolved,
             routed_to=submission.routed_to,
             delivery_route=submission.delivery_route,
@@ -199,16 +242,14 @@ class OperatorService:
         )
 
     async def submit_exact(
-        self, target: str, prompt: str, *, deadline_seconds: int = 120
+        self, request: ExactRecipeRequest
     ) -> OperatorCompletionResult:
-        """Submit exact work and return its durable identity without waiting."""
-        submission, resolved = await self._submit_exact(
-            target, prompt, deadline_seconds=deadline_seconds
-        )
+        """Submit exact Recipe work and return its durable identity without waiting."""
+        submission, resolved = await self._submit_exact(request)
         return OperatorCompletionResult(
             task_id=submission.task_id,
             terminal_state="submitted",
-            requested_target=target,
+            requested_target=request.target,
             resolved_target=resolved,
             routed_to=submission.routed_to,
             delivery_route=submission.delivery_route,
@@ -216,9 +257,17 @@ class OperatorService:
             deadline_ms=submission.deadline_ms,
         )
 
-    async def _submit_exact(self, target: str, prompt: str, *, deadline_seconds: int):
+    async def _submit_exact(self, request: ExactRecipeRequest):
+        if type(request) is not ExactRecipeRequest:
+            raise OperatorError(
+                OperatorErrorCode.OPERATION_UNAVAILABLE,
+                (
+                    "Exact execution requires an immutable Fleet Recipe "
+                    "and pinned Agency source."
+                ),
+            )
         operation = "fleet.hermes.run"
-        resolved, row, _projection = self._resolve(target)
+        resolved, row, _projection = self._resolve(request.target)
         if operation not in resolved.policy.policy.allowed_operations:
             raise OperatorError(
                 OperatorErrorCode.POLICY_DENIED,
@@ -237,10 +286,21 @@ class OperatorService:
                 else OperatorErrorCode.NOT_READY
             )
             raise OperatorError(code, "Target is not ready for Hermes execution.")
+        policy = resolved.policy.policy
+        transport_policy = NodePolicy(
+            max_deadline_seconds=policy.max_deadline_seconds,
+            max_payload_bytes=policy.max_payload_bytes,
+            max_prompt_chars=policy.max_prompt_chars,
+            max_export_paths=policy.max_export_paths,
+            allowed_operations=tuple(
+                sorted(set(policy.allowed_operations) | {"fleet.inventory"})
+            ),
+            allowed_secret_references=policy.allowed_secret_references,
+        )
         node = NodeConfig(
             name=resolved.policy.target_name,
             peer_id=resolved.current_peer_id,
-            policy=resolved.policy.policy,
+            policy=transport_policy,
         )
         submission_config = FleetConfig(
             schema_version=1,
@@ -248,13 +308,62 @@ class OperatorService:
             nodes=(node,),
         )
         try:
-            submission = await submit_communication(
+            inventory = await FleetController(
+                keryx=self._keryx, config=submission_config
+            ).get_inventory(
+                node.name, deadline_seconds=min(request.deadline_seconds, 30)
+            )
+            response = inventory.response
+            backend = (
+                response.get("execution_backend") if type(response) is dict else None
+            )
+            if type(backend) is not dict or set(backend) != {
+                "content_hash",
+                "document",
+            }:
+                raise OperatorError(
+                    OperatorErrorCode.OPERATION_UNAVAILABLE,
+                    "Target does not publish an exact Recipe execution backend.",
+                )
+            capabilities = BackendCapabilities.from_dict(backend["document"])
+            if capabilities.content_hash != backend["content_hash"]:
+                raise OperatorError(
+                    OperatorErrorCode.STALE_STATE,
+                    "Target execution capabilities are inconsistent.",
+                )
+            execution_id = self._execution_id_factory()
+            requester = getattr(self._keryx, "peer_id", None)
+            if (
+                type(execution_id) is not str
+                or not execution_id
+                or type(requester) is not str
+                or not requester
+            ):
+                raise OperatorError(
+                    OperatorErrorCode.TRANSPORT_UNAVAILABLE,
+                    "Authenticated controller identity is unavailable.",
+                )
+            submission = await self._recipe_submission.submit(
                 keryx=self._keryx,
-                config=submission_config,
-                target_name=node.name,
-                operation=operation,
-                input_data={"prompt": prompt, "export_paths": []},
-                deadline_seconds=deadline_seconds,
+                requester=requester,
+                peer_id=resolved.current_peer_id,
+                execution_id=execution_id,
+                recipe=request.recipe,
+                capabilities=capabilities,
+                agency_source=request.agency_source,
+                target={
+                    "source": resolved.identity.source,
+                    "network_id": resolved.identity.network_id,
+                    "device_id": resolved.identity.device_id,
+                    "binding_generation": int(resolved.binding_generation),
+                    "admission_generation": int(
+                        row["readiness"]["admission_generation"]
+                    ),
+                },
+                policy_digest=resolved.policy.policy.content_hash,
+                prompt=request.prompt,
+                secret_refs=list(request.secret_refs),
+                deadline_seconds=request.deadline_seconds,
             )
         except OperatorError:
             raise

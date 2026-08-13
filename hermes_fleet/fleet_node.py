@@ -9,12 +9,18 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, cast
 
+from .backend_capabilities import BackendCapabilities
 from .envelope import OPERATIONS, FleetEnvelope, parse_envelope
-from .hermes_runs import HermesRunDeadlineExceeded, HermesRunError, HermesRunResult
+from .execution_package import MEDIA_TYPE as EXECUTION_PACKAGE_MEDIA_TYPE
+from .execution_package import (
+    ExactExecutionPackage,
+    ExecutionPackageError,
+    parse_execution_package,
+)
+from .hermes_runs import HermesRunError, HermesRunResult
 from .models import FleetDefaults, NodeConfig, _require_exact_type
 from .observation import normalize_readiness
 from .policy import enforce_request_policy
-from .run_binding import RunBinding, RunBindingStore, recovery_action
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +44,16 @@ class _HermesRunner(Protocol):
     def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None: ...
 
 
+class _RecipeExecutor(Protocol):
+    async def execute(
+        self,
+        *,
+        package: ExactExecutionPackage,
+        authenticated_sender: str,
+        incoming: object,
+    ) -> None: ...
+
+
 class FleetNodeWorker:
     """Bind one local Fleet target to a Keryx-compatible worker node."""
 
@@ -47,12 +63,16 @@ class FleetNodeWorker:
         target: NodeConfig,
         defaults: FleetDefaults,
         hermes: _HermesRunner,
-        bindings: RunBindingStore,
         controller_peer_ids: tuple[str, ...],
         advertised_operations: tuple[str, ...] | None = None,
         now_ms: Callable[[], int] | None = None,
         readiness_inspector: Callable[[], dict[str, Any]] | None = None,
+        admission_generation_inspector: Callable[[], int] | None = None,
+        managed_network_id: str | None = None,
+        managed_device_id: str | None = None,
         capacity_observer: Callable[[int], Awaitable[None]] | None = None,
+        recipe_executor: _RecipeExecutor | None = None,
+        backend_capabilities: BackendCapabilities | None = None,
     ) -> None:
         self._target = _require_exact_type(
             target, NodeConfig, "target must be a NodeConfig"
@@ -67,9 +87,7 @@ class FleetNodeWorker:
             raise ValueError(
                 "hermes must provide health(), start(), wait(), and stop()"
             )
-        self._bindings = _require_exact_type(
-            bindings, RunBindingStore, "bindings must be a RunBindingStore"
-        )
+
         if type(controller_peer_ids) is not tuple or not controller_peer_ids:
             raise ValueError("controller_peer_ids must be a nonempty tuple")
         if any(
@@ -98,9 +116,34 @@ class FleetNodeWorker:
         if readiness_inspector is not None and not callable(readiness_inspector):
             raise ValueError("readiness_inspector must be callable")
         self._readiness_inspector = readiness_inspector
+        managed_identity = (managed_network_id, managed_device_id)
+        if any(value is not None for value in managed_identity) != all(
+            value is not None for value in managed_identity
+        ):
+            raise ValueError("managed execution identity must be complete")
+        if admission_generation_inspector is not None and not callable(
+            admission_generation_inspector
+        ):
+            raise ValueError("admission_generation_inspector must be callable")
+        if admission_generation_inspector is not None and managed_network_id is None:
+            raise ValueError("managed execution identity is required for admission")
+        self._admission_generation_inspector = admission_generation_inspector
+        self._managed_network_id = managed_network_id
+        self._managed_device_id = managed_device_id
         if capacity_observer is not None and not callable(capacity_observer):
             raise ValueError("capacity_observer must be callable")
         self._capacity_observer = capacity_observer
+        if recipe_executor is not None and not callable(
+            getattr(recipe_executor, "execute", None)
+        ):
+            raise ValueError("recipe_executor must provide execute()")
+        self._recipe_executor = recipe_executor
+        if (
+            backend_capabilities is not None
+            and type(backend_capabilities) is not BackendCapabilities
+        ):
+            raise ValueError("backend_capabilities must be BackendCapabilities")
+        self._backend_capabilities = backend_capabilities
         self._active_worker_count = 0
 
     @property
@@ -110,9 +153,8 @@ class FleetNodeWorker:
 
     @property
     def observed_active_worker_count(self) -> int:
-        """Fail closed when durable bindings may still consume the worker slot."""
-        unresolved = self._bindings.unresolved_count()
-        return max(self._active_worker_count, min(unresolved, 1))
+        """Return destination executions currently occupying the worker slot."""
+        return self._active_worker_count
 
     def bind(self, node: object) -> None:
         """Register this dispatcher once with public Keryx ``on_task``."""
@@ -128,33 +170,6 @@ class FleetNodeWorker:
             await self._capacity_observer(self._active_worker_count)
         except (OSError, RuntimeError, ValueError) as error:
             logger.warning("fleet worker capacity observation failed: %s", error)
-
-    async def _reply_from_terminal_binding(
-        self,
-        incoming: object,
-        *,
-        task_id: str,
-        run_id: str,
-    ) -> bool:
-        """Replay the durable winner when two deliveries race to terminal state."""
-        binding = self._bindings.get(task_id)
-        if binding is None or binding.run_id != run_id:
-            return False
-        if binding.state == "completed" and binding.result_text is not None:
-            await _complete_text(
-                incoming,
-                name="hermes-result.txt",
-                text=binding.result_text,
-                metadata={"hermes_run_id": run_id},
-            )
-            return True
-        if binding.state == "cancelled":
-            await _fail(incoming, "Fleet Hermes execution was cancelled")
-            return True
-        if binding.state == "indeterminate":
-            await _fail(incoming, "Fleet Hermes execution is indeterminate")
-            return True
-        return False
 
     async def handle_task(self, incoming: object) -> None:
         """Validate and route one communication to a direct or executable handler."""
@@ -174,8 +189,42 @@ class FleetNodeWorker:
             )
             return
 
+        metadata = getattr(incoming, "metadata", None)
         try:
-            payload = _incoming_text(incoming)
+            package_payload = _incoming_execution_package(incoming)
+        except ValueError:
+            await _fail(incoming, "Fleet task payload is invalid")
+            return
+        if package_payload is not None:
+            try:
+                execution_package = self._admit_execution_package(
+                    package_payload,
+                    metadata=metadata,
+                    task_id=task_id,
+                )
+            except (ExecutionPackageError, OSError, RuntimeError, ValueError):
+                await _fail(incoming, "Fleet execution package is not admitted")
+                return
+            if self._recipe_executor is None:
+                await _fail(incoming, "Fleet Recipe execution is unavailable")
+                return
+            self._active_worker_count += 1
+            await self._notify_capacity()
+            try:
+                await self._recipe_executor.execute(
+                    package=execution_package,
+                    authenticated_sender=peer_id,
+                    incoming=incoming,
+                )
+            except (OSError, RuntimeError, ValueError):
+                await _fail(incoming, "Fleet Recipe execution failed")
+            finally:
+                self._active_worker_count -= 1
+                await self._notify_capacity()
+            return
+
+        try:
+            payload = _incoming_text_payload(incoming)
             envelope = parse_envelope(
                 payload, target=self._target, defaults=self._defaults
             )
@@ -189,7 +238,6 @@ class FleetNodeWorker:
             )
             return
 
-        metadata = getattr(incoming, "metadata", None)
         if not _metadata_matches(metadata, envelope, self._target):
             await _fail(incoming, "Fleet delivery metadata does not match envelope")
             logger.info(
@@ -296,6 +344,7 @@ class FleetNodeWorker:
                 hermes_health,
                 self._advertised_operations,
                 readiness,
+                self._backend_capabilities,
             )
             await _complete_text(
                 incoming,
@@ -315,176 +364,52 @@ class FleetNodeWorker:
             await _fail(incoming, "Fleet operation is not supported")
             return
 
-        try:
-            binding, created = self._bindings.reserve_execution_if_available(
-                task_id, max_unresolved=1
-            )
-        except ValueError:
-            await _fail(incoming, "Fleet execution binding is invalid")
-            return
-        if binding is None:
-            await _fail(incoming, "Fleet worker has no available execution slot")
-            return
+        await _fail(
+            incoming, "Fleet Hermes execution requires an immutable Recipe package"
+        )
+        return
 
-        action = recovery_action(binding, created=created)
-        if action == "replay_completed":
-            assert binding.run_id is not None
-            assert binding.result_text is not None
-            await _complete_text(
-                incoming,
-                name="hermes-result.txt",
-                text=binding.result_text,
-                metadata={"hermes_run_id": binding.run_id},
-            )
-            logger.info(
-                "fleet execution replayed task_id=%s peer_id=%s "
-                "hermes_run_id=%s status=completed",
-                task_id,
-                peer_id,
-                _bounded_label(binding.run_id, "unknown"),
-            )
-            return
-
-        if action == "fail_closed_indeterminate":
-            if binding.state in {"creating", "running"}:
-                self._bindings.mark_indeterminate(task_id)
-            await _fail(incoming, "Fleet execution binding is indeterminate")
-            return
-        if action == "fail_cancelled":
-            await _fail(incoming, "Fleet Hermes execution was cancelled")
-            return
-
-        self._active_worker_count += 1
-        await self._notify_capacity()
-        try:
-            await self._execute_hermes_binding(
-                incoming,
-                envelope=envelope,
-                metadata=metadata,
-                task_id=task_id,
-                peer_id=peer_id,
-                binding=binding,
-                action=action,
-            )
-        finally:
-            self._active_worker_count -= 1
-            await self._notify_capacity()
-
-    async def _execute_hermes_binding(
+    def _admit_execution_package(
         self,
-        incoming: object,
+        payload: bytes,
         *,
-        envelope: FleetEnvelope,
         metadata: object,
         task_id: str,
-        peer_id: str,
-        binding: RunBinding,
-        action: str,
-    ) -> None:
-        run_id = binding.run_id
-        if action == "start_new":
-            try:
-                run_id = await asyncio.to_thread(
-                    self._hermes.start,
-                    prompt=envelope.input["prompt"],
-                    session_id=f"fleet:{self._target.name}:{task_id}",
-                    timeout_seconds=_remaining_timeout(
-                        envelope,
-                        metadata,
-                        now_ms=self._now_ms(),
-                    ),
-                )
-                self._bindings.bind_run(task_id, run_id)
-            except (HermesRunError, ValueError):
-                self._bindings.mark_indeterminate(task_id)
-                await _fail(incoming, "Fleet Hermes submission is indeterminate")
-                return
-
-        assert run_id is not None
-
-        try:
-            timeout_seconds = _remaining_timeout(
-                envelope,
-                metadata,
-                now_ms=self._now_ms(),
-            )
-        except ValueError:
-            try:
-                await asyncio.to_thread(self._hermes.stop, run_id, timeout_seconds=0.25)
-            except HermesRunError:
-                try:
-                    self._bindings.mark_indeterminate(task_id)
-                except ValueError:
-                    if await self._reply_from_terminal_binding(
-                        incoming, task_id=task_id, run_id=run_id
-                    ):
-                        return
-            else:
-                try:
-                    self._bindings.mark_cancelled(task_id, run_id)
-                except ValueError:
-                    if await self._reply_from_terminal_binding(
-                        incoming, task_id=task_id, run_id=run_id
-                    ):
-                        return
-            await _fail(incoming, "Fleet task deadline has expired")
-            return
-
-        try:
-            result = await asyncio.to_thread(
-                self._hermes.wait,
-                run_id=run_id,
-                timeout_seconds=timeout_seconds,
-            )
-            if result.run_id != run_id:
-                raise ValueError("Hermes returned a mismatched run ID")
-            completed = self._bindings.complete(task_id, run_id, result.text)
-        except HermesRunDeadlineExceeded:
-            try:
-                self._bindings.mark_cancelled(task_id, run_id)
-            except ValueError:
-                if await self._reply_from_terminal_binding(
-                    incoming, task_id=task_id, run_id=run_id
-                ):
-                    return
-            await _fail(incoming, "Fleet Hermes execution exceeded deadline")
-            logger.info(
-                "fleet execution cancelled task_id=%s peer_id=%s "
-                "hermes_run_id=%s status=deadline-exceeded",
-                task_id,
-                peer_id,
-                _bounded_label(run_id, "unknown"),
-            )
-            return
-        except (HermesRunError, ValueError):
-            try:
-                self._bindings.mark_indeterminate(task_id)
-            except ValueError:
-                if await self._reply_from_terminal_binding(
-                    incoming, task_id=task_id, run_id=run_id
-                ):
-                    return
-            await _fail(incoming, "Fleet Hermes execution is indeterminate")
-            logger.info(
-                "fleet execution failed task_id=%s peer_id=%s status=indeterminate",
-                task_id,
-                peer_id,
-            )
-            return
-
-        await _complete_text(
-            incoming,
-            name="hermes-result.txt",
-            text=completed.result_text or "",
-            metadata={"hermes_run_id": run_id},
-        )
-        logger.info(
-            "fleet execution completed task_id=%s peer_id=%s "
-            "hermes_run_id=%s status=completed",
-            task_id,
-            peer_id,
-            _bounded_label(run_id, "unknown"),
-        )
+    ) -> ExactExecutionPackage:
+        if (
+            self._admission_generation_inspector is None
+            or self._managed_network_id is None
+            or self._managed_device_id is None
+        ):
+            raise ExecutionPackageError("destination admission is unavailable")
+        package = parse_execution_package(payload)
+        if package.execution_id != task_id:
+            raise ExecutionPackageError("execution identity conflicts with delivery")
+        if type(metadata) is not dict:
+            raise ExecutionPackageError("execution metadata is invalid")
+        expected_metadata = {
+            "fleet.operation": "fleet.hermes.run",
+            "fleet.execution_package_hash": package.content_hash,
+            "fleet_deadline_ms": str(package.authorization["deadline_ms"]),
+            "skill": "fleet.hermes.run",
+        }
+        if metadata != expected_metadata:
+            raise ExecutionPackageError("execution metadata conflicts with package")
+        if package.target != {
+            "source": "nodescale",
+            "network_id": self._managed_network_id,
+            "device_id": self._managed_device_id,
+            "binding_generation": package.target["binding_generation"],
+            "admission_generation": package.target["admission_generation"],
+        }:
+            raise ExecutionPackageError("execution package targets another destination")
+        generation = self._admission_generation_inspector()
+        if (
+            type(generation) is not int
+            or generation != package.target["admission_generation"]
+        ):
+            raise ExecutionPackageError("destination admission generation is stale")
+        return package
 
 
 def _health_response(
@@ -494,8 +419,9 @@ def _health_response(
     hermes_health: dict[str, object] | None,
     advertised_operations: tuple[str, ...],
     readiness: dict[str, Any] | None,
+    backend_capabilities: BackendCapabilities | None,
 ) -> dict[str, Any]:
-    del target, envelope, sender_peer_id, advertised_operations
+    del target, envelope, sender_peer_id, advertised_operations, backend_capabilities
     health = hermes_health or {
         "api": "unavailable",
         "run_submission": False,
@@ -525,6 +451,7 @@ def _inventory_response(
     hermes_health: dict[str, object] | None,
     advertised_operations: tuple[str, ...],
     readiness: dict[str, Any] | None,
+    backend_capabilities: BackendCapabilities | None,
 ) -> dict[str, Any]:
     del envelope, sender_peer_id, hermes_health
     response = {
@@ -539,6 +466,11 @@ def _inventory_response(
     }
     if readiness is not None:
         response["readiness"] = readiness
+    if backend_capabilities is not None:
+        response["execution_backend"] = {
+            "content_hash": backend_capabilities.content_hash,
+            "document": backend_capabilities.to_dict(),
+        }
     return response
 
 
@@ -549,8 +481,9 @@ def _message_response(
     hermes_health: dict[str, object] | None,
     advertised_operations: tuple[str, ...],
     readiness: dict[str, Any] | None,
+    backend_capabilities: BackendCapabilities | None,
 ) -> dict[str, Any]:
-    del hermes_health, advertised_operations, readiness
+    del hermes_health, advertised_operations, readiness, backend_capabilities
     response = {
         "operation": "fleet.message",
         "status": "received",
@@ -572,6 +505,7 @@ _DirectHandler = Callable[
         dict[str, object] | None,
         tuple[str, ...],
         dict[str, Any] | None,
+        BackendCapabilities | None,
     ],
     dict[str, Any],
 ]
@@ -597,10 +531,33 @@ def _metadata_matches(
     )
 
 
-def _incoming_text(incoming: object) -> str:
+def _incoming_execution_package(incoming: object) -> bytes | None:
     messages = getattr(incoming, "messages", None)
     if type(messages) is not list or len(messages) != 1:
-        raise ValueError("Fleet task must contain one text message")
+        raise ValueError("Fleet task must contain one message")
+    parts = getattr(messages[0], "parts", None)
+    if type(parts) is not list or len(parts) != 1:
+        raise ValueError("Fleet task must contain one part")
+    part = parts[0]
+    media_type = getattr(part, "media_type", "")
+    if media_type == "text/plain":
+        return None
+    text = getattr(part, "text", "")
+    raw = getattr(part, "raw", None)
+    if (
+        text not in ("", None)
+        or type(raw) is not bytes
+        or not raw
+        or media_type != EXECUTION_PACKAGE_MEDIA_TYPE
+    ):
+        raise ValueError("Fleet execution package part is invalid")
+    return raw
+
+
+def _incoming_text_payload(incoming: object) -> str:
+    messages = getattr(incoming, "messages", None)
+    if type(messages) is not list or len(messages) != 1:
+        raise ValueError("Fleet task must contain one message")
     parts = getattr(messages[0], "parts", None)
     if type(parts) is not list or len(parts) != 1:
         raise ValueError("Fleet task must contain one text part")

@@ -66,21 +66,27 @@ class ExecutionControlClient:
         self,
         instance: dict[str, Any],
         *,
-        operation_authorized: bool,
+        authorization: dict[str, Any],
+        current_policy_digest: str,
         current_capabilities_hash: str,
         deadline_ms: int,
     ) -> dict[str, Any]:
         normalized = _instance(instance)
-        if type(operation_authorized) is not bool:
-            raise ValueError("operation authorization verdict must be a bool")
+        proof = _authorization_proof(authorization)
+        _content_hash(current_policy_digest)
         _content_hash(current_capabilities_hash)
         _u64(deadline_ms, "execution deadline")
+        if proof["recipe_hash"] != normalized["recipe_hash"]:
+            raise ValueError("authorization recipe hash does not match execution")
+        if proof["deadline_ms"] != deadline_ms:
+            raise ValueError("authorization deadline does not match execution")
         result = self._request(
             "reserve_admit",
             {
                 "instance": normalized,
                 "operation": "fleet.hermes.run",
-                "operation_authorized": operation_authorized,
+                "authorization": proof,
+                "current_policy_digest": current_policy_digest,
                 "current_capabilities_hash": current_capabilities_hash,
                 "deadline_ms": deadline_ms,
             },
@@ -181,6 +187,29 @@ class ExecutionControlClient:
         return document["result"]
 
 
+def _authorization_proof(value: object) -> dict[str, Any]:
+    fields = {
+        "authenticated_sender",
+        "requester",
+        "operation",
+        "recipe_hash",
+        "policy_digest",
+        "deadline_ms",
+        "secret_refs_digest",
+    }
+    if type(value) is not dict or set(value) != fields:
+        raise ValueError("execution authorization proof is invalid")
+    _identifier(value["authenticated_sender"], "authenticated sender")
+    _identifier(value["requester"], "execution requester")
+    if value["operation"] != "fleet.hermes.run":
+        raise ValueError("execution authorization operation is invalid")
+    _content_hash(value["recipe_hash"])
+    _content_hash(value["policy_digest"])
+    _content_hash(value["secret_refs_digest"])
+    _u64(value["deadline_ms"], "execution authorization deadline")
+    return value
+
+
 def _instance(value: object) -> dict[str, Any]:
     fields = {
         "instance_id",
@@ -246,11 +275,29 @@ def _phase(value: object) -> dict[str, Any]:
         },
         "cleaned": {"kind"},
     }[kind]
+    if (
+        kind
+        in {
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "indeterminate",
+            "cleanup_pending",
+        }
+        and "hermes_run_id" in value
+    ):
+        fields = fields | {"hermes_run_id"}
     if kind == "cleanup_pending" and "keryx_task_id" in value:
         fields = fields | {"keryx_task_id"}
     if set(value) != fields:
         raise ValueError("execution phase is invalid")
-    for field in ("backend_kind", "realization_id", "keryx_task_id"):
+    for field in (
+        "backend_kind",
+        "realization_id",
+        "keryx_task_id",
+        "hermes_run_id",
+    ):
         if field in value and value[field] is not None:
             _identifier(value[field], f"execution phase {field}")
     if kind in {

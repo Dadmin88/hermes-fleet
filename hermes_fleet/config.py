@@ -139,6 +139,7 @@ def _node(value: Any) -> NodeConfig:
     policy_raw = _mapping(raw.get("policy", {}), "policy")
     allowed_policy = {
         "allowed_operations",
+        "allowed_secret_references",
         "max_deadline_seconds",
         "max_payload_bytes",
         "max_prompt_chars",
@@ -169,6 +170,7 @@ def _managed_target(value: Any) -> ManagedTargetPolicy:
     policy_raw = _mapping(raw.get("policy", {}), "policy")
     allowed_policy = {
         "allowed_operations",
+        "allowed_secret_references",
         "max_deadline_seconds",
         "max_payload_bytes",
         "max_prompt_chars",

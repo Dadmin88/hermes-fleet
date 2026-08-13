@@ -1,0 +1,429 @@
+from __future__ import annotations
+
+import hashlib
+import os
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from hermes_fleet.agency_materialization import ImmutableAgencyBundle
+from hermes_fleet.execution_package import ExactExecutionPackage
+from hermes_fleet.hermes_runs import HermesRunResult
+from hermes_fleet.recipes import ResolvedRecipe
+
+HASH_1 = "sha256:" + "1" * 64
+HASH_2 = "sha256:" + "2" * 64
+HASH_3 = "sha256:" + "3" * 64
+HASH_4 = "sha256:" + "4" * 64
+
+
+def package(payload: bytes) -> ExactExecutionPackage:
+    recipe = ResolvedRecipe.from_dict(
+        {
+            "schema": "fleet.resolved-recipe.v1",
+            "recipe_hash": HASH_1,
+            "agent": {
+                "kind": "agency_profile",
+                "repository": "https://example.invalid/agency.git",
+                "revision": "a" * 40,
+                "name": "acceptance",
+                "version": "1.0.0",
+                "content_digest": HASH_2,
+            },
+            "extensions": {},
+        }
+    )
+    return ExactExecutionPackage(
+        execution_id="execution-1",
+        idempotency_key="execution-1",
+        resolved_recipe=recipe,
+        capabilities_hash=HASH_3,
+        target={
+            "source": "nodescale",
+            "network_id": "network-1",
+            "device_id": "device-1",
+            "binding_generation": 7,
+            "admission_generation": 9,
+        },
+        authorization={
+            "requester": "peer-controller-1",
+            "operation": "fleet.hermes.run",
+            "resolved_recipe_hash": recipe.content_hash,
+            "policy_digest": HASH_4,
+            "deadline_ms": 20_000,
+            "secret_refs": ["secret://worker/env/OPENROUTER_API_KEY"],
+        },
+        prompt="Return the exact FX8 marker.",
+        agency_bundle=ImmutableAgencyBundle(
+            resolved=recipe.agent,
+            archive_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
+            payload=payload,
+        ),
+    )
+
+
+class Runs:
+    def __init__(self, *, profile: str, calls: list[tuple]) -> None:
+        self.profile = profile
+        self.calls = calls
+
+    def start(self, *, prompt, session_id, timeout_seconds):
+        self.calls.append(("start", self.profile, prompt, session_id))
+        return "run-1"
+
+    def wait(self, *, run_id, timeout_seconds):
+        self.calls.append(("wait", self.profile, run_id))
+        return HermesRunResult(run_id=run_id, text="done")
+
+    def stop(self, run_id, *, timeout_seconds=None):
+        self.calls.append(("stop", self.profile, run_id))
+
+    def status(self, run_id):
+        self.calls.append(("status", self.profile, run_id))
+        return "running"
+
+
+def execution_slot(root: Path) -> Path:
+    slot = root / "profiles" / "fleet-execution"
+    slot.mkdir(parents=True, mode=0o700)
+    slot.chmod(0o700)
+    marker = slot / ".fleet-execution-slot"
+    marker.write_text("hermes-fleet.execution-slot.v1\n")
+    marker.chmod(0o600)
+    return slot
+
+
+def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
+    tmp_path,
+) -> None:
+    from hermes_fleet.agency_materialization import bundle_agency_profile
+    from hermes_fleet.agency_snapshot import AgencyProfilePackage, AgencySource
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    source = tmp_path / "source"
+    (source / "skills").mkdir(parents=True)
+    (source / "SOUL.md").write_text("exact soul")
+    (source / "skills" / "SKILL.md").write_text("exact skill")
+    (source / "distribution.yaml").write_text("name: acceptance\nversion: 1.0.0\n")
+    agency = AgencyProfilePackage(
+        source=AgencySource(
+            repository="https://example.invalid/agency.git", revision="a" * 40
+        ),
+        name="acceptance",
+        version="1.0.0",
+        content_digest="",
+        category="test",
+        priority="normal",
+        capabilities=(),
+        distribution_path=".",
+        local_path=source,
+    )
+    # Use the production digest/bundler to create exact accepted bytes.
+    from hermes_fleet.profile_inventory import _profile_content_digest
+
+    object.__setattr__(
+        agency,
+        "content_digest",
+        _profile_content_digest(source, "acceptance", "1.0.0"),
+    )
+    bundle = bundle_agency_profile(agency)
+    value = package(bundle.payload)
+    object.__setattr__(value, "resolved_recipe", value.resolved_recipe)
+    object.__setattr__(value, "agency_bundle", bundle)
+    calls: list[tuple] = []
+    execution_slot(tmp_path)
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=calls),
+    )
+
+    profile = runtime.materialize(
+        value,
+        secrets={"secret://worker/env/OPENROUTER_API_KEY": "test-secret-value"},
+    )
+    profile_path = tmp_path / "profiles" / profile
+
+    assert profile == "fleet-execution"
+    assert (profile_path / ".fleet-execution-owner").read_text() == "execution-1\n"
+    assert (profile_path / "SOUL.md").read_text() == "exact soul"
+    assert (
+        profile_path / ".env"
+    ).read_text() == "OPENROUTER_API_KEY=test-secret-value\n"
+    assert (profile_path / ".env").stat().st_mode & 0o777 == 0o600
+    assert (
+        runtime.start(
+            profile,
+            prompt=value.prompt,
+            session_id="fleet:execution-1",
+            timeout_seconds=1,
+        )
+        == "run-1"
+    )
+    assert runtime.wait(profile, run_id="run-1", timeout_seconds=1).text == "done"
+
+    runtime.cleanup(profile)
+
+    assert profile_path.is_dir()
+    assert sorted(path.name for path in profile_path.iterdir()) == [
+        ".fleet-execution-slot"
+    ]
+    assert calls == [
+        ("start", profile, value.prompt, "fleet:execution-1"),
+        ("wait", profile, "run-1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "secret://worker/env/../TOKEN",
+        "secret://worker/env/lowercase",
+        "secret://other/env/OPENROUTER_API_KEY",
+        "secret://worker/env/PATH",
+    ],
+)
+def test_profile_runtime_rejects_unapproved_secret_reference(
+    tmp_path, reference
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+    slot = execution_slot(tmp_path)
+    with pytest.raises(ValueError, match="secret reference"):
+        runtime.materialize(
+            package(b"not-used"), secrets={reference: "test-secret-value"}
+        )
+    assert sorted(path.name for path in slot.iterdir()) == [".fleet-execution-slot"]
+
+
+def test_profile_runtime_refuses_foreign_execution_slot(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = tmp_path / "profiles" / "fleet-execution"
+    slot.mkdir(parents=True)
+    (slot / "foreign").write_text("preserve")
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+
+    with pytest.raises(ValueError, match="not an empty owned slot"):
+        runtime.materialize(package(b"not-a-tar"), secrets={})
+    with pytest.raises(ValueError, match="not owned"):
+        runtime.cleanup("fleet-execution")
+
+    assert (slot / "foreign").read_text() == "preserve"
+
+
+@pytest.mark.parametrize("target", ["directory", "marker"])
+def test_profile_runtime_rejects_permissive_owned_slot(tmp_path, target) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = tmp_path / "profiles" / "fleet-execution"
+    slot.mkdir(parents=True, mode=0o700)
+    marker = slot / ".fleet-execution-slot"
+    marker.write_text("hermes-fleet.execution-slot.v1\n")
+    marker.chmod(0o600)
+    (slot if target == "directory" else marker).chmod(0o755)
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+
+    with pytest.raises(ValueError, match="empty owned slot"):
+        runtime.materialize(package(b"not-a-tar"), secrets={})
+
+
+def test_profile_runtime_inspects_exact_slot_owner_and_run_without_starting(
+    tmp_path: Path,
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    calls: list[tuple] = []
+    slot = execution_slot(tmp_path)
+    runs = Runs(profile="fleet-execution", calls=calls)
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: runs,
+    )
+    (slot / ".fleet-execution-owner").write_text("execution-1\n")
+    profile = "fleet-execution"
+
+    assert runtime.owner(profile) == "execution-1"
+    assert runtime.status(profile, run_id="run-1") == "running"
+    assert calls == [("status", "fleet-execution", "run-1")]
+
+
+def test_environment_secret_resolver_is_explicitly_allowlisted_and_never_repr_leaks(
+    monkeypatch,
+) -> None:
+    from hermes_fleet.profile_runtime import EnvironmentSecretResolver
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-secret-value")
+    resolver = EnvironmentSecretResolver(
+        allowed_references=("secret://worker/env/OPENROUTER_API_KEY",)
+    )
+
+    values = resolver.resolve(
+        ["secret://worker/env/OPENROUTER_API_KEY"],
+        requester="peer-controller-1",
+        target={"device_id": "device-1"},
+        execution_id="execution-1",
+    )
+
+    assert values == {"secret://worker/env/OPENROUTER_API_KEY": "test-secret-value"}
+    assert "test-secret-value" not in repr(resolver)
+    with pytest.raises(ValueError, match="not allowed"):
+        resolver.resolve(
+            ["secret://worker/env/OPENAI_API_KEY"],
+            requester="peer-controller-1",
+            target={"device_id": "device-1"},
+            execution_id="execution-1",
+        )
+
+
+def test_local_file_secret_is_copied_minimally_and_source_is_unchanged(
+    tmp_path,
+) -> None:
+    from hermes_fleet.agency_materialization import bundle_agency_profile
+    from hermes_fleet.agency_snapshot import AgencyProfilePackage, AgencySource
+    from hermes_fleet.profile_inventory import _profile_content_digest
+    from hermes_fleet.profile_runtime import (
+        DestinationSecretResolver,
+        ProfileHermesRuntime,
+    )
+
+    source = tmp_path / "canonical-auth.json"
+    source.write_bytes(b'{"provider":"test"}\n')
+    source.chmod(0o600)
+    before = (source.read_bytes(), source.stat().st_mode, source.stat().st_ino)
+    reference = "secret://worker/file/HERMES_AUTH"
+    resolver = DestinationSecretResolver(
+        allowed_references=(reference,),
+        file_sources={reference: (source, "auth.json")},
+    )
+    resolved = resolver.resolve(
+        [reference],
+        requester="peer-controller-1",
+        target={"device_id": "device-1"},
+        execution_id="execution-1",
+    )
+    execution_slot(tmp_path)
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+    agency_source = tmp_path / "agency"
+    (agency_source / "skills").mkdir(parents=True)
+    (agency_source / "SOUL.md").write_text("exact soul")
+    (agency_source / "distribution.yaml").write_text(
+        "name: acceptance\nversion: 1.0.0\n"
+    )
+    agency = AgencyProfilePackage(
+        source=AgencySource(
+            repository="https://example.invalid/agency.git", revision="a" * 40
+        ),
+        name="acceptance",
+        version="1.0.0",
+        content_digest="",
+        category="test",
+        priority="normal",
+        capabilities=(),
+        distribution_path=".",
+        local_path=agency_source,
+    )
+    object.__setattr__(
+        agency,
+        "content_digest",
+        _profile_content_digest(agency_source, "acceptance", "1.0.0"),
+    )
+    bundle = bundle_agency_profile(agency)
+    value = package(bundle.payload)
+    object.__setattr__(value, "agency_bundle", bundle)
+
+    profile = runtime.materialize(value, secrets=resolved)
+    copied = tmp_path / "profiles" / profile / "auth.json"
+
+    assert copied.read_bytes() == b'{"provider":"test"}\n'
+    assert copied.stat().st_mode & 0o777 == 0o600
+    assert (source.read_bytes(), source.stat().st_mode, source.stat().st_ino) == before
+    assert str(source) not in repr(resolver)
+    assert source.read_text() not in repr(resolved[reference])
+
+    runtime.cleanup(profile)
+    assert not copied.exists()
+    assert source.read_bytes() == before[0]
+
+
+@pytest.mark.parametrize("kind", ["symlink", "permissive", "multiple-links"])
+def test_local_file_secret_rejects_unsafe_source(tmp_path, kind) -> None:
+    from hermes_fleet.profile_runtime import DestinationSecretResolver
+
+    real = tmp_path / "real-auth.json"
+    real.write_text("secret")
+    real.chmod(0o600)
+    source = real
+    if kind == "symlink":
+        source = tmp_path / "auth-link.json"
+        source.symlink_to(real)
+    elif kind == "permissive":
+        real.chmod(0o640)
+    else:
+        os.link(real, tmp_path / "second-link.json")
+    reference = "secret://worker/file/HERMES_AUTH"
+    resolver = DestinationSecretResolver(
+        allowed_references=(reference,),
+        file_sources={reference: (source, "auth.json")},
+    )
+
+    with pytest.raises(ValueError, match="file secret source is unsafe"):
+        resolver.resolve(
+            [reference],
+            requester="peer-controller-1",
+            target={"device_id": "device-1"},
+            execution_id="execution-1",
+        )
+
+
+def test_file_secret_reference_requires_destination_local_mapping() -> None:
+    from hermes_fleet.profile_runtime import DestinationSecretResolver
+
+    reference = "secret://worker/file/HERMES_AUTH"
+    resolver = DestinationSecretResolver(
+        allowed_references=(reference,), file_sources={}
+    )
+
+    with pytest.raises(ValueError, match="not configured"):
+        resolver.resolve(
+            [reference],
+            requester="peer-controller-1",
+            target={"device_id": "device-1"},
+            execution_id="execution-1",
+        )
+
+
+def test_local_file_secret_rejects_forged_destination_escape(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import DestinationSecretResolver, LocalFileSecret
+
+    source = tmp_path / "auth.json"
+    source.write_text("secret")
+    source.chmod(0o600)
+    reference = "secret://worker/file/HERMES_AUTH"
+    resolved = DestinationSecretResolver(
+        allowed_references=(reference,),
+        file_sources={reference: (source, "auth.json")},
+    ).resolve(
+        [reference],
+        requester="peer-controller-1",
+        target={"device_id": "device-1"},
+        execution_id="execution-1",
+    )
+
+    secret = resolved[reference]
+    assert type(secret) is LocalFileSecret
+    with pytest.raises(ValueError, match="file secret capability is invalid"):
+        replace(secret, destination_name="../escaped-auth")

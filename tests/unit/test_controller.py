@@ -44,6 +44,10 @@ class _Keryx:
         self.calls.append({"message": message, **kwargs})
         return self.handle
 
+    def task_handle(self, task_id: str):
+        assert task_id == "execution-1"
+        return self.handle
+
 
 def _config():
     from hermes_fleet.config import FleetConfig
@@ -108,6 +112,71 @@ def test_controller_submits_direct_message_to_one_exact_configured_peer() -> Non
     assert submission.task_id == "task-keryx-1"
     assert submission.routed_to == "peer-vps"
     assert submission.delivery_route == "relay"
+
+
+def test_controller_submits_one_exact_execution_package_with_preselected_identity() -> (
+    None
+):
+    from hermes_fleet.controller import submit_execution_package
+    from hermes_fleet.execution_package import EXECUTION_PACKAGE_MEDIA_TYPE
+
+    keryx = _Keryx()
+    keryx.handle.task_id = "execution-1"
+    keryx.handle.receipt = _Receipt(task_id="execution-1")
+    payload = b"immutable execution package"
+    submission = asyncio.run(
+        submit_execution_package(
+            keryx=keryx,
+            peer_id="peer-vps",
+            task_id="execution-1",
+            idempotency_key="execution-1",
+            package_payload=payload,
+            package_hash="sha256:" + "1" * 64,
+            deadline_ms=40_000,
+        )
+    )
+
+    assert len(keryx.calls) == 1
+    call = keryx.calls[0]
+    assert call["peer_id"] == "peer-vps"
+    assert call["task_id"] == "execution-1"
+    assert call["idempotency_key"] == "execution-1"
+    assert call["message"]["parts"] == [
+        {
+            "text": "",
+            "raw": payload,
+            "media_type": EXECUTION_PACKAGE_MEDIA_TYPE,
+        }
+    ]
+    assert call["metadata"]["fleet.execution_package_hash"] == "sha256:" + "1" * 64
+    assert submission.task_id == "execution-1"
+
+
+def test_uncertain_submission_reopens_identity_without_resubmit() -> None:
+    from hermes_fleet.controller import submit_execution_package
+
+    class Uncertain(_Keryx):
+        async def send_task(self, message, **kwargs):
+            self.calls.append({"message": message, **kwargs})
+            raise TimeoutError("response lost")
+
+    keryx = Uncertain()
+    keryx.handle.task_id = "execution-1"
+    keryx.handle.receipt = _Receipt(task_id="execution-1")
+    submission = asyncio.run(
+        submit_execution_package(
+            keryx=keryx,
+            peer_id="peer-vps",
+            task_id="execution-1",
+            idempotency_key="execution-1",
+            package_payload=b"immutable execution package",
+            package_hash="sha256:" + "1" * 64,
+            deadline_ms=40_000,
+        )
+    )
+
+    assert len(keryx.calls) == 1
+    assert submission.task_id == "execution-1"
 
 
 def test_controller_builds_each_initial_operation_without_transport_branching() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -13,6 +14,7 @@ from urllib.parse import urlsplit
 
 _MAX_RESPONSE_BYTES = 1_048_576
 _ACTIVE_STATES = frozenset({"queued", "running", "stopping"})
+_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 class HermesRunError(RuntimeError):
@@ -39,6 +41,13 @@ class HermesRunResult:
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class HermesRunInspection:
+    run_id: str
+    status: str
+    text: str | None
+
+
 class HermesRunsClient:
     """Small synchronous adapter over Hermes's authenticated loopback Runs API."""
 
@@ -47,10 +56,16 @@ class HermesRunsClient:
         *,
         endpoint: str,
         api_key: str,
+        profile: str | None = None,
         poll_interval_seconds: float = 0.1,
         request_timeout_seconds: float = 10.0,
     ) -> None:
         self._endpoint = _loopback_endpoint(endpoint)
+        if profile is not None and (
+            type(profile) is not str or _PROFILE_RE.fullmatch(profile) is None
+        ):
+            raise ValueError("Hermes profile is invalid")
+        self._profile_prefix = "" if profile is None else f"/p/{profile}"
         if (
             type(api_key) is not str
             or not api_key
@@ -111,10 +126,10 @@ class HermesRunsClient:
 
         try:
             health_status, _health = self._request_json(
-                "GET", "/health", timeout_seconds=remaining()
+                "GET", self._path("/health"), timeout_seconds=remaining()
             )
             capability_status, capabilities = self._request_json(
-                "GET", "/v1/capabilities", timeout_seconds=remaining()
+                "GET", self._path("/v1/capabilities"), timeout_seconds=remaining()
             )
         except HermesRunError:
             return unavailable
@@ -156,7 +171,7 @@ class HermesRunsClient:
         try:
             status_code, document = self._request_json(
                 "POST",
-                "/v1/runs",
+                self._path("/v1/runs"),
                 request,
                 timeout_seconds=timeout_seconds,
             )
@@ -188,7 +203,7 @@ class HermesRunsClient:
 
             status_code, document = self._request_json(
                 "GET",
-                f"/v1/runs/{run_id}",
+                self._path(f"/v1/runs/{run_id}"),
                 timeout_seconds=remaining,
             )
             if status_code == 404:
@@ -216,7 +231,9 @@ class HermesRunsClient:
         """Return a bounded exact-run lifecycle classification without mutation."""
         if type(run_id) is not str or not run_id:
             raise ValueError("Hermes run ID must be a nonempty string")
-        status_code, document = self._request_json("GET", f"/v1/runs/{run_id}")
+        status_code, document = self._request_json(
+            "GET", self._path(f"/v1/runs/{run_id}")
+        )
         if status_code == 404:
             return "missing"
         if status_code != 200:
@@ -228,13 +245,35 @@ class HermesRunsClient:
             return "terminal"
         raise HermesRunError("Hermes returned an unsupported run status")
 
+    def inspect(self, run_id: str) -> HermesRunInspection:
+        if type(run_id) is not str or not run_id:
+            raise ValueError("Hermes run ID must be a nonempty string")
+        status_code, document = self._request_json(
+            "GET", self._path(f"/v1/runs/{run_id}")
+        )
+        if status_code == 404:
+            return HermesRunInspection(run_id=run_id, status="missing", text=None)
+        if status_code != 200 or document.get("run_id") != run_id:
+            raise HermesRunError("Hermes run inspection is unavailable")
+        state = document.get("status")
+        if state in _ACTIVE_STATES or state == "waiting_for_approval":
+            return HermesRunInspection(run_id=run_id, status="running", text=None)
+        if state == "completed":
+            text = document.get("output")
+            if type(text) is not str:
+                raise HermesRunError("Hermes completed without terminal text")
+            return HermesRunInspection(run_id=run_id, status="completed", text=text)
+        if state in {"failed", "cancelled"}:
+            return HermesRunInspection(run_id=run_id, status=state, text=None)
+        raise HermesRunError("Hermes returned an unsupported run status")
+
     def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None:
         """Request and confirm cooperative stop for one exact known run."""
         if type(run_id) is not str or not run_id:
             raise ValueError("Hermes run ID must be a nonempty string")
         status_code, document = self._request_json(
             "POST",
-            f"/v1/runs/{run_id}/stop",
+            self._path(f"/v1/runs/{run_id}/stop"),
             timeout_seconds=timeout_seconds,
         )
         if (
@@ -308,6 +347,9 @@ class HermesRunsClient:
         if type(decoded) is not dict:
             raise HermesRunError("Hermes Runs API returned an invalid response")
         return status, decoded
+
+    def _path(self, path: str) -> str:
+        return self._profile_prefix + path
 
 
 def _loopback_endpoint(endpoint: str) -> str:

@@ -10,6 +10,7 @@ from typing import Any, Protocol, cast
 
 from .config import FleetConfig
 from .envelope import ENVELOPE_VERSION, OPERATIONS, FleetEnvelope, parse_envelope
+from .execution_package import EXECUTION_PACKAGE_MEDIA_TYPE
 from .models import NodeConfig, RemoteOutput
 from .observation import normalize_readiness
 from .policy import enforce_request_policy
@@ -101,16 +102,6 @@ class FleetController:
             target, "fleet.message", input_data, deadline_seconds
         )
 
-    async def run_hermes(
-        self, target: str, prompt: str, *, deadline_seconds: int = 120
-    ) -> FleetOperationResult:
-        return await self._communicate(
-            target,
-            "fleet.hermes.run",
-            {"prompt": prompt, "export_paths": []},
-            deadline_seconds,
-        )
-
     async def _communicate(
         self,
         target: str,
@@ -129,10 +120,7 @@ class FleetController:
         output = await wait_text_result(
             submission, timeout_seconds=float(deadline_seconds) + 5.0
         )
-        if operation == "fleet.hermes.run":
-            response: dict[str, Any] | str = output.text
-        else:
-            response = _direct_response(output.text, operation)
+        response: dict[str, Any] | str = _direct_response(output.text, operation)
         return FleetOperationResult(
             operation=operation,
             target=submission.target.name,
@@ -235,6 +223,101 @@ async def submit_communication(
     )
 
 
+async def submit_execution_package(
+    *,
+    keryx: Any,
+    peer_id: str,
+    task_id: str,
+    idempotency_key: str,
+    package_payload: bytes,
+    package_hash: str,
+    deadline_ms: int,
+) -> FleetSubmission:
+    """Submit immutable FX8 bytes once and reconcile uncertainty by task identity."""
+    for value, label in (
+        (peer_id, "peer ID"),
+        (task_id, "task ID"),
+        (idempotency_key, "idempotency key"),
+    ):
+        if type(value) is not str or not value or len(value) > 256:
+            raise ValueError(f"execution {label} is invalid")
+    if type(package_payload) is not bytes or not package_payload:
+        raise ValueError("execution package payload is invalid")
+    if (
+        type(package_hash) is not str
+        or not package_hash.startswith("sha256:")
+        or len(package_hash) != 71
+        or any(character not in "0123456789abcdef" for character in package_hash[7:])
+    ):
+        raise ValueError("execution package hash is invalid")
+    if type(deadline_ms) is not int or deadline_ms <= 0:
+        raise ValueError("execution deadline is invalid")
+    message = {
+        "role": "user",
+        "parts": [
+            {
+                "text": "",
+                "raw": package_payload,
+                "media_type": EXECUTION_PACKAGE_MEDIA_TYPE,
+            }
+        ],
+    }
+    metadata = {
+        "fleet.operation": "fleet.hermes.run",
+        "fleet.execution_package_hash": package_hash,
+        "fleet_deadline_ms": str(deadline_ms),
+        "skill": "fleet.hermes.run",
+    }
+    try:
+        handle = await keryx.send_task(
+            message,
+            peer_id=peer_id,
+            task_id=task_id,
+            idempotency_key=idempotency_key,
+            metadata=metadata,
+            deadline_ms=deadline_ms,
+        )
+    except Exception:
+        reopen = getattr(keryx, "task_handle", None)
+        if not callable(reopen):
+            raise
+        handle = reopen(task_id)
+    if getattr(handle, "task_id", None) != task_id:
+        raise RuntimeError("Keryx returned a mismatched execution task identity")
+    handle = cast(_TaskHandle, handle)
+    receipt = getattr(handle, "receipt", None)
+    if receipt is None:
+        return FleetSubmission(
+            target=NodeConfig(name=task_id, peer_id=peer_id),
+            operation="fleet.hermes.run",
+            task_id=task_id,
+            routed_to=peer_id,
+            delivery_route="reconciled",
+            deadline_ms=deadline_ms,
+            handle=handle,
+        )
+    if getattr(receipt, "task_id", None) != task_id:
+        raise RuntimeError("Keryx returned a mismatched execution receipt identity")
+    routed_to = getattr(receipt, "routed_to", None)
+    delivery_route = getattr(receipt, "delivery_route", None)
+    if (
+        type(routed_to) is not str
+        or not routed_to
+        or type(delivery_route) is not str
+        or not delivery_route
+    ):
+        raise RuntimeError("Keryx returned an invalid execution submission receipt")
+    return FleetSubmission(
+        target=NodeConfig(name=task_id, peer_id=peer_id),
+        operation="fleet.hermes.run",
+        task_id=task_id,
+        routed_to=routed_to,
+        delivery_route=delivery_route,
+        deadline_ms=deadline_ms,
+        handle=handle,
+    )
+
+
 async def wait_text_result(
     submission: FleetSubmission, *, timeout_seconds: float
 ) -> RemoteOutput:
@@ -284,7 +367,14 @@ _DIRECT_RESPONSE_KEYS = {
         {"operation", "status", "adapter", "keryx_delivery", "hermes", "readiness"}
     ),
     "fleet.inventory": frozenset(
-        {"operation", "status", "node", "capabilities", "readiness"}
+        {
+            "operation",
+            "status",
+            "node",
+            "capabilities",
+            "readiness",
+            "execution_backend",
+        }
     ),
     "fleet.message": frozenset(
         {

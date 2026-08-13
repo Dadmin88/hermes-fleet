@@ -12,15 +12,21 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .node_bootstrap import _safe_detail
+from .node_bootstrap import _safe_detail, load_bundle
 
 _SSH_TARGET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,254}$")
 
 
 class SetupError(RuntimeError):
-    def __init__(self, detail: object) -> None:
+    def __init__(self, detail: object, *, code: str = "setup_failed") -> None:
         super().__init__(str(detail))
         self.public_message = _safe_detail(detail)
+        self.code = code
+
+
+class PrerequisiteBlocked(SetupError):
+    def __init__(self, detail: object) -> None:
+        super().__init__(detail, code="prerequisite_blocked")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,33 +111,73 @@ class SetupService:
         if _SSH_TARGET.fullmatch(ssh_target) is None:
             raise SetupError("SSH target is invalid.")
         provider_node_id = self._provider_identity(ssh_target)
+        try:
+            manifest = load_bundle(bundle)
+        except (OSError, ValueError) as error:
+            raise SetupError(f"Worker bundle is invalid: {error}") from error
         reachable = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, "true"])
         if reachable.returncode != 0:
             raise SetupError("SSH target is unavailable.")
-        if not bundle.is_dir():
-            raise SetupError("Worker bundle is unavailable.")
+        self._remote_preflight(ssh_target)
         remote_state = ".local/state/hermes-fleet"
         remote_bundle = f"{remote_state}/setup-bundle"
+        transfer = self._run(
+            ["scp", "-r", f"{bundle}/.", f"{ssh_target}:{remote_bundle}"]
+        )
+        if transfer.returncode != 0:
+            raise SetupError("Worker bundle transfer failed.")
+        remote_venv = f"{remote_state}/setup-venv"
+        fleet_wheel = f"{remote_bundle}/{manifest['artifacts']['fleet-wheel']['path']}"
+        keryx_wheel = f"{remote_bundle}/{manifest['artifacts']['keryx-wheel']['path']}"
+        for command in (
+            ["python3", "-m", "venv", remote_venv],
+            [
+                remote_venv + "/bin/python",
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                keryx_wheel,
+            ],
+            [
+                remote_venv + "/bin/python",
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--no-deps",
+                "--force-reinstall",
+                fleet_wheel,
+            ],
+        ):
+            result = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, *command])
+            if result.returncode != 0:
+                raise SetupError("Fleet bootstrap helper staging failed.")
         snapshot = self._run(
             [
                 "ssh",
                 "-o",
                 "BatchMode=yes",
                 ssh_target,
-                "hermes-fleet-node",
+                remote_venv + "/bin/hermes-fleet-node",
                 "snapshot",
             ]
         )
         if snapshot.returncode != 0:
             raise SetupError("Worker rollback snapshot failed.")
-        transfer = self._run(
-            ["scp", "-r", str(bundle), f"{ssh_target}:{remote_bundle}"]
-        )
-        if transfer.returncode != 0:
-            raise SetupError("Worker bundle transfer failed.")
         for command in (
-            ["hermes-fleet-node", "doctor", "--bundle", remote_bundle],
-            ["hermes-fleet-node", "install", "--bundle", remote_bundle],
+            [
+                remote_venv + "/bin/hermes-fleet-node",
+                "doctor",
+                "--bundle",
+                remote_bundle,
+            ],
+            [
+                remote_venv + "/bin/hermes-fleet-node",
+                "install",
+                "--bundle",
+                remote_bundle,
+            ],
         ):
             result = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, *command])
             if result.returncode != 0:
@@ -141,6 +187,27 @@ class SetupService:
             provider_node_id=provider_node_id,
             installed=True,
         )
+
+    def _remote_preflight(self, ssh_target: str) -> None:
+        checks = (
+            [
+                "python3",
+                "-c",
+                "import sys,venv,ensurepip; assert sys.version_info >= (3, 11)",
+            ],
+            ["systemctl", "--user", "--version"],
+            [
+                "sh",
+                "-c",
+                'test "$(loginctl show-user "$(id -un)" -p Linger --value)" = yes',
+            ],
+        )
+        for command in checks:
+            result = self._run(["ssh", "-o", "BatchMode=yes", ssh_target, *command])
+            if result.returncode != 0:
+                raise PrerequisiteBlocked(
+                    "Worker lacks a required unprivileged bootstrap prerequisite."
+                )
 
     def _provider_identity(self, target: str) -> str:
         result = self._run(["tailscale", "status", "--json"])
@@ -203,7 +270,7 @@ def run(args: argparse.Namespace, *, service: SetupService | None = None) -> int
         else:
             raise SetupError("Unknown Fleet setup command.")
     except SetupError as error:
-        payload = {"error": {"code": "setup_failed", "message": error.public_message}}
+        payload = {"error": {"code": error.code, "message": error.public_message}}
         print(
             json.dumps(payload, sort_keys=True)
             if getattr(args, "json_output", False)

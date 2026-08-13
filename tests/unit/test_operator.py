@@ -153,6 +153,7 @@ class Handle:
 class FakeKeryx:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
+        self.peer_id = "peer-controller-1"
 
     async def send_task(self, message, *, peer_id, metadata, deadline_ms):
         self.sent.append(
@@ -192,9 +193,14 @@ def _service(
     *,
     config: FleetConfig | None = None,
     keryx: Any | None = None,
+    recipe_submission: Any | None = None,
 ) -> OperatorService:
     return OperatorService(
-        state=state, config=config or _config(), keryx=keryx or FakeKeryx()
+        state=state,
+        config=config or _config(),
+        keryx=keryx or FakeKeryx(),
+        recipe_submission=recipe_submission,
+        execution_id_factory=lambda: "execution-1",
     )
 
 
@@ -271,46 +277,129 @@ def test_managed_state_never_implies_execution_authority() -> None:
     assert denied.value.code is OperatorErrorCode.POLICY_DENIED
 
 
-def test_run_exact_preserves_exact_peer_and_returns_structured_completion() -> None:
-    state = FakeState([_managed_node()])
+def test_prompt_only_execution_is_unavailable_without_recipe_authority() -> None:
+    service = _service(FakeState([_managed_node()]), keryx=FakeKeryx())
+    with pytest.raises(OperatorError) as unavailable:
+        asyncio.run(service.run_exact("worker-a"))  # type: ignore[arg-type]
+    assert unavailable.value.code is OperatorErrorCode.OPERATION_UNAVAILABLE
+
+
+def test_exact_recipe_request_uses_destination_capabilities_and_shared_submission() -> (
+    None
+):
+    from types import SimpleNamespace
+
+    from hermes_fleet.agency_snapshot import AgencySource
+    from hermes_fleet.host_profile_capabilities import host_profile_capabilities
+    from hermes_fleet.operator import ExactRecipeRequest
+    from hermes_fleet.recipes import FleetRecipe
+
+    capabilities = host_profile_capabilities(
+        logical_cpus=2,
+        memory_bytes=1_000_000,
+        operating_system="linux",
+        architecture="x86_64",
+    )
+    inventory_text = json.dumps(
+        {
+            "operation": "fleet.inventory",
+            "status": "ok",
+            "node": {"name": "worker", "peer_id": "peer-current", "version": "0.1.0"},
+            "capabilities": ["fleet.hermes.run"],
+            "execution_backend": {
+                "content_hash": capabilities.content_hash,
+                "document": capabilities.to_dict(),
+            },
+        }
+    )
     keryx = FakeKeryx()
-    result = asyncio.run(
-        _service(state, keryx=keryx).run_exact(
-            "worker-a", "do bounded work", deadline_seconds=30
-        )
+    keryx.task_handle = lambda task_id: Handle()
+    original_send = keryx.send_task
+
+    async def send_task(message, **kwargs):
+        if kwargs.get("metadata", {}).get("fleet.operation") == "fleet.inventory":
+            handle = Handle()
+            handle._inventory_text = inventory_text  # type: ignore[attr-defined]
+
+            async def wait(timeout=None):
+                return SimpleNamespace(
+                    status=SimpleNamespace(value="completed"),
+                    artifacts=[
+                        SimpleNamespace(
+                            parts=[
+                                SimpleNamespace(
+                                    text=inventory_text, media_type="text/plain"
+                                )
+                            ]
+                        )
+                    ],
+                )
+
+            handle.wait = wait  # type: ignore[method-assign]
+            return handle
+        return await original_send(message, **kwargs)
+
+    keryx.send_task = send_task  # type: ignore[method-assign]
+    submitted: list[dict[str, Any]] = []
+
+    class Submission:
+        async def submit(self, **kwargs):
+            submitted.append(kwargs)
+            return SimpleNamespace(
+                task_id="task-test",
+                routed_to="peer-current",
+                delivery_route="relay",
+                deadline_ms=40_000,
+                handle=Handle(),
+            )
+
+    recipe = FleetRecipe.from_dict(
+        {
+            "schema": "fleet.recipe.v1",
+            "agent": {
+                "kind": "agency_profile",
+                "name": "acceptance",
+                "version": "1.0.0",
+            },
+            "environment": {"os": ["linux"], "architecture": ["x86_64"]},
+            "resources": {"cpu_millis": 1000, "memory_bytes": 1000},
+            "security": {"isolation": "process", "network": "provider"},
+            "extensions": {},
+        }
+    )
+    request = ExactRecipeRequest(
+        target="worker-a",
+        prompt="Return FX8_OK.",
+        recipe=recipe,
+        agency_source=AgencySource("https://example.invalid/agency.git", "a" * 40),
+        deadline_seconds=30,
     )
 
-    assert keryx.sent[0]["peer_id"] == "peer-current"
-    envelope = json.loads(keryx.sent[0]["message"]["parts"][0]["text"])
-    assert envelope["target"]["name"] == "worker"
-    assert result.task_id == "task-test"
-    assert result.requested_target == "worker-a"
-    assert result.resolved_target.identity.device_id == "device-a"
-    assert result.routed_to == "peer-current"
-    assert result.delivery_route == "relay"
-    assert result.operation == "fleet.hermes.run"
-    assert result.deadline_ms > 0
-    assert result.terminal_state == "completed"
-    assert result.run_id == "run-test"
-    assert result.result == "done"
-
-
-def test_submit_exact_preserves_exact_peer_without_waiting() -> None:
-    state = FakeState([_managed_node()])
-    keryx = FakeKeryx()
-
     result = asyncio.run(
-        _service(state, keryx=keryx).submit_exact(
-            "worker-a", "do bounded work", deadline_seconds=30
-        )
+        _service(
+            FakeState([_managed_node()]),
+            keryx=keryx,
+            recipe_submission=Submission(),
+        ).submit_exact(request)
     )
 
-    assert keryx.sent[0]["peer_id"] == "peer-current"
     assert result.task_id == "task-test"
-    assert result.terminal_state == "submitted"
-    assert result.resolved_target is not None
-    assert result.resolved_target.identity.device_id == "device-a"
-    assert result.routed_to == "peer-current"
+    assert len(submitted) == 1
+    assert submitted[0]["requester"] == "peer-controller-1"
+    assert submitted[0]["peer_id"] == "peer-current"
+    assert submitted[0]["execution_id"] == "execution-1"
+    assert submitted[0]["capabilities"] == capabilities
+    assert submitted[0]["target"] == {
+        "source": "nodescale",
+        "network_id": "network-test",
+        "device_id": "device-a",
+        "binding_generation": 3,
+        "admission_generation": 5,
+    }
+    assert (
+        submitted[0]["policy_digest"]
+        == _config().managed_targets[0].policy.content_hash
+    )
 
 
 @pytest.mark.parametrize("status", ["submitted", "working"])

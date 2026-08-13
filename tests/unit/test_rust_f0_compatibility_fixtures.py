@@ -51,9 +51,8 @@ def test_domain_fixture_matches_python_operation_and_selection_truth() -> None:
         assert [node.name for node in selected] == case["expected"]
 
 
-def test_domain_fixture_matches_python_authority_and_recovery_truth(tmp_path) -> None:
+def test_domain_fixture_matches_python_authority_truth(tmp_path) -> None:
     from hermes_fleet.managed_projection import ManagedProjectionStore
-    from hermes_fleet.run_binding import RunBinding, recovery_action
 
     fixture = _load("domain-v1.json")
     store = ManagedProjectionStore(tmp_path / "managed-authority.sqlite3")
@@ -86,16 +85,6 @@ def test_domain_fixture_matches_python_authority_and_recovery_truth(tmp_path) ->
             case["generated"]
         )
         assert list(inspected["effective"]["allowed_operations"]) == case["expected"]
-
-    for index, case in enumerate(fixture["run_recovery"], start=1):
-        state = case["state"]
-        binding = RunBinding(
-            task_id=f"task-{index}",
-            state=state["kind"],
-            run_id=state.get("run_id"),
-            result_text=state.get("result"),
-        )
-        assert recovery_action(binding, created=False) == case["expected"]
 
 
 def test_managed_projection_fixture_matches_python_outcomes(tmp_path) -> None:

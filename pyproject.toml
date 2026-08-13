@@ -12,7 +12,7 @@ license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [
   "PyYAML>=6,<7",
-  "keryx @ git+https://github.com/Dadmin88/hermes-keryx.git@ae863978fc34ef84e76f3d2e2b99ba3ab76f6bd8#subdirectory=sdk/python",
+  "keryx @ git+https://github.com/Dadmin88/hermes-keryx.git@b29e66d8966d444e583b0085a81309d52b157d1d#subdirectory=sdk/python",
 ]
 
 [project.scripts]

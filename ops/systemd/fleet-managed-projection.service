@@ -13,7 +13,7 @@ Type=simple
 # explicit cross-UID group socket mode.
 Environment=FLEET_OBSERVATION_FRESHNESS_SECONDS=90
 EnvironmentFile=%h/.config/hermes-fleet/fleet-managed-projection.env
-ExecStart=%h/.local/bin/fleet-managed-control --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --freshness-seconds ${FLEET_OBSERVATION_FRESHNESS_SECONDS}
+ExecStart=%h/.local/share/hermes-fleet/bin/fleet-managed-control --socket ${FLEET_MANAGED_PROJECTION_SOCKET} --database ${FLEET_MANAGED_PROJECTION_DATABASE} --allowed-uid ${FLEET_MANAGED_PROJECTION_ALLOWED_UID} --freshness-seconds ${FLEET_OBSERVATION_FRESHNESS_SECONDS}
 UMask=0077
 Restart=on-failure
 RestartSec=5

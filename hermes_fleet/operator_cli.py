@@ -14,10 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from . import setup as setup_runtime
+from .agency_snapshot import AgencySource
 from .config import get_fleet_dir, load_fleet_config
 from .desktop_api import DesktopApiClient
-from .operator import OperatorError, OperatorErrorCode, OperatorService
+from .operator import (
+    ExactRecipeRequest,
+    OperatorError,
+    OperatorErrorCode,
+    OperatorService,
+)
 from .operator_doctor import OperatorDoctor, OperatorDoctorReport
+from .recipes import FleetRecipe
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -132,6 +139,10 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     execute = commands.add_parser("run", help="Run exact-target Hermes work")
     execute.add_argument("target")
     execute.add_argument("prompt")
+    execute.add_argument("--recipe", type=Path, required=True)
+    execute.add_argument("--agency-repository", required=True)
+    execute.add_argument("--agency-revision", required=True)
+    execute.add_argument("--secret-ref", action="append", default=[])
     mode = execute.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true", default=True)
     mode.add_argument("--detach", dest="wait", action="store_false")
@@ -237,7 +248,21 @@ async def _dispatch(args: argparse.Namespace, context: OperatorCliContext) -> An
         action = (
             context.operator.run_exact if args.wait else context.operator.submit_exact
         )
-        return await action(args.target, args.prompt, deadline_seconds=args.deadline)
+        try:
+            payload = args.recipe.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise ValueError("Recipe file is unreadable") from error
+        if len(payload.encode("utf-8")) > 256 * 1024:
+            raise ValueError("Recipe file exceeds the supported bound")
+        request = ExactRecipeRequest(
+            target=args.target,
+            prompt=args.prompt,
+            recipe=FleetRecipe.from_json(payload),
+            agency_source=AgencySource(args.agency_repository, args.agency_revision),
+            secret_refs=tuple(args.secret_ref),
+            deadline_seconds=args.deadline,
+        )
+        return await action(request)
     if args.command == "task":
         return await context.operator.inspect_task(args.task_id)
     if args.command == "doctor":
