@@ -391,3 +391,8 @@ def test_json_output_is_machine_readable_and_secret_free() -> None:
     parsed = json.loads(output)
     assert parsed["primary_blocker"] == "keryx.test"
     assert "hidden" not in bootstrap.render_report(report, json_output=False)
+
+
+def test_snapshot_command_is_available() -> None:
+    args = bootstrap._parser().parse_args(["snapshot"])
+    assert args.command == "snapshot"

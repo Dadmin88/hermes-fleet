@@ -11,7 +11,13 @@ fleet readiness TARGET [--json]
 fleet run TARGET PROMPT [--wait|--detach] [--deadline SECONDS] [--json]
 fleet task show TASK_ID [--json]
 fleet doctor [--json]
+fleet setup [--bundle PATH] [--json]
+fleet node adopt SSH_TARGET --bundle PATH [--json]
 ```
+
+Setup and existing-device worker convergence are documented separately in
+[Unified Setup V1](unified-setup.md). They remain software orchestration, not
+identity, trust, managed-membership, or execution-policy grants.
 
 `TARGET` is resolved by the operator foundation from an explicit alias, authoritative managed DeviceId, or Fleet stable ID. The current authenticated Keryx peer remains internal routing and diagnostic data.
 

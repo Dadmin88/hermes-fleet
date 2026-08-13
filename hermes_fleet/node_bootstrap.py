@@ -880,6 +880,7 @@ def _parser() -> argparse.ArgumentParser:
     doctor.add_argument("--json", action="store_true")
     install = subparsers.add_parser("install")
     install.add_argument("--bundle", type=Path, required=True)
+    subparsers.add_parser("snapshot")
     build = subparsers.add_parser("build-bundle")
     build.add_argument("--fleet-source", type=Path, required=True)
     build.add_argument("--keryx-source", type=Path, required=True)
@@ -899,6 +900,12 @@ def main() -> None:
         print(render_report(report, json_output=False))
         print(f"changes: {len(installer.changes)}")
         raise SystemExit(0 if report.ready else 1)
+    if args.command == "snapshot":
+        installer = Installer(home=Path.home(), bundle=Path("."))
+        root = installer._snapshot_root()
+        installer._snapshot_touched(root)
+        print(root)
+        return
     build_bundle(
         fleet_source=args.fleet_source,
         keryx_source=args.keryx_source,
