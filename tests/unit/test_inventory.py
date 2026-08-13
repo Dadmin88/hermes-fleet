@@ -25,6 +25,9 @@ def test_initialize_inventory_preserves_a_valid_empty_cache_without_rewriting(
 
     assert cache_path.read_text(encoding="utf-8") == "{}\n"
     assert cache_path.stat().st_mtime_ns == expected_mtime
+    inventory = (state_dir / "nodes.yaml").read_text(encoding="utf-8")
+    assert "schema_version: 2" in inventory
+    assert "managed_targets: []" in inventory
 
 
 def test_inventory_write_refuses_a_symlink_target(tmp_path) -> None:

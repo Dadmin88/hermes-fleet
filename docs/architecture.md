@@ -80,7 +80,7 @@ Fleet preserves Keryx submission facts such as task ID, routed peer, and deliver
 
 ## Exact-node selection
 
-Operator inventory maps a friendly Fleet node name to an immutable Keryx peer ID. Selection is exact and deterministic. Inventory configuration may express operator policy and presentation metadata, but it does not prove current reachability.
+The legacy schema-v1 inventory maps a friendly Fleet node name to an immutable Keryx peer ID. The schema-v2 operator foundation instead keys explicit policy by managed identity and resolves the current authenticated peer from authoritative binding provenance. Both paths preserve exact deterministic selection. Operator configuration may express policy and presentation metadata, but it does not prove current reachability.
 
 Reachability and routing are determined from Keryx state and the actual submission receipt. Fleet does not silently retarget a current exact-node request to a different node when the selected node is unavailable.
 
@@ -247,7 +247,7 @@ Fleet intentionally keeps distinct state domains.
 
 ### Operator state
 
-Human-managed node inventory and local policy. This remains separate from generated managed state.
+Human-managed node inventory and local policy. This remains separate from generated managed state. The canonical active document is the profile-scoped `HERMES_HOME/fleet/nodes.yaml`; schema version 2 can key explicit policy by authoritative managed identity so current Keryx peer bindings are resolved from managed provenance instead of copied into long-lived human-facing configuration. See [Operator foundation](operator-foundation.md).
 
 ### Managed projection state
 

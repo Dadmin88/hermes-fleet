@@ -45,6 +45,7 @@ class FleetSubmission:
     task_id: str
     routed_to: str
     delivery_route: str
+    deadline_ms: int
     handle: _TaskHandle
 
 
@@ -229,6 +230,7 @@ async def submit_communication(
         task_id=task_id,
         routed_to=routed_to,
         delivery_route=delivery_route,
+        deadline_ms=deadline_ms,
         handle=handle,
     )
 

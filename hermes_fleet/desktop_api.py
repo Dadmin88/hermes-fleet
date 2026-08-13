@@ -13,6 +13,7 @@ from ._paths import is_concrete_path
 from .observation import normalize_readiness
 
 _SCHEMA = "fleet.desktop.v1"
+_MANAGED_SCHEMA = "fleet.managed-projection.v1"
 _ALIAS_SCHEMA = "fleet.desktop-alias.v1"
 _WORKFLOW_SCHEMA = "fleet.workflow.v1"
 _MAX_FRAME_BYTES = 2_097_152
@@ -87,6 +88,23 @@ class DesktopApiClient:
             },
             "nodes": nodes,
         }
+
+    def inspect_projection(
+        self, *, source: str, network_id: str, device_id: str
+    ) -> dict[str, Any]:
+        """Inspect authoritative managed provenance through the owning control API."""
+        result = self._request(
+            {
+                "schema": _MANAGED_SCHEMA,
+                "kind": "inspect",
+                "selector": _selector(source, network_id, device_id),
+            },
+            expected_schema=_MANAGED_SCHEMA,
+            expected_kind="inspect",
+        )
+        if set(result) != {"generated", "effective"}:
+            raise RuntimeError("Fleet returned an invalid managed projection")
+        return result
 
     def set_alias(
         self,

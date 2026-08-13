@@ -25,6 +25,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 
 ### Operator experience
 
+- [Operator foundation](operator-foundation.md) - presentation-neutral application service, canonical policy, managed-identity target resolution, structured results/errors, and read-only diagnostics.
 - [Fleet Desktop](desktop.md) - native Hermes Desktop packaging, Fleet Overview, Network/Membership operator surfaces, real-state projection, installation, and troubleshooting.
 - [Fleet Canvas topology](canvas.md) - truthful node graph, stable local layout, controls, accessibility, workflow-editor boundaries, and edge provenance.
 
