@@ -234,6 +234,19 @@ def test_prepare_rejects_same_execution_with_different_idempotency_key() -> None
     assert sum(call[1] == "create" for call in fake.calls) == 1
 
 
+def test_existing_realization_recovers_plan_fingerprint_from_fx4_labels() -> None:
+    fake = FakeDocker()
+    service = backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    labels = fake.container["Config"]["Labels"]  # type: ignore[index]
+    assert "dev.hermes.fleet.plan" not in labels
+
+    recovered = service.inspect(prepared)
+
+    assert recovered.plan_fingerprint == plan().fingerprint
+
+
 def test_start_inspect_stop_cleanup_map_real_runtime_state_and_are_idempotent() -> None:
     fake = FakeDocker()
     service = backend(fake)
@@ -243,8 +256,9 @@ def test_start_inspect_stop_cleanup_map_real_runtime_state_and_are_idempotent() 
     assert service.start(running) == running
     stopped = service.stop(running)
     assert stopped.state == BackendExecutionState.STOPPED
-    service.cleanup(stopped)
-    service.cleanup(stopped)
+    cleaned = service.cleanup(stopped)
+    assert cleaned.state == BackendExecutionState.CLEANED
+    assert service.cleanup(cleaned) == cleaned
 
     assert fake.container is None
     assert sum(call[1] == "start" for call in fake.calls) == 1
