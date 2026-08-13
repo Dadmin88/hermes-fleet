@@ -733,7 +733,7 @@ fn concurrent_v1_migration_opens_once_and_preserves_projection() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
 }
 
@@ -890,7 +890,7 @@ fn accepted_v1_database_migrates_in_place_and_preserves_managed_projection() {
     drop(connection);
 
     let migrated = FleetStateStore::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 5);
+    assert_eq!(migrated.schema_version().unwrap(), 6);
     assert_eq!(
         migrated
             .inspect_projection("nodescale", "network-1", "device-1")
@@ -924,6 +924,7 @@ fn accepted_v1_database_migrates_in_place_and_preserves_managed_projection() {
     assert_eq!(
         tables,
         vec![
+            "execution_instances",
             "fleet_state_schema",
             "managed_node_aliases",
             "managed_projections",
@@ -988,7 +989,7 @@ fn accepted_v2_database_discards_unbound_observation_during_upgrade() {
     drop(connection);
 
     let migrated = FleetStateStore::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 5);
+    assert_eq!(migrated.schema_version().unwrap(), 6);
     let view = migrated
         .inspect_node(
             "nodescale",
