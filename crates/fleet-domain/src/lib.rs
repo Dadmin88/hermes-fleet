@@ -11,7 +11,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+pub mod execution_instance;
 pub mod workflow;
+
+pub use execution_instance::{
+    ExecutionInstance, ExecutionInstancePhase, ExecutionInstanceRecovery, InvalidExecutionInstance,
+    ManagedNodeIdentity,
+};
 
 /// The complete operation vocabulary already exposed by Python Hermes Fleet.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

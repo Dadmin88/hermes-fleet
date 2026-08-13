@@ -64,7 +64,7 @@ fn workflow_revisions_are_durable_immutable_and_soft_deletable() {
 
     drop(store);
     let restarted = FleetStateStore::open(&path).unwrap();
-    assert_eq!(restarted.schema_version().unwrap(), 5);
+    assert_eq!(restarted.schema_version().unwrap(), 6);
     assert_eq!(
         restarted
             .read_workflow_version("workflow-1", 1)

@@ -13,21 +13,23 @@ use std::{
 };
 
 use fleet_domain::{
-    ApplyOutcome, FleetOperation, Generation, ManagedNodeState, ManagedOperation,
-    ManagedProjectionRecord, NodeObservation, NodeReadiness, ObservationRecord, ProfilePresence,
-    ProjectionApply, ProjectionDocument, ReadinessPolicy, RecoveryAction, ResourceObservation,
-    RunBindingState, apply_projection, evaluate_readiness, workflow::WorkflowDocument,
+    ApplyOutcome, ExecutionInstance, ExecutionInstancePhase, FleetOperation, Generation,
+    ManagedNodeState, ManagedOperation, ManagedProjectionRecord, NodeObservation, NodeReadiness,
+    ObservationRecord, ProfilePresence, ProjectionApply, ProjectionDocument, ReadinessPolicy,
+    RecoveryAction, ResourceObservation, RunBindingState, apply_projection, evaluate_readiness,
+    workflow::WorkflowDocument,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const WORKFLOW_DEFINITION_LIMIT: i64 = 256;
 const MIGRATION_1: &str = include_str!("../migrations/0001_fleet_state.sql");
 const MIGRATION_2: &str = include_str!("../migrations/0002_node_observations.sql");
 const MIGRATION_3: &str = include_str!("../migrations/0003_admission_generation.sql");
 const MIGRATION_4: &str = include_str!("../migrations/0004_managed_node_aliases.sql");
 const MIGRATION_5: &str = include_str!("../migrations/0005_workflow_definitions.sql");
+const MIGRATION_6: &str = include_str!("../migrations/0006_execution_instances.sql");
 const FLEET_STATE_SCHEMA_V1_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 1)
@@ -44,9 +46,13 @@ const FLEET_STATE_SCHEMA_V4_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 4)
 ) STRICT";
-const FLEET_STATE_SCHEMA_SQL: &str = "
+const FLEET_STATE_SCHEMA_V5_SQL: &str = "
 CREATE TABLE fleet_state_schema (
     version INTEGER PRIMARY KEY CHECK (version = 5)
+) STRICT";
+const FLEET_STATE_SCHEMA_SQL: &str = "
+CREATE TABLE fleet_state_schema (
+    version INTEGER PRIMARY KEY CHECK (version = 6)
 ) STRICT";
 const MANAGED_PROJECTIONS_SQL: &str = "
 CREATE TABLE managed_projections (
@@ -122,6 +128,15 @@ CREATE TABLE workflow_versions (
     FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(workflow_id)
         ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT";
+const EXECUTION_INSTANCES_SQL: &str = "
+CREATE TABLE execution_instances (
+    instance_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    state_json TEXT NOT NULL CHECK (json_valid(state_json)),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= created_at_ms)
+) STRICT";
 const MAX_IDENTIFIER_CHARS: usize = 256;
 const MAX_OBSERVATION_FUTURE_SKEW_MS: u64 = 5_000;
 const MAX_RESULT_CHARS: usize = 65_536;
@@ -194,6 +209,12 @@ pub struct ProjectionView {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunReservation {
     pub state: RunBindingState,
+    pub created: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionInstanceReservation {
+    pub instance: ExecutionInstance,
     pub created: bool,
 }
 
@@ -1261,6 +1282,124 @@ impl FleetStateStore {
         Ok(candidates)
     }
 
+    pub fn reserve_execution_instance(
+        &self,
+        desired: &ExecutionInstance,
+    ) -> Result<ExecutionInstanceReservation> {
+        desired
+            .validate()
+            .map_err(|_| StateError::InvalidInput("execution instance is invalid"))?;
+        if !matches!(desired.phase, ExecutionInstancePhase::Reserved)
+            || desired.generation != 1
+            || desired.created_at_ms != desired.updated_at_ms
+        {
+            return Err(StateError::InvalidInput(
+                "new execution instance must be reserved",
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let serialized = serde_json::to_string(desired)?;
+        let created = transaction.execute(
+            "INSERT OR IGNORE INTO execution_instances
+             (instance_id, idempotency_key, generation, state_json, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                desired.instance_id,
+                desired.idempotency_key,
+                desired.generation as i64,
+                serialized,
+                desired.created_at_ms as i64,
+                desired.updated_at_ms as i64,
+            ],
+        )? == 1;
+        let instance = match load_execution_instance(&transaction, &desired.instance_id)? {
+            Some(instance) => instance,
+            None if !created => {
+                let conflicting_id = transaction
+                    .query_row(
+                        "SELECT instance_id FROM execution_instances WHERE idempotency_key = ?1",
+                        [&desired.idempotency_key],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if conflicting_id.is_some() {
+                    return Err(StateError::InvalidTransition(
+                        "execution instance idempotency key is already bound",
+                    ));
+                }
+                return Err(StateError::CorruptState(
+                    "reserved execution instance disappeared",
+                ));
+            }
+            None => {
+                return Err(StateError::CorruptState(
+                    "reserved execution instance disappeared",
+                ));
+            }
+        };
+        if !same_execution_instance_identity(&instance, desired) {
+            return Err(StateError::InvalidTransition(
+                "execution instance identity conflicts with existing state",
+            ));
+        }
+        transaction.commit()?;
+        Ok(ExecutionInstanceReservation { instance, created })
+    }
+
+    pub fn get_execution_instance(&self, instance_id: &str) -> Result<Option<ExecutionInstance>> {
+        validate_identifier(instance_id, "execution instance ID")?;
+        let connection = self.connect()?;
+        load_execution_instance(&connection, instance_id)
+    }
+
+    pub fn transition_execution_instance(
+        &self,
+        instance_id: &str,
+        expected_generation: u64,
+        phase: ExecutionInstancePhase,
+        now_ms: u64,
+    ) -> Result<ExecutionInstance> {
+        validate_identifier(instance_id, "execution instance ID")?;
+        if expected_generation == 0 || expected_generation > i64::MAX as u64 {
+            return Err(StateError::InvalidInput(
+                "execution instance generation is invalid",
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_execution_instance(&transaction, instance_id)?.ok_or(
+            StateError::InvalidTransition("execution instance is not reserved"),
+        )?;
+        if current.generation != expected_generation {
+            return Err(StateError::InvalidTransition(
+                "execution instance generation is stale",
+            ));
+        }
+        let next = current.transition(phase, now_ms).map_err(|_| {
+            StateError::InvalidTransition("execution instance transition is invalid")
+        })?;
+        let changed = transaction.execute(
+            "UPDATE execution_instances
+             SET generation = ?1, state_json = ?2, updated_at_ms = ?3
+             WHERE instance_id = ?4 AND generation = ?5",
+            params![
+                next.generation as i64,
+                serde_json::to_string(&next)?,
+                next.updated_at_ms as i64,
+                instance_id,
+                expected_generation as i64,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StateError::InvalidTransition(
+                "execution instance generation changed concurrently",
+            ));
+        }
+        transaction.commit()?;
+        Ok(next)
+    }
+
     pub fn reserve_run(&self, task_id: &str) -> Result<RunReservation> {
         validate_identifier(task_id, "task ID")?;
         let mut connection = self.connect()?;
@@ -1409,6 +1548,9 @@ impl FleetStateStore {
                 require_v4_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_5)?;
                 transaction.pragma_update(None, "user_version", 5)?;
+                require_v5_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_6)?;
+                transaction.pragma_update(None, "user_version", 6)?;
             }
             1 => {
                 require_v1_schema(&transaction)?;
@@ -1423,6 +1565,9 @@ impl FleetStateStore {
                 require_v4_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_5)?;
                 transaction.pragma_update(None, "user_version", 5)?;
+                require_v5_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_6)?;
+                transaction.pragma_update(None, "user_version", 6)?;
             }
             2 => {
                 require_v2_schema(&transaction)?;
@@ -1434,6 +1579,9 @@ impl FleetStateStore {
                 require_v4_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_5)?;
                 transaction.pragma_update(None, "user_version", 5)?;
+                require_v5_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_6)?;
+                transaction.pragma_update(None, "user_version", 6)?;
             }
             3 => {
                 require_v3_schema(&transaction)?;
@@ -1442,11 +1590,22 @@ impl FleetStateStore {
                 require_v4_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_5)?;
                 transaction.pragma_update(None, "user_version", 5)?;
+                require_v5_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_6)?;
+                transaction.pragma_update(None, "user_version", 6)?;
             }
             4 => {
                 require_v4_schema(&transaction)?;
                 transaction.execute_batch(MIGRATION_5)?;
                 transaction.pragma_update(None, "user_version", 5)?;
+                require_v5_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_6)?;
+                transaction.pragma_update(None, "user_version", 6)?;
+            }
+            5 => {
+                require_v5_schema(&transaction)?;
+                transaction.execute_batch(MIGRATION_6)?;
+                transaction.pragma_update(None, "user_version", 6)?;
             }
             SCHEMA_VERSION => {}
             _ => return Err(StateError::UnsupportedSchema(version)),
@@ -1747,6 +1906,59 @@ fn managed_state(record: Option<&ManagedProjectionRecord>) -> ManagedNodeState {
     }
 }
 
+fn load_execution_instance(
+    connection: &Connection,
+    instance_id: &str,
+) -> Result<Option<ExecutionInstance>> {
+    let stored = connection
+        .query_row(
+            "SELECT generation, state_json, created_at_ms, updated_at_ms
+             FROM execution_instances WHERE instance_id = ?1",
+            [instance_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    stored
+        .map(|(generation, state_json, created_at_ms, updated_at_ms)| {
+            if generation <= 0 || created_at_ms <= 0 || updated_at_ms < created_at_ms {
+                return Err(StateError::CorruptState(
+                    "execution instance columns are invalid",
+                ));
+            }
+            let instance: ExecutionInstance = serde_json::from_str(&state_json)?;
+            instance
+                .validate()
+                .map_err(|_| StateError::CorruptState("execution instance document is invalid"))?;
+            if instance.instance_id != instance_id
+                || instance.generation != generation as u64
+                || instance.created_at_ms != created_at_ms as u64
+                || instance.updated_at_ms != updated_at_ms as u64
+                || serde_json::to_string(&instance)? != state_json
+            {
+                return Err(StateError::CorruptState(
+                    "execution instance columns contradict its document",
+                ));
+            }
+            Ok(instance)
+        })
+        .transpose()
+}
+
+fn same_execution_instance_identity(left: &ExecutionInstance, right: &ExecutionInstance) -> bool {
+    left.instance_id == right.instance_id
+        && left.idempotency_key == right.idempotency_key
+        && left.recipe_hash == right.recipe_hash
+        && left.capabilities_hash == right.capabilities_hash
+        && left.target == right.target
+}
+
 fn load_run(connection: &Connection, task_id: &str) -> Result<Option<RunBindingState>> {
     let json = connection
         .query_row(
@@ -1853,6 +2065,10 @@ fn require_v4_schema(connection: &Connection) -> Result<()> {
     require_complete_schema(connection, 4, FLEET_STATE_SCHEMA_V4_SQL)
 }
 
+fn require_v5_schema(connection: &Connection) -> Result<()> {
+    require_complete_schema(connection, 5, FLEET_STATE_SCHEMA_V5_SQL)
+}
+
 fn require_ready_schema(connection: &Connection) -> Result<()> {
     require_complete_schema(connection, SCHEMA_VERSION, FLEET_STATE_SCHEMA_SQL)
 }
@@ -1869,7 +2085,19 @@ fn require_complete_schema(
     let tables = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let expected_tables = if expected_version >= 5 {
+    let expected_tables = if expected_version >= 6 {
+        vec![
+            "execution_instances",
+            "fleet_state_schema",
+            "managed_node_aliases",
+            "managed_projections",
+            "node_observations",
+            "operator_projection_denies",
+            "run_bindings",
+            "workflow_definitions",
+            "workflow_versions",
+        ]
+    } else if expected_version >= 5 {
         vec![
             "fleet_state_schema",
             "managed_node_aliases",
@@ -1941,6 +2169,20 @@ fn require_complete_schema(
                 ("device_id", "TEXT", 3),
                 ("binding_generation", "TEXT", 0),
                 ("alias", "TEXT", 0),
+            ],
+        )?;
+    }
+    if expected_version >= 6 {
+        require_table_shape(
+            connection,
+            "execution_instances",
+            &[
+                ("instance_id", "TEXT", 1),
+                ("idempotency_key", "TEXT", 0),
+                ("generation", "INTEGER", 0),
+                ("state_json", "TEXT", 0),
+                ("created_at_ms", "INTEGER", 0),
+                ("updated_at_ms", "INTEGER", 0),
             ],
         )?;
     }
@@ -2020,6 +2262,7 @@ fn require_table_shape(
     expected: &[(&str, &str, i64)],
 ) -> Result<()> {
     let expected_definition = match table {
+        "execution_instances" => EXECUTION_INSTANCES_SQL,
         "fleet_state_schema" => FLEET_STATE_SCHEMA_SQL,
         "managed_node_aliases" => MANAGED_NODE_ALIASES_SQL,
         "managed_projections" => MANAGED_PROJECTIONS_SQL,
