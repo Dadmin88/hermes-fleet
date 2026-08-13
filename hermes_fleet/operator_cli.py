@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 from collections.abc import Callable
@@ -65,7 +66,7 @@ class OperatorCliContext:
     _owns_keryx: bool = True
 
     @classmethod
-    def open(cls) -> OperatorCliContext:
+    async def open(cls) -> OperatorCliContext:
         token = os.environ.get("KERYX_NODE_TOKEN", "")
         if not token:
             raise OperatorError(
@@ -87,7 +88,7 @@ class OperatorCliContext:
                 "Fleet operator runtime is unavailable.",
                 detail=error,
             ) from error
-        asyncio.run(keryx.start())
+        await keryx.start()
         return cls(
             operator=OperatorService(state=state, config=config, keryx=keryx),
             config_path=config_path,
@@ -105,9 +106,9 @@ class OperatorCliContext:
             config_path=self.config_path, config=self.config, nodes=nodes
         )
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if self._owns_keryx:
-            asyncio.run(self.keryx.stop())
+            await self.keryx.stop()
 
 
 def setup_parser(parser: argparse.ArgumentParser) -> None:
@@ -153,14 +154,34 @@ def _json(parser: argparse.ArgumentParser) -> None:
 def run(
     args: argparse.Namespace,
     *,
-    context_factory: Callable[[], OperatorCliContext] = OperatorCliContext.open,
+    context_factory: Callable[[], Any] = OperatorCliContext.open,
     stdout: Callable[[str], None] = print,
     stderr: Callable[[str], None] = print,
 ) -> int:
+    return asyncio.run(
+        _run_async(
+            args,
+            context_factory=context_factory,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+
+async def _run_async(
+    args: argparse.Namespace,
+    *,
+    context_factory: Callable[[], Any],
+    stdout: Callable[[str], None],
+    stderr: Callable[[str], None],
+) -> int:
     context: OperatorCliContext | None = None
     try:
-        context = context_factory()
-        result = _dispatch(args, context)
+        opened = context_factory()
+        context = await opened if inspect.isawaitable(opened) else opened
+        if context is None:
+            raise RuntimeError("Fleet operator context is unavailable")
+        result = await _dispatch(args, context)
         stdout(_encode(result) if args.json_output else _human(args, result))
         if args.command == "doctor" and not result.healthy:
             return EXIT_UNAVAILABLE
@@ -192,10 +213,12 @@ def run(
         return EXIT_UNAVAILABLE
     finally:
         if context is not None:
-            context.close()
+            closed = context.close()
+            if inspect.isawaitable(closed):
+                await closed
 
 
-def _dispatch(args: argparse.Namespace, context: OperatorCliContext) -> Any:
+async def _dispatch(args: argparse.Namespace, context: OperatorCliContext) -> Any:
     if args.command == "nodes":
         return {"nodes": context.operator.list_nodes()}
     if args.command == "node":
@@ -206,11 +229,9 @@ def _dispatch(args: argparse.Namespace, context: OperatorCliContext) -> Any:
         action = (
             context.operator.run_exact if args.wait else context.operator.submit_exact
         )
-        return asyncio.run(
-            action(args.target, args.prompt, deadline_seconds=args.deadline)
-        )
+        return await action(args.target, args.prompt, deadline_seconds=args.deadline)
     if args.command == "task":
-        return asyncio.run(context.operator.inspect_task(args.task_id))
+        return await context.operator.inspect_task(args.task_id)
     if args.command == "doctor":
         return context.doctor()
     raise ValueError("unknown Fleet command")

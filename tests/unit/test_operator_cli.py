@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,7 +88,7 @@ class FakeContext:
     def doctor(self):
         return self.doctor_report
 
-    def close(self):
+    async def close(self):
         self.closed = True
 
 
@@ -223,7 +224,7 @@ def test_default_context_uses_canonical_paths_and_requires_existing_token(
     monkeypatch.setattr(operator_cli, "get_fleet_dir", lambda: fleet_dir)
     monkeypatch.delenv("KERYX_NODE_TOKEN", raising=False)
     with pytest.raises(OperatorError) as caught:
-        operator_cli.OperatorCliContext.open()
+        asyncio.run(operator_cli.OperatorCliContext.open())
     assert caught.value.code is OperatorErrorCode.TRANSPORT_UNAVAILABLE
 
 
@@ -247,3 +248,32 @@ def test_exit_codes_are_stable() -> None:
         "task_failed": 7,
         "indeterminate": 8,
     }
+
+
+def test_async_context_lifecycle_uses_one_event_loop() -> None:
+    events: list[tuple[str, int]] = []
+
+    class AsyncContext(FakeContext):
+        async def close(self):
+            events.append(("close", id(asyncio.get_running_loop())))
+            self.closed = True
+
+    async def open_context():
+        events.append(("open", id(asyncio.get_running_loop())))
+        return AsyncContext()
+
+    parser = _parser()
+    output: list[str] = []
+    error: list[str] = []
+    code = operator_cli.run(
+        parser.parse_args(["nodes", "--json"]),
+        context_factory=open_context,
+        stdout=output.append,
+        stderr=error.append,
+    )
+
+    assert code == 0
+    assert output and error == []
+    assert events[0][0] == "open"
+    assert events[-1][0] == "close"
+    assert events[0][1] == events[-1][1]
