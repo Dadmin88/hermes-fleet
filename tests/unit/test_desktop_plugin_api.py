@@ -314,6 +314,127 @@ def test_typed_event_contract_is_stable_and_router_exposes_websocket():
     )
 
 
+def test_exact_run_route_uses_operator_service_and_returns_public_timeline(
+    monkeypatch,
+) -> None:
+    module = _load_api()
+    calls: list[tuple[str, str, int]] = []
+
+    class Result:
+        task_id = "task-example"
+        terminal_state = "submitted"
+        run_id = None
+        result = None
+        error_category = None
+
+    class Operator:
+        async def submit_exact(
+            self, target: str, prompt: str, *, deadline_seconds: int
+        ):
+            calls.append((target, prompt, deadline_seconds))
+            return Result()
+
+    class Context:
+        operator = Operator()
+
+        async def close(self) -> None:
+            calls.append(("closed", "", 0))
+
+    async def open_context():
+        return Context()
+
+    monkeypatch.setattr(module, "open_operator_context", open_context)
+    request = module.ExactRunRequest(
+        target="fleet-node-" + "a" * 64,
+        prompt="Report current status.",
+        deadlineSeconds=120,
+    )
+
+    response = asyncio.run(module.submit_exact_run(request))
+
+    assert calls == [
+        ("fleet-node-" + "a" * 64, "Report current status.", 120),
+        ("closed", "", 0),
+    ]
+    assert response == {
+        "schema": "fleet.desktop-run.v1",
+        "taskId": "task-example",
+        "state": "submitted",
+        "runId": None,
+        "result": None,
+        "errorCategory": None,
+        "stages": [
+            {"id": "operator_request", "state": "completed"},
+            {"id": "target_resolution", "state": "completed"},
+            {"id": "authorization", "state": "completed"},
+            {"id": "readiness", "state": "completed"},
+            {"id": "durable_submission", "state": "observed"},
+            {"id": "completion", "state": "pending"},
+        ],
+    }
+
+
+def test_task_route_reattaches_without_resubmission(monkeypatch) -> None:
+    module = _load_api()
+    calls: list[str] = []
+
+    class Result:
+        task_id = "task-example"
+        terminal_state = "completed"
+        run_id = "run-example"
+        result = "done"
+        error_category = None
+
+    class Operator:
+        async def inspect_task(self, task_id: str):
+            calls.append(task_id)
+            return Result()
+
+    class Context:
+        operator = Operator()
+
+        async def close(self) -> None:
+            calls.append("closed")
+
+    async def open_context():
+        return Context()
+
+    monkeypatch.setattr(module, "open_operator_context", open_context)
+
+    response = asyncio.run(module.inspect_exact_task("task-example"))
+
+    assert calls == ["task-example", "closed"]
+    assert response["state"] == "completed"
+    assert response["runId"] == "run-example"
+    assert response["result"] == "done"
+    assert response["stages"] == [
+        {"id": "durable_submission", "state": "observed"},
+        {"id": "completion", "state": "completed"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("category", "expected"),
+    [("task_failed", "failed"), ("task_indeterminate", "indeterminate")],
+)
+def test_run_document_distinguishes_terminal_failure_from_indeterminate(
+    category, expected
+) -> None:
+    module = _load_api()
+    result = types.SimpleNamespace(
+        task_id="task-example",
+        terminal_state="failed" if expected == "failed" else "unknown",
+        run_id=None,
+        result=None,
+        error_category=category,
+    )
+
+    document = module._run_document(result)
+
+    assert document["errorCategory"] == category
+    assert document["stages"][-1] == {"id": "completion", "state": expected}
+
+
 def test_websocket_authorization_delegates_to_hermes_canonical_gate(monkeypatch):
     module = _load_api()
     websocket = object()

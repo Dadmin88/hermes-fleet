@@ -4243,6 +4243,117 @@ function ObservedNodeInspector({ node }) {
   })
 }
 
+const FLEET_RUN_TERMINAL_STATES = new Set([
+  'completed', 'failed', 'canceled', 'cancelled', 'rejected', 'expired',
+  'deadline_exceeded', 'timed_out'
+])
+
+function ExactRunPanel({ node, ctx }) {
+  const [prompt, setPrompt] = useState('')
+  const [run, setRun] = useState(null)
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const authorized = node.operations.includes('fleet.hermes.run')
+  const canSubmit = authorized && node.readiness.scheduler_ready && prompt.trim().length > 0 && !submitting
+
+  useEffect(() => {
+    if (!run?.taskId || FLEET_RUN_TERMINAL_STATES.has(run.state)) return undefined
+    let active = true
+    const poll = async () => {
+      try {
+        const next = await ctx.rest(`/tasks/${encodeURIComponent(run.taskId)}`)
+        if (active) setRun(next)
+      } catch {
+        if (active) setError('Task status is temporarily unavailable; the task was not resubmitted.')
+      }
+    }
+    const timer = setInterval(poll, 2_000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [ctx, run?.taskId, run?.state])
+
+  async function submit() {
+    if (!canSubmit) return
+    setSubmitting(true)
+    setError('')
+    try {
+      const result = await ctx.rest('/runs', {
+        method: 'POST',
+        body: {
+          target: node.stable_id,
+          prompt: prompt.trim(),
+          deadlineSeconds: 120
+        }
+      })
+      setRun(result)
+    } catch (cause) {
+      setError(cause?.message || 'Fleet rejected the execution request.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return jsxs('div', {
+    className: 'grid gap-3',
+    children: [
+      jsx('p', {
+        className: 'text-xs text-muted-foreground',
+        children: !authorized
+          ? 'Execution is not explicitly authorized for this managed identity.'
+          : node.readiness.scheduler_ready
+          ? 'Submission resolves this stable managed identity at operation time and enforces explicit fleet.hermes.run policy.'
+          : 'Execution is unavailable until authoritative readiness is satisfied.'
+      }),
+      jsx('textarea', {
+        value: prompt,
+        rows: 4,
+        maxLength: 65_536,
+        disabled: submitting,
+        onChange: event => setPrompt(event.target.value),
+        placeholder: 'Describe the exact Hermes task…',
+        className: 'w-full resize-y rounded-md border border-input bg-background p-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
+      }),
+      jsx(Button, {
+        type: 'button',
+        size: 'sm',
+        onClick: submit,
+        disabled: !canSubmit,
+        children: submitting ? 'Submitting…' : 'Run on exact node'
+      }),
+      error && jsx('p', { className: 'text-xs text-destructive', role: 'alert', children: error }),
+      run && jsxs('div', {
+        className: 'grid gap-2 rounded-md border border-border p-3',
+        children: [
+          jsx(InspectorRow, { label: 'Task', value: run.taskId, mono: true }),
+          jsx(InspectorRow, { label: 'State', value: run.state }),
+          jsx('ol', {
+            className: 'grid gap-1 text-xs',
+            'aria-label': 'Execution timeline',
+            children: run.stages.map(stage => jsx('li', {
+              className: stage.state === 'failed' || stage.state === 'indeterminate'
+                ? 'text-destructive'
+                : stage.state === 'completed' || stage.state === 'observed'
+                  ? 'text-foreground'
+                  : 'text-muted-foreground',
+              children: `${stage.state === 'completed' || stage.state === 'observed' ? '✓' : stage.state === 'pending' ? '○' : '!'} ${stage.id.replaceAll('_', ' ')} · ${stage.state}`
+            }, stage.id))
+          }),
+          run.result && jsx('pre', {
+            className: 'max-h-64 overflow-auto whitespace-pre-wrap rounded border border-border p-2 text-xs text-foreground',
+            children: run.result
+          }),
+          run.errorCategory && jsx('p', {
+            className: 'text-xs text-destructive',
+            children: `Terminal category: ${run.errorCategory}`
+          })
+        ]
+      })
+    ]
+  })
+}
+
 function NodeInspector({ node, ctx, refresh }) {
   const [alias, setAlias] = useState(node.naming.alias ?? '')
   const [mutation, setMutation] = useState({ state: 'idle', message: '' })
@@ -4460,6 +4571,10 @@ function NodeInspector({ node, ctx, refresh }) {
                   )
                 })
               : jsx('p', { className: 'text-xs text-muted-foreground', children: 'No operations advertised.' })
+          }),
+          jsx(InspectorSection, {
+            title: 'Exact-target execution',
+            children: jsx(ExactRunPanel, { node, ctx })
           }),
           jsx('details', {
             className: 'border-t border-border pt-3',
