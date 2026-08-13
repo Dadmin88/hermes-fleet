@@ -56,12 +56,13 @@ class RecordingBackend(ExecutionBackend):
         self.starts = 0
         self.cleans = 0
         self.handles: dict[str, BackendExecutionHandle] = {}
+        self.plans: dict[str, str] = {}
 
     @property
     def capabilities(self) -> BackendCapabilities:
         return capabilities()
 
-    def prepare(self, plan: ExecutionPlan) -> BackendExecutionHandle:
+    def _prepare(self, plan: ExecutionPlan) -> BackendExecutionHandle:
         existing = self.handles.get(plan.execution_id)
         if existing is not None:
             return existing
@@ -70,9 +71,11 @@ class RecordingBackend(ExecutionBackend):
             execution_id=plan.execution_id,
             backend_kind=self.capabilities.backend_kind,
             realization_id=f"realization:{plan.execution_id}",
+            plan_fingerprint=plan.fingerprint,
             state=BackendExecutionState.PREPARED,
         )
         self.handles[plan.execution_id] = handle
+        self.plans[plan.execution_id] = plan.fingerprint
         return handle
 
     def start(self, handle: BackendExecutionHandle) -> BackendExecutionHandle:
@@ -97,14 +100,15 @@ class RecordingBackend(ExecutionBackend):
         self.handles[handle.execution_id] = stopped
         return stopped
 
-    def cleanup(self, handle: BackendExecutionHandle) -> None:
+    def cleanup(self, handle: BackendExecutionHandle) -> BackendExecutionHandle:
         current = self.handles[handle.execution_id]
         if current.state == BackendExecutionState.CLEANED:
-            return
+            return current
         self.cleans += 1
         self.handles[handle.execution_id] = current.with_state(
             BackendExecutionState.CLEANED
         )
+        return self.handles[handle.execution_id]
 
 
 def test_execution_plan_binds_recipe_capabilities_and_idempotency() -> None:
@@ -144,6 +148,7 @@ def test_handle_rejects_illegal_state_regression() -> None:
         execution_id="exec-1",
         backend_kind="example.org/native",
         realization_id="realization-1",
+        plan_fingerprint="sha256:" + "3" * 64,
         state=BackendExecutionState.RUNNING,
     )
 
@@ -156,5 +161,61 @@ def test_handle_rejects_illegal_state_regression() -> None:
 def test_contract_has_no_docker_or_scheduler_operations() -> None:
     public = set(ExecutionBackend.__abstractmethods__)
 
-    assert public == {"capabilities", "prepare", "start", "inspect", "stop", "cleanup"}
+    assert public == {"capabilities", "_prepare", "start", "inspect", "stop", "cleanup"}
     assert not {"schedule", "place", "docker_run", "pull_image"} & public
+
+
+def test_prepare_rejects_capability_drift_before_provider_side_effect() -> None:
+    backend = RecordingBackend()
+    plan = ExecutionPlan(
+        execution_id="exec-1",
+        idempotency_key="request-1",
+        resolved_recipe=resolved_recipe(),
+        required_capabilities_hash="sha256:" + "9" * 64,
+    )
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        backend.prepare(plan)
+
+    assert raised.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+    assert backend.prepares == 0
+
+
+def test_prepare_rejects_execution_identity_rebound_to_different_plan() -> None:
+    backend = RecordingBackend()
+    first = ExecutionPlan(
+        execution_id="exec-1",
+        idempotency_key="request-1",
+        resolved_recipe=resolved_recipe(),
+        required_capabilities_hash=capabilities().content_hash,
+    )
+    backend.prepare(first)
+    conflict = ExecutionPlan(
+        execution_id="exec-1",
+        idempotency_key="request-2",
+        resolved_recipe=resolved_recipe(),
+        required_capabilities_hash=capabilities().content_hash,
+    )
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        backend.prepare(conflict)
+
+    assert raised.value.code == ExecutionBackendErrorCode.PLAN_CONFLICT
+    assert backend.prepares == 1
+
+
+def test_indeterminate_handle_cannot_claim_cleanup_without_observed_resolution() -> (
+    None
+):
+    handle = BackendExecutionHandle(
+        execution_id="exec-1",
+        backend_kind="example.org/native",
+        realization_id="realization-1",
+        plan_fingerprint="sha256:" + "3" * 64,
+        state=BackendExecutionState.INDETERMINATE,
+    )
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        handle.with_state(BackendExecutionState.CLEANED)
+
+    assert raised.value.code == ExecutionBackendErrorCode.INVALID_TRANSITION

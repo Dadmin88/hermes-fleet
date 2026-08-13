@@ -27,6 +27,7 @@ _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)^(?:[^=]*(?:token|secret|password|api[_-]?key)[^=]*)="
 )
 _LABEL_PREFIX = "dev.hermes.fleet."
+_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_OUTPUT_BYTES = 1024 * 1024
 
 
@@ -97,8 +98,7 @@ class DockerExecutionBackend(ExecutionBackend):
     def capabilities(self) -> BackendCapabilities:
         return self._capabilities
 
-    def prepare(self, plan: ExecutionPlan) -> BackendExecutionHandle:
-        self._validate_plan(plan)
+    def _prepare(self, plan: ExecutionPlan) -> BackendExecutionHandle:
         name = _container_name(plan.execution_id)
         existing = self._inspect_optional(name)
         if existing is not None:
@@ -184,29 +184,26 @@ class DockerExecutionBackend(ExecutionBackend):
             ) from error
         return current.with_state(BackendExecutionState.STOPPED)
 
-    def cleanup(self, handle: BackendExecutionHandle) -> None:
+    def cleanup(self, handle: BackendExecutionHandle) -> BackendExecutionHandle:
         document = self._inspect_optional(handle.realization_id)
         if document is None:
-            return
+            return _cleaned_handle(handle)
         self._require_ownership(handle.execution_id, document)
         try:
             self._command(["docker", "rm", "--force", handle.realization_id])
         except ExecutionBackendError as error:
             if self._inspect_optional(handle.realization_id) is None:
-                return
+                return _cleaned_handle(handle)
             raise ExecutionBackendError(
                 ExecutionBackendErrorCode.CLEANUP_FAILED,
                 "Docker cleanup failed",
             ) from error
-
-    def _validate_plan(self, plan: ExecutionPlan) -> None:
-        if type(plan) is not ExecutionPlan:
-            _invalid("execution plan is invalid")
-        if plan.required_capabilities_hash != self.capabilities.content_hash:
+        if self._inspect_optional(handle.realization_id) is not None:
             raise ExecutionBackendError(
-                ExecutionBackendErrorCode.CAPABILITY_MISMATCH,
-                "execution plan capability hash does not match this backend",
+                ExecutionBackendErrorCode.CLEANUP_FAILED,
+                "Docker cleanup was not authoritatively observable",
             )
+        return _cleaned_handle(handle)
 
     def _verify_image(self, plan: ExecutionPlan) -> None:
         try:
@@ -364,6 +361,14 @@ class DockerExecutionBackend(ExecutionBackend):
                 "Docker realization identity is invalid",
             )
         state = document.get("State")
+        config = document.get("Config")
+        labels = config.get("Labels") if type(config) is dict else None
+        plan_fingerprint = _plan_fingerprint_from_labels(labels)
+        if plan_fingerprint is None:
+            raise ExecutionBackendError(
+                ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE,
+                "Docker realization plan identity is invalid",
+            )
         if type(state) is not dict or type(state.get("Status")) is not str:
             raise ExecutionBackendError(
                 ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE,
@@ -391,6 +396,7 @@ class DockerExecutionBackend(ExecutionBackend):
             execution_id=execution_id,
             backend_kind=self.capabilities.backend_kind,
             realization_id=container_id,
+            plan_fingerprint=plan_fingerprint,
             state=mapped,
         )
 
@@ -457,6 +463,48 @@ def _cpu_limit(cpu_millis: int) -> str:
 
 def _idempotency_digest(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _plan_fingerprint_from_labels(labels: object) -> str | None:
+    """Recover exact plan identity from labels written by every FX4 release."""
+    if type(labels) is not dict:
+        return None
+    execution = labels.get(f"{_LABEL_PREFIX}execution")
+    capabilities = labels.get(f"{_LABEL_PREFIX}capabilities")
+    idempotency = labels.get(f"{_LABEL_PREFIX}idempotency")
+    recipe = labels.get(f"{_LABEL_PREFIX}recipe")
+    if (
+        type(execution) is not str
+        or type(capabilities) is not str
+        or type(idempotency) is not str
+        or type(recipe) is not str
+        or _HASH_RE.fullmatch(capabilities) is None
+        or _HASH_RE.fullmatch(idempotency) is None
+        or _HASH_RE.fullmatch(recipe) is None
+    ):
+        return None
+    document = json.dumps(
+        {
+            "capabilities": capabilities,
+            "execution": execution,
+            "idempotency": idempotency.removeprefix("sha256:"),
+            "recipe": recipe,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(document).hexdigest()
+
+
+def _cleaned_handle(handle: BackendExecutionHandle) -> BackendExecutionHandle:
+    """Record CLEANED only after provider inspection proved realization absence."""
+    return BackendExecutionHandle(
+        execution_id=handle.execution_id,
+        backend_kind=handle.backend_kind,
+        realization_id=handle.realization_id,
+        plan_fingerprint=handle.plan_fingerprint,
+        state=BackendExecutionState.CLEANED,
+    )
 
 
 def _invalid(message: str) -> None:
