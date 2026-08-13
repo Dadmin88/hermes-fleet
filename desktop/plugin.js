@@ -4257,7 +4257,8 @@ function ExactRunPanel({ node, ctx }) {
   const canSubmit = authorized && node.readiness.scheduler_ready && prompt.trim().length > 0 && !submitting
 
   useEffect(() => {
-    if (!run?.taskId || FLEET_RUN_TERMINAL_STATES.has(run.state)) return undefined
+    const completion = run?.stages?.find(stage => stage.id === 'completion')
+    if (!run?.taskId || FLEET_RUN_TERMINAL_STATES.has(run.state) || (completion && completion.state !== 'pending')) return undefined
     let active = true
     const poll = async () => {
       try {
