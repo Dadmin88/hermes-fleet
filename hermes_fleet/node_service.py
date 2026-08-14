@@ -268,8 +268,8 @@ async def _wait_for_hermes_runs(
     health: dict[str, Any] = {}
     for attempt in range(attempts):
         try:
-            candidate = await asyncio.wait_for(
-                asyncio.to_thread(hermes.health), timeout=probe_timeout_seconds
+            candidate = await _bounded_hermes_health(
+                hermes, timeout_seconds=probe_timeout_seconds
             )
         except TimeoutError:
             return {}
@@ -278,6 +278,16 @@ async def _wait_for_hermes_runs(
             return health
         await asyncio.sleep(delay_seconds)
     return health
+
+
+async def _bounded_hermes_health(
+    hermes: Any,
+    *,
+    timeout_seconds: float = _HERMES_READINESS_PROBE_TIMEOUT_SECONDS,
+) -> object:
+    return await asyncio.wait_for(
+        asyncio.to_thread(hermes.health), timeout=timeout_seconds
+    )
 
 
 async def _keryx_signals(
@@ -541,7 +551,11 @@ async def run_node_service(
         if observer is not None:
             admission_generation = await _admission_generation(observer)
             if admission_generation is not None:
-                health = await asyncio.to_thread(hermes.health)
+                try:
+                    health = await _bounded_hermes_health(hermes)
+                except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+                    logger.warning("fleet-node Hermes observation failed: %s", error)
+                    health = None
                 if runtime.remote_observation_endpoint is not None:
                     network_reachable, keryx_available = True, True
                 else:
@@ -707,8 +721,8 @@ async def _observation_loop(
             continue
 
         try:
-            health = await asyncio.to_thread(hermes.health)
-        except (OSError, RuntimeError, ValueError) as error:
+            health = await _bounded_hermes_health(hermes)
+        except (OSError, RuntimeError, TimeoutError, ValueError) as error:
             logger.warning("fleet-node Hermes observation failed: %s", error)
             health = None
         if remote_observation:

@@ -578,9 +578,7 @@ def test_observation_publish_environment_flag_is_strict() -> None:
             _environment_flag({name: invalid}, name)
 
 
-def test_direct_only_node_publishes_worker_unavailable(
-    tmp_path,
-) -> None:
+def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
     from dataclasses import replace
 
     from hermes_fleet.node_service import run_node_service
