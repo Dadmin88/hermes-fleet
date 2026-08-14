@@ -12,6 +12,7 @@ from .hermes_runs import HermesRunSubmissionUnknown
 from .profile_runtime import LocalFileSecret
 
 _BACKEND_KIND = "hermes.local/profile-runs"
+_APPROVAL_EXTENSION = "fleet.hermes/approvals.v1"
 
 
 class DestinationExecutionError(RuntimeError):
@@ -32,7 +33,14 @@ class DestinationRuntime(Protocol):
         timeout_seconds: float,
     ) -> str: ...
 
-    def wait(self, profile: str, *, run_id: str, timeout_seconds: float) -> Any: ...
+    def wait(
+        self,
+        profile: str,
+        *,
+        run_id: str,
+        timeout_seconds: float,
+        approval_mode: str | None = None,
+    ) -> Any: ...
 
     def cleanup(self, profile: str, *, expected_owner: str) -> None: ...
 
@@ -93,6 +101,7 @@ class DestinationRecipeExecutor:
             raise DestinationExecutionError("execution policy authorization is stale")
         if package.capabilities_hash != capabilities_hash:
             raise DestinationExecutionError("execution capabilities are stale")
+        approval_mode = _approval_mode(package)
 
         instance = {
             "instance_id": package.execution_id,
@@ -241,7 +250,10 @@ class DestinationRecipeExecutor:
             )
             try:
                 result = self._runtime.wait(
-                    profile, run_id=run_id, timeout_seconds=remaining
+                    profile,
+                    run_id=run_id,
+                    timeout_seconds=remaining,
+                    approval_mode=approval_mode,
                 )
             except TimeoutError:
                 self._transition(
@@ -412,6 +424,15 @@ class DestinationRecipeExecutor:
                 "execution transition returned invalid state"
             )
         return next_generation
+
+
+def _approval_mode(package: ExactExecutionPackage) -> str | None:
+    approval = package.resolved_recipe.extensions.get(_APPROVAL_EXTENSION)
+    if approval is None:
+        return None
+    if approval != {"mode": "once"}:
+        raise DestinationExecutionError("execution approval extension is invalid")
+    return "once"
 
 
 def _secret_refs_digest(references: list[str]) -> str:

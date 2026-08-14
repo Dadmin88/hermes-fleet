@@ -72,7 +72,8 @@ class Runs:
         self.calls.append(("start", self.profile, prompt, session_id))
         return "run-1"
 
-    def wait(self, *, run_id, timeout_seconds):
+    def wait(self, *, run_id, timeout_seconds, approval_mode=None):
+        self.approval_mode = approval_mode
         self.calls.append(("wait", self.profile, run_id))
         return HermesRunResult(run_id=run_id, text="done")
 

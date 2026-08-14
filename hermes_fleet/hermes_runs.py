@@ -184,7 +184,13 @@ class HermesRunsClient:
             raise HermesRunError("Hermes did not accept the Fleet run")
         return run_id
 
-    def wait(self, *, run_id: str, timeout_seconds: float) -> HermesRunResult:
+    def wait(
+        self,
+        *,
+        run_id: str,
+        timeout_seconds: float,
+        approval_mode: str | None = None,
+    ) -> HermesRunResult:
         """Poll one known run to terminal text without creating another run."""
         if type(run_id) is not str or not run_id:
             raise ValueError("Hermes run ID must be a nonempty string")
@@ -194,6 +200,8 @@ class HermesRunsClient:
             or timeout_seconds <= 0
         ):
             raise ValueError("Hermes run timeout must be positive")
+        if approval_mode not in {None, "once"}:
+            raise ValueError("Hermes approval mode is invalid")
 
         deadline = time.monotonic() + float(timeout_seconds)
         while True:
@@ -217,6 +225,17 @@ class HermesRunsClient:
                     raise HermesRunError("Hermes completed without terminal text")
                 return HermesRunResult(run_id=run_id, text=output)
             if state == "waiting_for_approval":
+                if approval_mode == "once":
+                    approval_status, _ = self._request_json(
+                        "POST",
+                        self._path(f"/v1/runs/{run_id}/approval"),
+                        {"choice": "once"},
+                        timeout_seconds=remaining,
+                    )
+                    if approval_status == 200:
+                        continue
+                    self.stop(run_id, timeout_seconds=min(0.25, remaining))
+                    raise HermesRunError("Hermes run approval failed")
                 self.stop(run_id, timeout_seconds=min(0.25, remaining))
                 raise HermesRunError("Hermes run requires approval")
             if state == "failed":

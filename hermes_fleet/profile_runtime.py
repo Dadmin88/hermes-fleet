@@ -399,9 +399,18 @@ class ProfileHermesRuntime:
             timeout_seconds=timeout_seconds,
         )
 
-    def wait(self, profile: str, *, run_id: str, timeout_seconds: float) -> Any:
+    def wait(
+        self,
+        profile: str,
+        *,
+        run_id: str,
+        timeout_seconds: float,
+        approval_mode: str | None = None,
+    ) -> Any:
         return self._client(profile).wait(
-            run_id=run_id, timeout_seconds=timeout_seconds
+            run_id=run_id,
+            timeout_seconds=timeout_seconds,
+            approval_mode=approval_mode,
         )
 
     def stop(

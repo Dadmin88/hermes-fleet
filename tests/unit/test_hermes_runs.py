@@ -45,6 +45,17 @@ class _RunsAPI:
                         else {"error": {"message": "rejected"}},
                     )
                     return
+                if route == "/v1/runs/run-test/approval":
+                    self._json(
+                        200,
+                        {
+                            "object": "hermes.run.approval_response",
+                            "run_id": "run-test",
+                            "choice": "once",
+                            "resolved": 1,
+                        },
+                    )
+                    return
                 if route == "/v1/runs/run-test/stop":
                     if api.stop_delay_seconds:
                         time.sleep(api.stop_delay_seconds)
@@ -310,6 +321,38 @@ def test_hermes_runs_client_fails_closed_when_approval_is_required() -> None:
                 api_key="secret-token-for-test",
                 poll_interval_seconds=0.001,
             ).run(prompt="Do work.", timeout_seconds=1)
+
+
+def test_hermes_runs_client_resolves_recipe_scoped_approval_once() -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    api = _RunsAPI(
+        [
+            {"status": "waiting_for_approval"},
+            {"status": "completed", "output": "done"},
+        ]
+    )
+    with api.serve() as endpoint:
+        client = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="[REDACTED]",
+            poll_interval_seconds=0.001,
+        )
+        run_id = client.start(prompt="Do approved work.", timeout_seconds=1)
+        result = client.wait(
+            run_id=run_id,
+            timeout_seconds=1,
+            approval_mode="once",
+        )
+
+    assert result.text == "done"
+    assert any(
+        method == "POST"
+        and path.endswith("/approval")
+        and body == {"choice": "once"}
+        for method, path, _, body in api.requests
+    )
+    assert not any(path.endswith("/stop") for _, path, _, _ in api.requests)
 
 
 def test_hermes_runs_client_requests_stop_at_the_fleet_deadline() -> None:

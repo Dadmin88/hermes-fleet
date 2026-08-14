@@ -24,7 +24,11 @@ HASH_3 = "sha256:" + "3" * 64
 HASH_4 = "sha256:" + "4" * 64
 
 
-def package(*, secret_refs: list[str] | None = None) -> ExactExecutionPackage:
+def package(
+    *,
+    secret_refs: list[str] | None = None,
+    extensions: dict[str, Any] | None = None,
+) -> ExactExecutionPackage:
     recipe = ResolvedRecipe.from_dict(
         {
             "schema": "fleet.resolved-recipe.v1",
@@ -37,7 +41,7 @@ def package(*, secret_refs: list[str] | None = None) -> ExactExecutionPackage:
                 "version": "1.0.0",
                 "content_digest": HASH_2,
             },
-            "extensions": {},
+            "extensions": extensions or {},
         }
     )
     payload = b"exact immutable Agency package"
@@ -136,8 +140,9 @@ class Runtime:
             raise HermesRunError("deterministic start rejection")
         return "hermes-run-1"
 
-    def wait(self, profile, *, run_id, timeout_seconds):
+    def wait(self, profile, *, run_id, timeout_seconds, approval_mode=None):
         self.events.append("wait")
+        self.approval_mode = approval_mode
         if self.fail_at == "wait":
             raise RuntimeError("known terminal failure")
         return HermesRunResult(run_id=run_id, text="FX8_OK")
@@ -253,6 +258,42 @@ def test_destination_success_uses_execution_instance_and_cleans_profile(
         "hermes_run_id": "hermes-run-1",
         "execution_instance_id": "execution-1",
     }
+
+
+def test_recipe_scoped_tool_approval_is_forwarded_once(tmp_path) -> None:
+    service, _control, runtime, _events = executor(tmp_path)
+    incoming = Incoming()
+
+    result = asyncio.run(
+        service.execute(
+            package=package(
+                extensions={"fleet.hermes/approvals.v1": {"mode": "once"}}
+            ),
+            authenticated_sender="peer-controller-1",
+            incoming=incoming,
+        )
+    )
+
+    assert result == "completed"
+    assert runtime.approval_mode == "once"
+
+
+def test_recipe_scoped_tool_approval_rejects_unsupported_mode(tmp_path) -> None:
+    service, _control, _runtime, _events = executor(tmp_path)
+
+    with pytest.raises(
+        DestinationExecutionError,
+        match="approval extension is invalid",
+    ):
+        asyncio.run(
+            service.execute(
+                package=package(
+                    extensions={"fleet.hermes/approvals.v1": {"mode": "always"}}
+                ),
+                authenticated_sender="peer-controller-1",
+                incoming=Incoming(),
+            )
+        )
 
 
 def test_known_hermes_failure_is_durable_cleaned_and_failed_to_keryx(tmp_path) -> None:
