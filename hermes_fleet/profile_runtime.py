@@ -25,8 +25,13 @@ _FILE_REF_RE = re.compile(r"^secret://worker/file/([A-Z][A-Z0-9_]{0,127})$")
 _DESTINATION_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _MAX_FILE_SECRET_BYTES = 1_048_576
 _MAX_MODEL_CONFIG_BYTES = 65_536
-_SECRET_MODEL_KEYS = frozenset(
-    {"api_key", "authorization", "credential", "password", "secret", "token"}
+_SECRET_MODEL_KEY_MARKERS = (
+    "apikey",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
 )
 _RESERVED_ENV = frozenset(
     {
@@ -191,7 +196,10 @@ def _contains_secret_model_key(value: object) -> bool:
     if type(value) is dict:
         return any(
             type(key) is not str
-            or key.lower() in _SECRET_MODEL_KEYS
+            or any(
+                marker in re.sub(r"[^a-z0-9]", "", key.lower())
+                for marker in _SECRET_MODEL_KEY_MARKERS
+            )
             or _contains_secret_model_key(item)
             for key, item in value.items()
         )
@@ -201,14 +209,23 @@ def _contains_secret_model_key(value: object) -> bool:
 
 
 def _load_model_config(path: Path) -> dict[str, Any]:
+    descriptor = -1
     try:
-        metadata = path.lstat()
-        payload = path.read_bytes()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        metadata = os.fstat(descriptor)
+        with os.fdopen(descriptor, "rb", closefd=True) as source_file:
+            descriptor = -1
+            payload = source_file.read(_MAX_MODEL_CONFIG_BYTES + 1)
     except OSError as error:
         raise ValueError("model config capability is unavailable") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if (
         not stat.S_ISREG(metadata.st_mode)
-        or path.is_symlink()
         or stat.S_IMODE(metadata.st_mode) != 0o600
         or metadata.st_uid != os.geteuid()
         or metadata.st_nlink != 1
@@ -263,7 +280,7 @@ class ProfileHermesRuntime:
         profiles_root: Path,
         runs_factory: Callable[[str], Any],
         api_server_key: str,
-        model_config_path: Path | None = None,
+        model_config_path: Path,
     ) -> None:
         if not isinstance(profiles_root, Path) or not profiles_root.is_absolute():
             raise ValueError("profiles root must be an absolute Path")
@@ -275,7 +292,7 @@ class ProfileHermesRuntime:
             or any(character in api_server_key for character in ("\x00", "\n", "\r"))
         ):
             raise ValueError("API server key must be nonempty bounded text")
-        if model_config_path is not None and (
+        if (
             not isinstance(model_config_path, Path)
             or not model_config_path.is_absolute()
         ):
@@ -294,11 +311,7 @@ class ProfileHermesRuntime:
     ) -> str:
         if type(package) is not ExactExecutionPackage:
             raise ValueError("execution package is invalid")
-        model_config = (
-            _load_model_config(self._model_config_path)
-            if self._model_config_path is not None
-            else None
-        )
+        model_config = _load_model_config(self._model_config_path)
         profile = _EXECUTION_PROFILE
         destination = self._profiles_root / profile
         environment: dict[str, str] = {}
@@ -337,8 +350,7 @@ class ProfileHermesRuntime:
                 for name in (_SLOT_FILE, _OWNER_FILE)
             ):
                 raise ValueError("Agency profile contains reserved Fleet state")
-            if model_config is not None:
-                _stage_model_config(staging, model_config)
+            _stage_model_config(staging, model_config)
             owner = staging / _OWNER_FILE
             owner.write_text(package.execution_id + "\n", encoding="utf-8")
             owner.chmod(0o600)

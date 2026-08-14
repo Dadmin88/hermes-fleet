@@ -107,7 +107,7 @@ class NodeRuntimeConfig:
     binding_path: Path
     profiles_root: Path
     keryx_node_token: str = field(repr=False)
-    model_config_path: Path | None = None
+    model_config_path: Path
     registration_ttl_seconds: int = 300
     advertise_observation_publish: bool = False
     observation_socket: Path | None = None

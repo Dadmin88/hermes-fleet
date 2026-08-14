@@ -33,6 +33,7 @@ def _runtime(tmp_path):
         binding_path=tmp_path / "run-bindings.sqlite3",
         profiles_root=tmp_path / "profiles",
         keryx_node_token="test-node-token",
+        model_config_path=tmp_path / "config.yaml",
     )
 
 
