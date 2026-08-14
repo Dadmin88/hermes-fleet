@@ -167,7 +167,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     )
     assert runtime.wait(profile, run_id="run-1", timeout_seconds=1).text == "done"
 
-    runtime.cleanup(profile)
+    runtime.cleanup(profile, expected_owner="execution-1")
 
     assert profile_path.is_dir()
     assert sorted(path.name for path in profile_path.iterdir()) == [
@@ -256,7 +256,7 @@ def test_profile_runtime_refuses_foreign_execution_slot(tmp_path) -> None:
     with pytest.raises(ValueError, match="not an empty owned slot"):
         runtime.materialize(package(b"not-a-tar"), secrets={})
     with pytest.raises(ValueError, match="not owned"):
-        runtime.cleanup("fleet-execution")
+        runtime.cleanup("fleet-execution", expected_owner="execution-1")
 
     assert (slot / "foreign").read_text() == "preserve"
 
@@ -302,6 +302,27 @@ def test_profile_runtime_inspects_exact_slot_owner_and_run_without_starting(
     assert runtime.owner(profile) == "execution-1"
     assert runtime.status(profile, run_id="run-1") == "running"
     assert calls == [("status", "fleet-execution", "run-1")]
+
+
+def test_profile_runtime_cleanup_rejects_changed_execution_owner(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    owner = slot / ".fleet-execution-owner"
+    owner.write_text("execution-2\n")
+    payload = slot / "SOUL.md"
+    payload.write_text("preserve exact owner state")
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+    )
+
+    with pytest.raises(ValueError, match="ownership changed"):
+        runtime.cleanup("fleet-execution", expected_owner="execution-1")
+
+    assert owner.read_text() == "execution-2\n"
+    assert payload.read_text() == "preserve exact owner state"
 
 
 def test_profile_runtime_refuses_dangling_execution_owner_symlink(tmp_path) -> None:
@@ -523,7 +544,7 @@ def test_local_file_secret_is_copied_minimally_and_source_is_unchanged(
     assert str(source) not in repr(resolver)
     assert source.read_text() not in repr(resolved[reference])
 
-    runtime.cleanup(profile)
+    runtime.cleanup(profile, expected_owner="execution-1")
     assert not copied.exists()
     assert source.read_bytes() == before[0]
 

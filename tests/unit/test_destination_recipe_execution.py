@@ -142,8 +142,9 @@ class Runtime:
             raise RuntimeError("known terminal failure")
         return HermesRunResult(run_id=run_id, text="FX8_OK")
 
-    def cleanup(self, profile):
+    def cleanup(self, profile, *, expected_owner):
         self.events.append("cleanup")
+        assert expected_owner == "execution-1"
         path = self.root / profile
         for child in path.iterdir():
             child.unlink()

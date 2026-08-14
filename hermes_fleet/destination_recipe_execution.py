@@ -34,7 +34,7 @@ class DestinationRuntime(Protocol):
 
     def wait(self, profile: str, *, run_id: str, timeout_seconds: float) -> Any: ...
 
-    def cleanup(self, profile: str) -> None: ...
+    def cleanup(self, profile: str, *, expected_owner: str) -> None: ...
 
     def inspect_owner(self, profile: str) -> str | None: ...
 
@@ -224,7 +224,7 @@ class DestinationRecipeExecutor:
                         "reason": "failed Hermes start requires profile cleanup",
                     },
                 )
-                self._runtime.cleanup(profile)
+                self._runtime.cleanup(profile, expected_owner=package.execution_id)
                 self._transition(package.execution_id, generation, {"kind": "cleaned"})
                 await _fail_incoming(incoming, "Hermes execution failed")
                 return "failed"
@@ -284,7 +284,7 @@ class DestinationRecipeExecutor:
                         "reason": "failed Hermes run requires profile cleanup",
                     },
                 )
-                self._runtime.cleanup(profile)
+                self._runtime.cleanup(profile, expected_owner=package.execution_id)
                 self._transition(package.execution_id, generation, {"kind": "cleaned"})
                 await _fail_incoming(incoming, "Hermes execution failed")
                 return "failed"
@@ -316,7 +316,7 @@ class DestinationRecipeExecutor:
                     "reason": "terminal Hermes run requires profile cleanup",
                 },
             )
-            self._runtime.cleanup(profile)
+            self._runtime.cleanup(profile, expected_owner=package.execution_id)
             self._transition(package.execution_id, generation, {"kind": "cleaned"})
             complete = getattr(incoming, "complete", None)
             if not callable(complete):
@@ -384,7 +384,7 @@ class DestinationRecipeExecutor:
                 "reason": "reconciled Hermes run requires profile cleanup",
             },
         )
-        self._runtime.cleanup(profile)
+        self._runtime.cleanup(profile, expected_owner=package.execution_id)
         self._transition(package.execution_id, generation, {"kind": "cleaned"})
         complete = getattr(incoming, "complete", None)
         if not callable(complete):

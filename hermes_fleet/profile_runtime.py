@@ -307,9 +307,16 @@ class ProfileHermesRuntime:
     ) -> None:
         self._client(profile).stop(run_id, timeout_seconds=timeout_seconds)
 
-    def cleanup(self, profile: str) -> None:
+    def cleanup(self, profile: str, *, expected_owner: str) -> None:
         if profile != _EXECUTION_PROFILE:
             raise ValueError("execution profile is invalid")
+        if (
+            type(expected_owner) is not str
+            or not expected_owner
+            or "\n" in expected_owner
+            or "\r" in expected_owner
+        ):
+            raise ValueError("expected execution owner is invalid")
         destination = self._profiles_root / profile
         if destination.parent != self._profiles_root:
             raise ValueError("execution profile path is invalid")
@@ -329,6 +336,8 @@ class ProfileHermesRuntime:
             raise ValueError("execution profile ownership is invalid") from error
         if not execution_id or "\n" in execution_id or "\r" in execution_id:
             raise ValueError("execution profile ownership is invalid")
+        if execution_id != expected_owner:
+            raise ValueError("execution profile ownership changed")
         _clear_owned_slot(destination)
         if set(item.name for item in destination.iterdir()) != {_SLOT_FILE}:
             raise RuntimeError("execution profile cleanup is unproven")
