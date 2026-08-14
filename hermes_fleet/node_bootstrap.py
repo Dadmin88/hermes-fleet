@@ -731,8 +731,10 @@ class Installer:
                 values[API_KEY] = api_key
             if filename == "keryxd.env":
                 values["HERMES_KERYX_DAEMON_ADDR"] = "127.0.0.1:50051"
-            if filename in {"keryxd.env", "keryx-node.env", "fleet-node.env"}:
+            if filename in {"keryxd.env", "keryx-node.env"}:
                 values["HERMES_KERYX_DAEMON_ENDPOINT"] = "http://127.0.0.1:50051"
+            if filename == "fleet-node.env":
+                values["HERMES_KERYX_DAEMON_ENDPOINT"] = "127.0.0.1:50051"
             if filename == "hermes-api.env":
                 values["API_SERVER_ENABLED"] = "true"
                 values["API_SERVER_HOST"] = "127.0.0.1"
