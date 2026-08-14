@@ -132,7 +132,10 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     object.__setattr__(value, "resolved_recipe", value.resolved_recipe)
     object.__setattr__(value, "agency_bundle", bundle)
     calls: list[tuple] = []
-    execution_slot(tmp_path)
+    slot = execution_slot(tmp_path)
+    (slot / "sessions").mkdir()
+    (slot / "SOUL.md").write_text("gateway scaffold")
+    (slot / ".env").write_text("")
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=calls),
@@ -147,6 +150,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     assert profile == "fleet-execution"
     assert (profile_path / ".fleet-execution-owner").read_text() == "execution-1\n"
     assert (profile_path / "SOUL.md").read_text() == "exact soul"
+    assert not (profile_path / "sessions").exists()
     assert (
         profile_path / ".env"
     ).read_text() == "OPENROUTER_API_KEY=test-secret-value\n"
@@ -253,6 +257,8 @@ def test_profile_runtime_inspects_exact_slot_owner_and_run_without_starting(
     (slot / ".fleet-execution-owner").write_text("execution-1\n")
     profile = "fleet-execution"
 
+    with pytest.raises(ValueError, match="empty owned slot"):
+        runtime.materialize(package(b"not-used"), secrets={})
     assert runtime.owner(profile) == "execution-1"
     assert runtime.status(profile, run_id="run-1") == "running"
     assert calls == [("status", "fleet-execution", "run-1")]

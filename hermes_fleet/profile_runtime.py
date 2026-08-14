@@ -205,7 +205,6 @@ class ProfileHermesRuntime:
             raise ValueError("execution package is invalid")
         profile = _EXECUTION_PROFILE
         destination = self._profiles_root / profile
-        _require_empty_owned_slot(destination)
         environment: dict[str, str] = {}
         file_secrets: list[LocalFileSecret] = []
         if type(secrets) is not dict:
@@ -227,6 +226,7 @@ class ProfileHermesRuntime:
                 file_secrets.append(value)
             else:
                 raise ValueError("secret reference is invalid")
+        _prepare_owned_slot(destination)
         try:
             staging = destination / ".materializing"
             materialize_agency_bundle(package.agency_bundle, destination=staging)
@@ -432,29 +432,29 @@ def _copy_local_file_secret(secret: LocalFileSecret, destination: Path) -> None:
             os.close(source_fd)
 
 
-def _require_empty_owned_slot(destination: Path) -> None:
+def _prepare_owned_slot(destination: Path) -> None:
     if not destination.is_dir() or destination.is_symlink():
         raise ValueError("execution profile is not an empty owned slot")
     try:
         directory_metadata = destination.stat()
-        entries = tuple(destination.iterdir())
         marker = destination / _SLOT_FILE
         marker_metadata = marker.lstat()
+        owner = destination / _OWNER_FILE
         valid = (
             directory_metadata.st_uid == os.geteuid()
             and stat.S_IMODE(directory_metadata.st_mode) == 0o700
-            and len(entries) == 1
-            and entries[0].name == _SLOT_FILE
             and stat.S_ISREG(marker_metadata.st_mode)
             and marker_metadata.st_uid == os.geteuid()
             and stat.S_IMODE(marker_metadata.st_mode) == 0o600
             and marker_metadata.st_nlink == 1
             and marker.read_text(encoding="utf-8") == _SLOT_CONTENT
+            and not owner.exists()
         )
     except (OSError, UnicodeError):
         valid = False
     if not valid:
         raise ValueError("execution profile is not an empty owned slot")
+    _clear_owned_slot(destination)
 
 
 def _clear_owned_slot(destination: Path) -> None:
