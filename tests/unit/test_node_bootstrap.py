@@ -636,6 +636,8 @@ def test_restore_reinstates_exact_owned_service_enable_and_active_state(
     installer = bootstrap.Installer(
         home=home, bundle=tmp_path / "bundle", runner=runner
     )
+    for name in bootstrap.UNITS:
+        _write(installer.units / name, "[Service]\n", 0o644)
     root = installer._snapshot_root()
     installer._snapshot_touched(root)
     runner.calls.clear()
@@ -650,6 +652,46 @@ def test_restore_reinstates_exact_owned_service_enable_and_active_state(
         assert ["disable", name] in actions
     for name in (bootstrap.UNITS[0], *bootstrap.UNITS[2:]):
         assert ["stop", name] in actions
+
+
+def test_restore_absent_units_does_not_require_disable_to_succeed(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    runner = FakeRunner()
+    original = runner.run
+
+    def run(argv, *, env=None):
+        if tuple(argv[:3]) in {
+            ("systemctl", "--user", "is-enabled"),
+            ("systemctl", "--user", "is-active"),
+        }:
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        return original(argv, env=env)
+
+    runner.run = run  # type: ignore[method-assign]
+    installer = bootstrap.Installer(
+        home=home, bundle=tmp_path / "bundle", runner=runner
+    )
+    root = installer._snapshot_root()
+    installer._snapshot_touched(root)
+    for name in bootstrap.UNITS:
+        _write(installer.units / name, "[Service]\n", 0o644)
+    runner.calls.clear()
+
+    installer._restore_snapshot(root)
+
+    assert all(not (installer.units / name).exists() for name in bootstrap.UNITS)
+    assert not [call for call in runner.calls if "disable" in call]
+
+
+def test_installer_default_runner_allows_bounded_package_install(
+    tmp_path: Path,
+) -> None:
+    installer = bootstrap.Installer(home=tmp_path, bundle=tmp_path / "bundle")
+
+    assert isinstance(installer.runner, bootstrap.SubprocessRunner)
+    assert installer.runner.timeout_seconds == 300
 
 
 def test_installer_materializes_verified_units_on_bare_worker(
