@@ -393,7 +393,9 @@ class FleetNodeWorker:
             "fleet_deadline_ms": str(package.authorization["deadline_ms"]),
             "skill": "fleet.hermes.run",
         }
-        if metadata != expected_metadata:
+        if not _execution_metadata_matches(
+            metadata, expected_metadata, target_peer_id=self._target.peer_id
+        ):
             raise ExecutionPackageError("execution metadata conflicts with package")
         if package.target != {
             "source": "nodescale",
@@ -528,6 +530,33 @@ def _metadata_matches(
     }
     return all(metadata.get(key) == value for key, value in expected.items()) and (
         _deadline_ms(metadata) is not None
+    )
+
+
+def _execution_metadata_matches(
+    metadata: object,
+    expected: dict[str, str],
+    *,
+    target_peer_id: str,
+) -> bool:
+    if type(metadata) is not dict or not all(
+        metadata.get(key) == value for key, value in expected.items()
+    ):
+        return False
+    transport_keys = {
+        "target_node_id",
+        "keryx.authenticated_source_protocol_features",
+    }
+    if not set(metadata).issubset(set(expected) | transport_keys):
+        return False
+    target_node_id = metadata.get("target_node_id")
+    if target_node_id is not None and target_node_id != target_peer_id:
+        return False
+    features = metadata.get("keryx.authenticated_source_protocol_features")
+    return features is None or (
+        type(features) is str
+        and 0 < len(features) <= 2_048
+        and all(character.isprintable() for character in features)
     )
 
 
