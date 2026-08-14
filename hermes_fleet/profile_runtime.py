@@ -331,12 +331,10 @@ class ProfileHermesRuntime:
         if not owner.is_file() or owner.is_symlink():
             raise ValueError("execution profile is not owned by Fleet")
         try:
-            execution_id = owner.read_text(encoding="utf-8").strip()
+            serialized_owner = owner.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             raise ValueError("execution profile ownership is invalid") from error
-        if not execution_id or "\n" in execution_id or "\r" in execution_id:
-            raise ValueError("execution profile ownership is invalid")
-        if execution_id != expected_owner:
+        if serialized_owner != expected_owner + "\n":
             raise ValueError("execution profile ownership changed")
         _clear_owned_slot(destination)
         if set(item.name for item in destination.iterdir()) != {_SLOT_FILE}:

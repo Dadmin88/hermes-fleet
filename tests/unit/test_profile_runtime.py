@@ -325,6 +325,30 @@ def test_profile_runtime_cleanup_rejects_changed_execution_owner(tmp_path) -> No
     assert payload.read_text() == "preserve exact owner state"
 
 
+@pytest.mark.parametrize("stored_owner", [" execution-1\n", "execution-1 \n"])
+def test_profile_runtime_cleanup_rejects_normalized_owner_substitution(
+    tmp_path, stored_owner
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    owner = slot / ".fleet-execution-owner"
+    owner.write_text(stored_owner)
+    payload = slot / "SOUL.md"
+    payload.write_text("preserve exact serialized owner")
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+    )
+
+    with pytest.raises(ValueError, match="ownership changed"):
+        runtime.cleanup("fleet-execution", expected_owner="execution-1")
+
+    assert owner.read_text() == stored_owner
+    assert payload.read_text() == "preserve exact serialized owner"
+
+
 def test_profile_runtime_refuses_dangling_execution_owner_symlink(tmp_path) -> None:
     from hermes_fleet.profile_runtime import ProfileHermesRuntime
 
