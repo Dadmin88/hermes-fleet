@@ -720,6 +720,8 @@ class Installer:
             raise RuntimeError(f"runtime preflight failed: {failed[0].name}")
 
     def _converge_environment(self, token: str, api_key: str) -> None:
+        self.state.mkdir(parents=True, mode=0o700, exist_ok=True)
+        self.state.chmod(0o700)
         runtime = Path(f"/run/user/{os.getuid()}/hermes-fleet")
         for filename in ENV_FILES:
             values: dict[str, str] = {}
@@ -1013,7 +1015,7 @@ class Installer:
                     "install",
                     "--force-reinstall",
                     "--editable",
-                    str(hermes_source),
+                    str(hermes_source) + "[messaging]",
                 ]
             )
             profile = self.home / ".hermes/profiles/fleet-worker"

@@ -777,6 +777,25 @@ def test_runtime_install_creates_isolated_worker_profile_without_cloning_secrets
     ] in runner.calls
     flattened = " ".join(" ".join(call) for call in runner.calls)
     assert "--clone" not in flattened and "--clone-from" not in flattened
+    assert any(
+        call[-1].endswith("hermes-source[messaging]")
+        for call in runner.calls
+        if "pip" in call
+    )
+
+
+def test_environment_convergence_hardens_installer_state_directory(
+    tmp_path: Path,
+) -> None:
+    installer = bootstrap.Installer(
+        home=tmp_path / "home", bundle=tmp_path / "bundle", runner=FakeRunner()
+    )
+    installer.state.mkdir(parents=True, mode=0o775)
+    installer.state.chmod(0o775)
+
+    installer._converge_environment("token", "api-key")
+
+    assert installer.state.stat().st_mode & 0o777 == 0o700
 
 
 def test_installer_converges_owned_execution_slot_and_worker_gateway_config(
