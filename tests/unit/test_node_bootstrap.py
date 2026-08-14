@@ -493,7 +493,9 @@ def test_failed_preflight_causes_zero_mutation(tmp_path: Path) -> None:
     assert before == after
 
 
-def test_failed_runtime_preflight_causes_zero_mutation(tmp_path: Path) -> None:
+def test_failed_runtime_preflight_causes_zero_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bundle = tmp_path / "bundle"
     _manifest(bundle)
     home = _worker_home(tmp_path, bundle)
@@ -507,6 +509,7 @@ def test_failed_runtime_preflight_causes_zero_mutation(tmp_path: Path) -> None:
         return original(argv, env=env)
 
     runner.run = run  # type: ignore[method-assign]
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/bin/tool")
     installer = bootstrap.Installer(home=home, bundle=bundle, runner=runner)
     with pytest.raises(RuntimeError, match="fleet.system_service_absent"):
         installer.converge()
@@ -515,11 +518,12 @@ def test_failed_runtime_preflight_causes_zero_mutation(tmp_path: Path) -> None:
 
 
 def test_runtime_preflight_does_not_require_post_install_fleet_state(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bundle = tmp_path / "bundle"
     _manifest(bundle)
     home = tmp_path / "home"
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/bin/tool")
     installer = bootstrap.Installer(home=home, bundle=bundle, runner=FakeRunner())
 
     installer._runtime_preflight()
