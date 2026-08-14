@@ -156,6 +156,26 @@ def _write_env(path: Path, changes: Mapping[str, str]) -> bool:
     return True
 
 
+def _remove_env_keys(path: Path, keys: set[str]) -> bool:
+    if not path.exists():
+        return False
+    old = path.read_text(encoding="utf-8")
+    output = [
+        line
+        for line in old.splitlines()
+        if not (
+            "=" in line
+            and not line.lstrip().startswith("#")
+            and line.split("=", 1)[0].strip() in keys
+        )
+    ]
+    new = "\n".join(output).rstrip() + "\n"
+    if new == old:
+        return False
+    _atomic_write(path, new.encode(), 0o600)
+    return True
+
+
 def _atomic_write(path: Path, content: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -700,6 +720,7 @@ class Installer:
         if existing and len(set(existing)) != 1:
             raise RuntimeError("existing daemon credentials are inconsistent")
         self._existing_keryx_peer_id()
+        self._remote_observation_enabled()
 
     def _runtime_preflight(self) -> None:
         doctor = Doctor(home=self.home, bundle=self.bundle, runner=self.runner)
@@ -727,6 +748,7 @@ class Installer:
         self.state.chmod(0o700)
         runtime = Path(f"/run/user/{os.getuid()}/hermes-fleet")
         peer_id = self._existing_keryx_peer_id()
+        remote_observation = self._remote_observation_enabled()
         for filename in ENV_FILES:
             values: dict[str, str] = {}
             if filename not in {"hermes-api.env", "fleet-managed-projection.env"}:
@@ -759,9 +781,14 @@ class Installer:
                     }
                 )
             if filename == "fleet-node.env":
-                values["FLEET_OBSERVATION_SOCKET"] = str(
-                    runtime / "managed-control.sock"
-                )
+                control_socket = str(runtime / "managed-control.sock")
+                values["FLEET_EXECUTION_CONTROL_SOCKET"] = control_socket
+                path = self.config / filename
+                if remote_observation:
+                    if _remove_env_keys(path, {"FLEET_OBSERVATION_SOCKET"}):
+                        self.changes.append(f"env:{filename}")
+                else:
+                    values["FLEET_OBSERVATION_SOCKET"] = control_socket
             if _write_env(self.config / filename, values):
                 self.changes.append(f"env:{filename}")
 
@@ -962,6 +989,17 @@ class Installer:
         if existing and len(set(existing)) != 1:
             raise RuntimeError("existing Keryx peer identities are inconsistent")
         return existing[0] if existing else None
+
+    def _remote_observation_enabled(self) -> bool:
+        values = _read_env(self.config / "fleet-node.env")
+        fields = (
+            values.get("FLEET_REMOTE_OBSERVATION_ENDPOINT", ""),
+            values.get("FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID", ""),
+        )
+        present = tuple(bool(value) for value in fields)
+        if any(present) and not all(present):
+            raise RuntimeError("remote observation configuration is incomplete")
+        return all(present)
 
     def _install_artifacts(self, manifest: dict[str, Any]) -> None:
         for name in UNITS:

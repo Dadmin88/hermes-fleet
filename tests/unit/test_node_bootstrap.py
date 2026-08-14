@@ -511,6 +511,64 @@ def test_installer_converges_established_edge_peer_to_daemon(tmp_path: Path) -> 
     assert edge["HERMES_KERYX_NODE_PEER_ID"] == "12D3KooWStableWorker"
 
 
+def test_installer_preserves_remote_observation_and_local_execution_control(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    _manifest(bundle)
+    home = _worker_home(tmp_path, bundle)
+    fleet_path = home / ".config/hermes-fleet/fleet-node.env"
+    lines = [
+        line
+        for line in fleet_path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("FLEET_OBSERVATION_SOCKET=")
+    ]
+    fleet_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    bootstrap._write_env(
+        fleet_path,
+        {
+            "FLEET_REMOTE_OBSERVATION_ENDPOINT": "https://relay.example:50052",
+            "FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID": "peer-controller",
+        },
+    )
+    installer = bootstrap.Installer(home=home, bundle=bundle, runner=FakeRunner())
+
+    installer._preflight()
+    installer._converge_environment("daemon-token", "api-key")
+    installer._converge_environment("daemon-token", "api-key")
+
+    fleet = bootstrap._read_env(fleet_path)
+    assert "FLEET_OBSERVATION_SOCKET" not in fleet
+    assert fleet["FLEET_REMOTE_OBSERVATION_ENDPOINT"] == "https://relay.example:50052"
+    assert fleet["FLEET_REMOTE_OBSERVATION_TARGET_PEER_ID"] == "peer-controller"
+    assert fleet["FLEET_EXECUTION_CONTROL_SOCKET"].endswith(
+        "/hermes-fleet/managed-control.sock"
+    )
+
+
+def test_installer_rejects_partial_remote_observation_before_mutation(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    _manifest(bundle)
+    home = _worker_home(tmp_path, bundle)
+    fleet_path = home / ".config/hermes-fleet/fleet-node.env"
+    bootstrap._write_env(
+        fleet_path,
+        {"FLEET_REMOTE_OBSERVATION_ENDPOINT": "https://relay.example:50052"},
+    )
+    before = {path: path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    installer = bootstrap.Installer(home=home, bundle=bundle, runner=FakeRunner())
+
+    with pytest.raises(
+        RuntimeError, match="remote observation configuration is incomplete"
+    ):
+        installer._preflight()
+
+    after = {path: path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    assert after == before
+
+
 def test_installer_rejects_inconsistent_daemon_and_edge_peers(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     _manifest(bundle)
