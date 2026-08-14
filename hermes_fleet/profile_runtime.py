@@ -227,27 +227,41 @@ class ProfileHermesRuntime:
             else:
                 raise ValueError("secret reference is invalid")
         _prepare_owned_slot(destination)
+        staging = destination / ".materializing"
+        if staging.exists() or staging.is_symlink():
+            raise ValueError("execution profile staging path is unavailable")
+        reclaimed = False
         try:
-            staging = destination / ".materializing"
             materialize_agency_bundle(package.agency_bundle, destination=staging)
-            for item in tuple(staging.iterdir()):
-                item.replace(destination / item.name)
-            staging.rmdir()
-            owner = destination / _OWNER_FILE
+            if any(
+                (staging / name).exists() or (staging / name).is_symlink()
+                for name in (_SLOT_FILE, _OWNER_FILE)
+            ):
+                raise ValueError("Agency profile contains reserved Fleet state")
+            owner = staging / _OWNER_FILE
             owner.write_text(package.execution_id + "\n", encoding="utf-8")
             owner.chmod(0o600)
-            environment_path = destination / ".env"
+            environment_path = staging / ".env"
             content = "".join(
                 f"{name}={environment[name]}\n" for name in sorted(environment)
             )
             environment_path.write_text(content, encoding="utf-8")
             environment_path.chmod(0o600)
             for file_secret in file_secrets:
-                _copy_local_file_secret(file_secret, destination)
-            self._runs[profile] = self._runs_factory(profile)
+                _copy_local_file_secret(file_secret, staging)
+            client = self._runs_factory(profile)
+            _clear_owned_slot(destination, preserve_names={staging.name})
+            reclaimed = True
+            for item in tuple(staging.iterdir()):
+                item.replace(destination / item.name)
+            staging.rmdir()
+            self._runs[profile] = client
             return profile
         except BaseException:
-            _clear_owned_slot(destination)
+            if reclaimed:
+                _clear_owned_slot(destination)
+            elif staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging)
             self._runs.pop(profile, None)
             raise
         finally:
@@ -455,14 +469,16 @@ def _prepare_owned_slot(destination: Path) -> None:
         valid = False
     if not valid:
         raise ValueError("execution profile is not an empty owned slot")
-    _clear_owned_slot(destination)
 
 
-def _clear_owned_slot(destination: Path) -> None:
+def _clear_owned_slot(
+    destination: Path, *, preserve_names: set[str] | None = None
+) -> None:
     if not destination.is_dir() or destination.is_symlink():
         return
+    preserved = preserve_names or set()
     for item in tuple(destination.iterdir()):
-        if item.name == _SLOT_FILE:
+        if item.name == _SLOT_FILE or item.name in preserved:
             continue
         if item.is_dir() and not item.is_symlink():
             shutil.rmtree(item)

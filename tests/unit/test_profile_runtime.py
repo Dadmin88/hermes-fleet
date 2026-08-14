@@ -281,6 +281,107 @@ def test_profile_runtime_refuses_dangling_execution_owner_symlink(tmp_path) -> N
     assert owner.is_symlink()
 
 
+def test_profile_runtime_preserves_scaffold_when_agency_bundle_is_invalid(
+    tmp_path,
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    scaffold = slot / "SOUL.md"
+    scaffold.write_text("gateway scaffold")
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+
+    with pytest.raises(Exception):
+        runtime.materialize(package(b"not-a-tar"), secrets={})
+
+    assert scaffold.read_text() == "gateway scaffold"
+    assert sorted(path.name for path in slot.iterdir()) == [
+        ".fleet-execution-slot",
+        "SOUL.md",
+    ]
+
+
+def test_profile_runtime_preserves_scaffold_when_file_secret_changed(
+    tmp_path, monkeypatch
+) -> None:
+    from hermes_fleet.profile_runtime import (
+        DestinationSecretResolver,
+        ProfileHermesRuntime,
+    )
+
+    source = tmp_path / "auth.json"
+    source.write_text("original")
+    source.chmod(0o600)
+    reference = "secret://worker/file/HERMES_AUTH"
+    resolved = DestinationSecretResolver(
+        allowed_references=(reference,),
+        file_sources={reference: (source, "auth.json")},
+    ).resolve(
+        [reference],
+        requester="peer-controller-1",
+        target={"device_id": "device-1"},
+        execution_id="execution-1",
+    )
+    source.write_text("changed")
+    slot = execution_slot(tmp_path)
+    scaffold = slot / "SOUL.md"
+    scaffold.write_text("gateway scaffold")
+
+    def materialize(_bundle, *, destination):
+        destination.mkdir()
+        (destination / "SOUL.md").write_text("exact soul")
+
+    monkeypatch.setattr(
+        "hermes_fleet.profile_runtime.materialize_agency_bundle", materialize
+    )
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+
+    with pytest.raises(ValueError, match="changed before use"):
+        runtime.materialize(package(b"not-used"), secrets=resolved)
+
+    assert scaffold.read_text() == "gateway scaffold"
+    assert sorted(path.name for path in slot.iterdir()) == [
+        ".fleet-execution-slot",
+        "SOUL.md",
+    ]
+
+
+def test_profile_runtime_rejects_staged_fleet_slot_marker(
+    tmp_path, monkeypatch
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    scaffold = slot / "SOUL.md"
+    scaffold.write_text("gateway scaffold")
+
+    def materialize(_bundle, *, destination):
+        destination.mkdir()
+        (destination / ".fleet-execution-slot").write_text("forged")
+
+    monkeypatch.setattr(
+        "hermes_fleet.profile_runtime.materialize_agency_bundle", materialize
+    )
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+
+    with pytest.raises(ValueError, match="reserved Fleet state"):
+        runtime.materialize(package(b"not-used"), secrets={})
+
+    assert scaffold.read_text() == "gateway scaffold"
+    assert (slot / ".fleet-execution-slot").read_text() == (
+        "hermes-fleet.execution-slot.v1\n"
+    )
+
+
 def test_environment_secret_resolver_is_explicitly_allowlisted_and_never_repr_leaks(
     monkeypatch,
 ) -> None:
