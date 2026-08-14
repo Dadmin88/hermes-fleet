@@ -113,6 +113,17 @@ class _Hermes:
         raise AssertionError("not called")
 
 
+async def _fast_hermes_readiness(hermes) -> dict[str, Any]:
+    from hermes_fleet.node_service import _wait_for_hermes_runs
+
+    return await _wait_for_hermes_runs(
+        hermes,
+        attempts=2,
+        delay_seconds=0.0,
+        probe_timeout_seconds=0.1,
+    )
+
+
 def _card_factory(cards):
     def factory(include_hermes_run: bool):
         from hermes_fleet.node_service import operation_specs
@@ -241,9 +252,7 @@ def test_fleet_node_service_registers_four_operations_and_stops_cleanly(
     assert node.node_token == "test-node-token"
 
 
-def test_fleet_node_service_waits_for_restarted_hermes_api(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fleet_node_service_waits_for_restarted_hermes_api(tmp_path) -> None:
     from hermes_fleet import node_service
 
     cards = []
@@ -256,10 +265,6 @@ def test_fleet_node_service_waits_for_restarted_hermes_api(
             self.healthy = health_calls > 1
             return super().health()
 
-    monkeypatch.setattr(
-        node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0, raising=False
-    )
-
     async def exercise() -> None:
         shutdown = asyncio.Event()
         shutdown.set()
@@ -269,6 +274,7 @@ def test_fleet_node_service_waits_for_restarted_hermes_api(
             node_factory=_Node,
             shutdown=shutdown,
             hermes_factory=RestartingHermes,
+            hermes_readiness_waiter=_fast_hermes_readiness,
         )
 
     asyncio.run(exercise())
@@ -280,6 +286,31 @@ def test_fleet_node_service_waits_for_restarted_hermes_api(
         "fleet.message",
         "fleet.hermes.run",
     ]
+
+
+def test_hermes_readiness_probe_is_individually_bounded() -> None:
+    from hermes_fleet.node_service import _wait_for_hermes_runs
+
+    calls = 0
+
+    class StalledHermes:
+        def health(self) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            threading.Event().wait(0.05)
+            return _Hermes().health()
+
+    health = asyncio.run(
+        _wait_for_hermes_runs(
+            StalledHermes(),
+            attempts=1,
+            delay_seconds=0.0,
+            probe_timeout_seconds=0.001,
+        )
+    )
+
+    assert calls == 1
+    assert health == {}
 
 
 def test_recipe_executor_uses_local_control_with_remote_observation(
@@ -435,13 +466,9 @@ def test_fleet_node_service_rejects_wrong_local_keryx_identity(tmp_path) -> None
 
 
 def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path,
 ) -> None:
-    from hermes_fleet import node_service
     from hermes_fleet.node_service import operation_specs, run_node_service
-
-    monkeypatch.setattr(node_service, "_HERMES_READINESS_ATTEMPTS", 2)
-    monkeypatch.setattr(node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0)
 
     cards = []
     created = []
@@ -460,6 +487,7 @@ def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
             node_factory=node_factory,
             shutdown=shutdown,
             hermes_factory=lambda **kwargs: _Hermes(healthy=False, **kwargs),
+            hermes_readiness_waiter=_fast_hermes_readiness,
         )
 
     asyncio.run(exercise())
@@ -482,15 +510,11 @@ def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
 
 
 def test_fleet_node_service_advertises_observation_protocol_feature(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path,
 ) -> None:
     from dataclasses import replace
 
-    from hermes_fleet import node_service
     from hermes_fleet.node_service import operation_specs, run_node_service
-
-    monkeypatch.setattr(node_service, "_HERMES_READINESS_ATTEMPTS", 2)
-    monkeypatch.setattr(node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0)
 
     cards = []
     created: list[_Node] = []
@@ -515,6 +539,7 @@ def test_fleet_node_service_advertises_observation_protocol_feature(
                 healthy=False,
                 **kwargs,
             ),
+            hermes_readiness_waiter=_fast_hermes_readiness,
         )
 
     asyncio.run(exercise())
@@ -554,15 +579,11 @@ def test_observation_publish_environment_flag_is_strict() -> None:
 
 
 def test_direct_only_node_publishes_worker_unavailable(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path,
 ) -> None:
     from dataclasses import replace
 
-    from hermes_fleet import node_service
     from hermes_fleet.node_service import run_node_service
-
-    monkeypatch.setattr(node_service, "_HERMES_READINESS_ATTEMPTS", 2)
-    monkeypatch.setattr(node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0)
 
     runtime = replace(
         _runtime(tmp_path),
@@ -595,6 +616,7 @@ def test_direct_only_node_publishes_worker_unavailable(
             node_factory=_Node,
             shutdown=shutdown,
             hermes_factory=lambda **kwargs: _Hermes(healthy=False, **kwargs),
+            hermes_readiness_waiter=_fast_hermes_readiness,
             observation_factory=Observer,
             recipe_executor_factory=lambda runtime: None,
         )
