@@ -49,6 +49,8 @@ UNITS = (
 )
 TOKEN_KEY = "HERMES_KERYX_DAEMON_TOKEN"
 API_KEY = "API_SERVER_KEY"
+DAEMON_PEER_KEY = "HERMES_KERYX_DAEMON_PEER_ID"
+NODE_PEER_KEY = "HERMES_KERYX_NODE_PEER_ID"
 SECRET_KEY_RE = re.compile(r"(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)", re.I)
 
 
@@ -697,6 +699,7 @@ class Installer:
         ]
         if existing and len(set(existing)) != 1:
             raise RuntimeError("existing daemon credentials are inconsistent")
+        self._existing_keryx_peer_id()
 
     def _runtime_preflight(self) -> None:
         doctor = Doctor(home=self.home, bundle=self.bundle, runner=self.runner)
@@ -723,6 +726,7 @@ class Installer:
         self.state.mkdir(parents=True, mode=0o700, exist_ok=True)
         self.state.chmod(0o700)
         runtime = Path(f"/run/user/{os.getuid()}/hermes-fleet")
+        peer_id = self._existing_keryx_peer_id()
         for filename in ENV_FILES:
             values: dict[str, str] = {}
             if filename not in {"hermes-api.env", "fleet-managed-projection.env"}:
@@ -731,6 +735,8 @@ class Installer:
                 values[API_KEY] = api_key
             if filename == "keryxd.env":
                 values["HERMES_KERYX_DAEMON_ADDR"] = "127.0.0.1:50051"
+                if peer_id:
+                    values[DAEMON_PEER_KEY] = peer_id
             if filename in {"keryxd.env", "keryx-node.env"}:
                 values["HERMES_KERYX_DAEMON_ENDPOINT"] = "http://127.0.0.1:50051"
             if filename == "fleet-node.env":
@@ -940,6 +946,22 @@ class Installer:
             if value:
                 return value
         return None
+
+    def _existing_keryx_peer_id(self) -> str | None:
+        daemon = _read_env(self.config / "keryxd.env")
+        edge = _read_env(self.config / "keryx-node.env")
+        existing = [
+            value
+            for value in (
+                daemon.get(DAEMON_PEER_KEY),
+                daemon.get(NODE_PEER_KEY),
+                edge.get(NODE_PEER_KEY),
+            )
+            if value
+        ]
+        if existing and len(set(existing)) != 1:
+            raise RuntimeError("existing Keryx peer identities are inconsistent")
+        return existing[0] if existing else None
 
     def _install_artifacts(self, manifest: dict[str, Any]) -> None:
         for name in UNITS:
