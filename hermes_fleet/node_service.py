@@ -10,7 +10,7 @@ import platform
 import re
 import signal
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -241,6 +241,9 @@ _KERYX_BASELINE_PROTOCOL_FEATURES = (
     "result_artifact_bytes_v1",
 )
 _FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE = "fleet.observation.publish.v1"
+_HERMES_READINESS_ATTEMPTS = 30
+_HERMES_READINESS_DELAY_SECONDS = 1.0
+_HERMES_READINESS_PROBE_TIMEOUT_SECONDS = 2.0
 
 
 def operation_specs(*, include_hermes_run: bool = True) -> tuple[tuple[str, str], ...]:
@@ -253,6 +256,38 @@ def operation_specs(*, include_hermes_run: bool = True) -> tuple[tuple[str, str]
     if not include_hermes_run:
         return direct
     return direct + (("fleet.hermes.run", "Deliberate authenticated local Hermes run"),)
+
+
+async def _wait_for_hermes_runs(
+    hermes: Any,
+    *,
+    attempts: int = _HERMES_READINESS_ATTEMPTS,
+    delay_seconds: float = _HERMES_READINESS_DELAY_SECONDS,
+    probe_timeout_seconds: float = _HERMES_READINESS_PROBE_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    health: dict[str, Any] = {}
+    for attempt in range(attempts):
+        try:
+            candidate = await _bounded_hermes_health(
+                hermes, timeout_seconds=probe_timeout_seconds
+            )
+        except TimeoutError:
+            return {}
+        health = candidate if type(candidate) is dict else {}
+        if _runs_available(health) or attempt + 1 == attempts:
+            return health
+        await asyncio.sleep(delay_seconds)
+    return health
+
+
+async def _bounded_hermes_health(
+    hermes: Any,
+    *,
+    timeout_seconds: float = _HERMES_READINESS_PROBE_TIMEOUT_SECONDS,
+) -> object:
+    return await asyncio.wait_for(
+        asyncio.to_thread(hermes.health), timeout=timeout_seconds
+    )
 
 
 async def _keryx_signals(
@@ -413,6 +448,9 @@ async def run_node_service(
     node_factory: Callable[..., _Node],
     shutdown: asyncio.Event,
     hermes_factory: Callable[..., Any] = HermesRunsClient,
+    hermes_readiness_waiter: Callable[[Any], Awaitable[dict[str, Any]]] = (
+        _wait_for_hermes_runs
+    ),
     observation_factory: Callable[..., _Observation] = ObservationClient,
     remote_observation_factory: Callable[..., _Observation] = (
         RemoteObservationPublisher
@@ -428,7 +466,7 @@ async def run_node_service(
         endpoint=runtime.hermes_endpoint,
         api_key=runtime.hermes_api_key,
     )
-    health = await asyncio.to_thread(hermes.health)
+    health = await hermes_readiness_waiter(hermes)
     include_hermes_run = _runs_available(health)
     observer = _build_observation_publisher(
         runtime,
@@ -513,7 +551,11 @@ async def run_node_service(
         if observer is not None:
             admission_generation = await _admission_generation(observer)
             if admission_generation is not None:
-                health = await asyncio.to_thread(hermes.health)
+                try:
+                    health = await _bounded_hermes_health(hermes)
+                except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+                    logger.warning("fleet-node Hermes observation failed: %s", error)
+                    health = None
                 if runtime.remote_observation_endpoint is not None:
                     network_reachable, keryx_available = True, True
                 else:
@@ -679,8 +721,8 @@ async def _observation_loop(
             continue
 
         try:
-            health = await asyncio.to_thread(hermes.health)
-        except (OSError, RuntimeError, ValueError) as error:
+            health = await _bounded_hermes_health(hermes)
+        except (OSError, RuntimeError, TimeoutError, ValueError) as error:
             logger.warning("fleet-node Hermes observation failed: %s", error)
             health = None
         if remote_observation:
