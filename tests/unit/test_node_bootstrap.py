@@ -487,7 +487,7 @@ def test_installer_converges_loopback_daemon_listener_and_client_endpoint(
     assert keryxd["HERMES_KERYX_DAEMON_ADDR"] == "127.0.0.1:50051"
     assert keryxd["HERMES_KERYX_DAEMON_ENDPOINT"] == "http://127.0.0.1:50051"
     assert edge["HERMES_KERYX_DAEMON_ENDPOINT"] == "http://127.0.0.1:50051"
-    assert fleet["HERMES_KERYX_DAEMON_ENDPOINT"] == "http://127.0.0.1:50051"
+    assert fleet["HERMES_KERYX_DAEMON_ENDPOINT"] == "127.0.0.1:50051"
 
 
 def _read_token(home: Path, name: str) -> str | None:
