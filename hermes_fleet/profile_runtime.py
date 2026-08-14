@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .agency_materialization import materialize_agency_bundle
 from .execution_package import ExactExecutionPackage
 
@@ -22,6 +24,15 @@ _ENV_REF_RE = re.compile(r"^secret://worker/env/([A-Z][A-Z0-9_]{0,127})$")
 _FILE_REF_RE = re.compile(r"^secret://worker/file/([A-Z][A-Z0-9_]{0,127})$")
 _DESTINATION_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _MAX_FILE_SECRET_BYTES = 1_048_576
+_MAX_MODEL_CONFIG_BYTES = 65_536
+_SECRET_MODEL_KEY_MARKERS = (
+    "apikey",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
 _RESERVED_ENV = frozenset(
     {
         "PATH",
@@ -181,6 +192,88 @@ class DestinationSecretResolver:
         return values
 
 
+def _contains_secret_model_key(value: object) -> bool:
+    if type(value) is dict:
+        return any(
+            type(key) is not str
+            or any(
+                marker in re.sub(r"[^a-z0-9]", "", key.lower())
+                for marker in _SECRET_MODEL_KEY_MARKERS
+            )
+            or _contains_secret_model_key(item)
+            for key, item in value.items()
+        )
+    if type(value) is list:
+        return any(_contains_secret_model_key(item) for item in value)
+    return False
+
+
+def _load_model_config(path: Path) -> dict[str, Any]:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        metadata = os.fstat(descriptor)
+        with os.fdopen(descriptor, "rb", closefd=True) as source_file:
+            descriptor = -1
+            payload = source_file.read(_MAX_MODEL_CONFIG_BYTES + 1)
+    except OSError as error:
+        raise ValueError("model config capability is unavailable") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_nlink != 1
+        or len(payload) > _MAX_MODEL_CONFIG_BYTES
+    ):
+        raise ValueError("model config capability is invalid")
+    try:
+        source = yaml.safe_load(payload)
+    except (UnicodeError, yaml.YAMLError) as error:
+        raise ValueError("model config capability is invalid") from error
+    if type(source) is not dict or type(source.get("model")) is not dict:
+        raise ValueError("model config capability is invalid")
+    model = source["model"]
+    if (
+        type(model.get("default")) is not str
+        or not model["default"]
+        or type(model.get("provider")) is not str
+        or not model["provider"]
+        or _contains_secret_model_key(model)
+    ):
+        raise ValueError("model config capability is invalid")
+    return {"model": model}
+
+
+def _stage_model_config(staging: Path, model_config: dict[str, Any]) -> None:
+    destination = staging / "config.yaml"
+    existing: dict[str, Any] = {}
+    if destination.exists() or destination.is_symlink():
+        if destination.is_symlink() or not destination.is_file():
+            raise ValueError("Agency model config is invalid")
+        try:
+            payload = destination.read_bytes()
+            if len(payload) > _MAX_MODEL_CONFIG_BYTES:
+                raise ValueError("Agency model config is invalid")
+            parsed = yaml.safe_load(payload)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
+            raise ValueError("Agency model config is invalid") from error
+        if type(parsed) is not dict or "model" in parsed:
+            raise ValueError("Agency model config cannot override destination model")
+        existing = parsed
+    existing.update(model_config)
+    destination.write_text(
+        yaml.safe_dump(existing, sort_keys=True),
+        encoding="utf-8",
+    )
+    destination.chmod(0o600)
+
+
 class ProfileHermesRuntime:
     """Materialize, invoke, and delete one immutable execution-owned profile."""
 
@@ -190,6 +283,7 @@ class ProfileHermesRuntime:
         profiles_root: Path,
         runs_factory: Callable[[str], Any],
         api_server_key: str,
+        model_config_path: Path,
     ) -> None:
         if not isinstance(profiles_root, Path) or not profiles_root.is_absolute():
             raise ValueError("profiles root must be an absolute Path")
@@ -201,9 +295,15 @@ class ProfileHermesRuntime:
             or any(character in api_server_key for character in ("\x00", "\n", "\r"))
         ):
             raise ValueError("API server key must be nonempty bounded text")
+        if (
+            not isinstance(model_config_path, Path)
+            or not model_config_path.is_absolute()
+        ):
+            raise ValueError("model config path must be an absolute Path")
         self._profiles_root = profiles_root
         self._runs_factory = runs_factory
         self._api_server_key = api_server_key
+        self._model_config_path = model_config_path
         self._runs: dict[str, Any] = {}
 
     def materialize(
@@ -214,6 +314,7 @@ class ProfileHermesRuntime:
     ) -> str:
         if type(package) is not ExactExecutionPackage:
             raise ValueError("execution package is invalid")
+        model_config = _load_model_config(self._model_config_path)
         profile = _EXECUTION_PROFILE
         destination = self._profiles_root / profile
         environment: dict[str, str] = {}
@@ -252,6 +353,7 @@ class ProfileHermesRuntime:
                 for name in (_SLOT_FILE, _OWNER_FILE)
             ):
                 raise ValueError("Agency profile contains reserved Fleet state")
+            _stage_model_config(staging, model_config)
             owner = staging / _OWNER_FILE
             owner.write_text(package.execution_id + "\n", encoding="utf-8")
             owner.chmod(0o600)

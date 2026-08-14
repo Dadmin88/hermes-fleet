@@ -107,6 +107,7 @@ class NodeRuntimeConfig:
     binding_path: Path
     profiles_root: Path
     keryx_node_token: str = field(repr=False)
+    model_config_path: Path
     registration_ttl_seconds: int = 300
     advertise_observation_publish: bool = False
     observation_socket: Path | None = None
@@ -345,6 +346,7 @@ def _build_recipe_executor(
     profile_runtime = profile_runtime_factory(
         profiles_root=runtime.profiles_root,
         api_server_key=runtime.hermes_api_key,
+        model_config_path=runtime.model_config_path,
         runs_factory=lambda profile: hermes_factory(
             endpoint=runtime.hermes_endpoint,
             api_key=runtime.hermes_api_key,
@@ -871,6 +873,7 @@ def _runtime_from_args(
         binding_path=binding_path,
         profiles_root=get_hermes_home() / "profiles",
         keryx_node_token=node_token,
+        model_config_path=get_hermes_home() / "config.yaml",
         registration_ttl_seconds=args.registration_ttl,
         advertise_observation_publish=advertise_observation_publish,
         observation_socket=observation_socket,

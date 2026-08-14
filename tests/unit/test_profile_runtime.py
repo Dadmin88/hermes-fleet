@@ -94,6 +94,17 @@ def execution_slot(root: Path) -> Path:
     return slot
 
 
+def hermes_model_config(root: Path) -> Path:
+    path = root / "hermes-config.yaml"
+    if not path.exists():
+        path.write_text(
+            "model:\n  default: gpt-test\n  provider: openai-codex\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+    return path
+
+
 def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     tmp_path,
 ) -> None:
@@ -104,6 +115,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     source = tmp_path / "source"
     (source / "skills").mkdir(parents=True)
     (source / "SOUL.md").write_text("exact soul")
+    (source / "config.yaml").write_text("agent:\n  max_turns: 5\n")
     (source / "skills" / "SKILL.md").write_text("exact skill")
     (source / "distribution.yaml").write_text("name: acceptance\nversion: 1.0.0\n")
     agency = AgencyProfilePackage(
@@ -136,10 +148,17 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     (slot / "sessions").mkdir()
     (slot / "SOUL.md").write_text("gateway scaffold")
     (slot / ".env").write_text("")
+    model_config = tmp_path / "hermes-config.yaml"
+    model_config.write_text(
+        "model:\n  default: gpt-test\n  provider: openai-codex\n",
+        encoding="utf-8",
+    )
+    model_config.chmod(0o600)
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=calls),
         api_server_key="profile-api-key",
+        model_config_path=model_config,
     )
 
     profile = runtime.materialize(
@@ -156,6 +175,10 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
         "API_SERVER_KEY=profile-api-key\nOPENROUTER_API_KEY=test-secret-value\n"
     )
     assert (profile_path / ".env").stat().st_mode & 0o777 == 0o600
+    assert (profile_path / "config.yaml").read_text() == (
+        "agent:\n  max_turns: 5\n"
+        "model:\n  default: gpt-test\n  provider: openai-codex\n"
+    )
     assert (
         runtime.start(
             profile,
@@ -197,6 +220,7 @@ def test_profile_runtime_rejects_unapproved_secret_reference(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
     slot = execution_slot(tmp_path)
     with pytest.raises(ValueError, match="secret reference"):
@@ -217,7 +241,97 @@ def test_profile_runtime_rejects_invalid_profile_api_server_key(
             profiles_root=tmp_path / "profiles",
             runs_factory=lambda profile: Runs(profile=profile, calls=[]),
             api_server_key=api_server_key,
+            model_config_path=hermes_model_config(tmp_path),
         )
+
+
+def test_profile_runtime_rejects_secret_bearing_model_config_before_reclamation(
+    tmp_path,
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    scaffold = slot / "SOUL.md"
+    scaffold.write_text("gateway scaffold", encoding="utf-8")
+    model_config = tmp_path / "hermes-config.yaml"
+    model_config.write_text(
+        "model:\n  default: gpt-test\n  provider: openai-codex\n  api_key: forbidden\n",
+        encoding="utf-8",
+    )
+    model_config.chmod(0o600)
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+        model_config_path=model_config,
+    )
+
+    with pytest.raises(ValueError, match="model config capability is invalid"):
+        runtime.materialize(package(b"not-an-agency-archive"), secrets={})
+
+    assert scaffold.read_text(encoding="utf-8") == "gateway scaffold"
+    assert not (slot / ".materializing").exists()
+
+
+def test_profile_runtime_rejects_symlinked_model_config_before_reclamation(
+    tmp_path,
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    scaffold = slot / "SOUL.md"
+    scaffold.write_text("gateway scaffold", encoding="utf-8")
+    target = hermes_model_config(tmp_path)
+    model_config = tmp_path / "model-link.yaml"
+    model_config.symlink_to(target)
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+        model_config_path=model_config,
+    )
+
+    with pytest.raises(ValueError, match="model config capability is unavailable"):
+        runtime.materialize(package(b"not-an-agency-archive"), secrets={})
+
+    assert scaffold.read_text(encoding="utf-8") == "gateway scaffold"
+    assert not (slot / ".materializing").exists()
+
+
+def test_agency_model_config_cannot_override_destination_model(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import _stage_model_config
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    agency_config = staging / "config.yaml"
+    original = "model:\n  default: agency-model\n  provider: other\n"
+    agency_config.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot override destination model"):
+        _stage_model_config(
+            staging,
+            {"model": {"default": "gpt-test", "provider": "openai-codex"}},
+        )
+
+    assert agency_config.read_text(encoding="utf-8") == original
+
+
+def test_oversized_agency_config_is_rejected_unchanged(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import _stage_model_config
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    agency_config = staging / "config.yaml"
+    original = b"#" * 65_537
+    agency_config.write_bytes(original)
+
+    with pytest.raises(ValueError, match="Agency model config is invalid"):
+        _stage_model_config(
+            staging,
+            {"model": {"default": "gpt-test", "provider": "openai-codex"}},
+        )
+
+    assert agency_config.read_bytes() == original
 
 
 def test_profile_runtime_rejects_recipe_override_of_profile_api_server_key(
@@ -229,6 +343,7 @@ def test_profile_runtime_rejects_recipe_override_of_profile_api_server_key(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
     slot = execution_slot(tmp_path)
 
@@ -251,6 +366,7 @@ def test_profile_runtime_refuses_foreign_execution_slot(tmp_path) -> None:
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(ValueError, match="not an empty owned slot"):
@@ -275,6 +391,7 @@ def test_profile_runtime_rejects_permissive_owned_slot(tmp_path, target) -> None
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(ValueError, match="empty owned slot"):
@@ -293,6 +410,7 @@ def test_profile_runtime_inspects_exact_slot_owner_and_run_without_starting(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: runs,
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
     (slot / ".fleet-execution-owner").write_text("execution-1\n")
     profile = "fleet-execution"
@@ -316,6 +434,7 @@ def test_profile_runtime_cleanup_rejects_changed_execution_owner(tmp_path) -> No
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(ValueError, match="ownership changed"):
@@ -340,6 +459,7 @@ def test_profile_runtime_cleanup_rejects_normalized_owner_substitution(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(ValueError, match="ownership changed"):
@@ -359,6 +479,7 @@ def test_profile_runtime_refuses_dangling_execution_owner_symlink(tmp_path) -> N
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(ValueError, match="empty owned slot"):
@@ -379,6 +500,7 @@ def test_profile_runtime_preserves_scaffold_when_agency_bundle_is_invalid(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(Exception):
@@ -428,6 +550,7 @@ def test_profile_runtime_preserves_scaffold_when_file_secret_changed(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(ValueError, match="changed before use"):
@@ -460,6 +583,7 @@ def test_profile_runtime_rejects_staged_fleet_slot_marker(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
 
     with pytest.raises(ValueError, match="reserved Fleet state"):
@@ -530,6 +654,7 @@ def test_local_file_secret_is_copied_minimally_and_source_is_unchanged(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
         api_server_key="profile-api-key",
+        model_config_path=hermes_model_config(tmp_path),
     )
     agency_source = tmp_path / "agency"
     (agency_source / "skills").mkdir(parents=True)
