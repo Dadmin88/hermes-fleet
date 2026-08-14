@@ -730,7 +730,21 @@ class Installer:
 
     def _runtime_preflight(self) -> None:
         doctor = Doctor(home=self.home, bundle=self.bundle, runner=self.runner)
-        checks = doctor._tailscale() + doctor._fleet()
+        tailscale = {
+            item.name: item
+            for item in doctor._tailscale()
+            if item.name
+            in {"tailscale.installed", "tailscale.running", "tailscale.connected"}
+        }
+        system_fleet = self.runner.run(["systemctl", "is-active", "fleet-node.service"])
+        checks = [
+            *(tailscale[name] for name in sorted(tailscale)),
+            Check(
+                "fleet.system_service_absent",
+                system_fleet.returncode != 0,
+                "absent" if system_fleet.returncode != 0 else "active",
+            ),
+        ]
         failed = [item for item in checks if item.blocker and not item.ok]
         if failed:
             raise RuntimeError(f"runtime preflight failed: {failed[0].name}")
