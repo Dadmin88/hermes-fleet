@@ -104,6 +104,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     source = tmp_path / "source"
     (source / "skills").mkdir(parents=True)
     (source / "SOUL.md").write_text("exact soul")
+    (source / "config.yaml").write_text("agent:\n  max_turns: 5\n")
     (source / "skills" / "SKILL.md").write_text("exact skill")
     (source / "distribution.yaml").write_text("name: acceptance\nversion: 1.0.0\n")
     agency = AgencyProfilePackage(
@@ -136,10 +137,17 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     (slot / "sessions").mkdir()
     (slot / "SOUL.md").write_text("gateway scaffold")
     (slot / ".env").write_text("")
+    model_config = tmp_path / "hermes-config.yaml"
+    model_config.write_text(
+        "model:\n  default: gpt-test\n  provider: openai-codex\n",
+        encoding="utf-8",
+    )
+    model_config.chmod(0o600)
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=calls),
         api_server_key="profile-api-key",
+        model_config_path=model_config,
     )
 
     profile = runtime.materialize(
@@ -156,6 +164,10 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
         "API_SERVER_KEY=profile-api-key\nOPENROUTER_API_KEY=test-secret-value\n"
     )
     assert (profile_path / ".env").stat().st_mode & 0o777 == 0o600
+    assert (profile_path / "config.yaml").read_text() == (
+        "agent:\n  max_turns: 5\n"
+        "model:\n  default: gpt-test\n  provider: openai-codex\n"
+    )
     assert (
         runtime.start(
             profile,
@@ -218,6 +230,52 @@ def test_profile_runtime_rejects_invalid_profile_api_server_key(
             runs_factory=lambda profile: Runs(profile=profile, calls=[]),
             api_server_key=api_server_key,
         )
+
+
+def test_profile_runtime_rejects_secret_bearing_model_config_before_reclamation(
+    tmp_path,
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    scaffold = slot / "SOUL.md"
+    scaffold.write_text("gateway scaffold", encoding="utf-8")
+    model_config = tmp_path / "hermes-config.yaml"
+    model_config.write_text(
+        "model:\n  default: gpt-test\n  provider: openai-codex\n  api_key: forbidden\n",
+        encoding="utf-8",
+    )
+    model_config.chmod(0o600)
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+        model_config_path=model_config,
+    )
+
+    with pytest.raises(ValueError, match="model config capability is invalid"):
+        runtime.materialize(package(b"not-an-agency-archive"), secrets={})
+
+    assert scaffold.read_text(encoding="utf-8") == "gateway scaffold"
+    assert not (slot / ".materializing").exists()
+
+
+def test_agency_model_config_cannot_override_destination_model(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import _stage_model_config
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    agency_config = staging / "config.yaml"
+    original = "model:\n  default: agency-model\n  provider: other\n"
+    agency_config.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot override destination model"):
+        _stage_model_config(
+            staging,
+            {"model": {"default": "gpt-test", "provider": "openai-codex"}},
+        )
+
+    assert agency_config.read_text(encoding="utf-8") == original
 
 
 def test_profile_runtime_rejects_recipe_override_of_profile_api_server_key(

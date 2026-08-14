@@ -334,6 +334,7 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
         remote_observation_ca_cert_path=tmp_path / "relay-ca.pem",
         managed_network_id="network-1",
         managed_device_id="device-1",
+        model_config_path=tmp_path / "config.yaml",
     )
     created: dict[str, Any] = {}
 
@@ -342,10 +343,13 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
             created["socket"] = socket_path
 
     class ProfileRuntime:
-        def __init__(self, *, profiles_root, runs_factory, api_server_key):
+        def __init__(
+            self, *, profiles_root, runs_factory, api_server_key, model_config_path
+        ):
             created["profiles_root"] = profiles_root
             created["runs"] = runs_factory("fleet-execution")
             created["profile_api_server_key"] = api_server_key
+            created["model_config_path"] = model_config_path
 
     class Secrets:
         def __init__(self, *, allowed_references, file_sources):
@@ -374,6 +378,7 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
     assert created["profiles_root"] == tmp_path / "profiles"
     assert created["runs"].profile == "fleet-execution"
     assert created["profile_api_server_key"] == runtime.hermes_api_key
+    assert created["model_config_path"] == tmp_path / "config.yaml"
     assert created["allowed"] == execution_policy.allowed_secret_references
     assert created["file_sources"] == {}
     assert created["current_policy_digest"]() == execution_policy.content_hash
