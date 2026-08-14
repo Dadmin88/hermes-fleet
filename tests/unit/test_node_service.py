@@ -336,6 +336,7 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
         managed_network_id="network-1",
         managed_device_id="device-1",
         model_config_path=tmp_path / "config.yaml",
+        execution_toolsets=("fleet-terminal",),
     )
     created: dict[str, Any] = {}
 
@@ -345,12 +346,19 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
 
     class ProfileRuntime:
         def __init__(
-            self, *, profiles_root, runs_factory, api_server_key, model_config_path
+            self,
+            *,
+            profiles_root,
+            runs_factory,
+            api_server_key,
+            model_config_path,
+            toolsets,
         ):
             created["profiles_root"] = profiles_root
             created["runs"] = runs_factory("fleet-execution")
             created["profile_api_server_key"] = api_server_key
             created["model_config_path"] = model_config_path
+            created["toolsets"] = toolsets
 
     class Secrets:
         def __init__(self, *, allowed_references, file_sources):
@@ -380,6 +388,7 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
     assert created["runs"].profile == "fleet-execution"
     assert created["profile_api_server_key"] == runtime.hermes_api_key
     assert created["model_config_path"] == tmp_path / "config.yaml"
+    assert created["toolsets"] == ("fleet-terminal",)
     assert created["allowed"] == execution_policy.allowed_secret_references
     assert created["file_sources"] == {}
     assert created["current_policy_digest"]() == execution_policy.content_hash
@@ -392,6 +401,26 @@ def test_destination_recipe_executor_is_unavailable_without_local_managed_contro
     from hermes_fleet.node_service import _build_recipe_executor
 
     assert _build_recipe_executor(_runtime(tmp_path)) is None
+
+
+def test_execution_toolsets_are_destination_scoped() -> None:
+    from hermes_fleet.node_service import _execution_toolsets
+
+    assert _execution_toolsets(
+        {"FLEET_EXECUTION_TOOLSETS": "fleet-terminal,file"}
+    ) == ("fleet-terminal", "file")
+    assert _execution_toolsets({}) == ()
+
+
+@pytest.mark.parametrize(
+    "toolsets",
+    ["", " fleet-terminal", "fleet-terminal,", "fleet-terminal,fleet-terminal", "Fleet-terminal"],
+)
+def test_execution_toolsets_reject_invalid_values(toolsets: str) -> None:
+    from hermes_fleet.node_service import _execution_toolsets
+
+    with pytest.raises(ValueError, match="execution toolsets are invalid"):
+        _execution_toolsets({"FLEET_EXECUTION_TOOLSETS": toolsets})
 
 
 def test_file_secret_sources_are_destination_local_and_provider_neutral() -> None:

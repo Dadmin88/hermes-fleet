@@ -23,7 +23,9 @@ _OWNER_FILE = ".fleet-execution-owner"
 _ENV_REF_RE = re.compile(r"^secret://worker/env/([A-Z][A-Z0-9_]{0,127})$")
 _FILE_REF_RE = re.compile(r"^secret://worker/file/([A-Z][A-Z0-9_]{0,127})$")
 _DESTINATION_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_TOOLSET_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _MAX_FILE_SECRET_BYTES = 1_048_576
+_MAX_EXECUTION_TOOLSETS = 32
 _MAX_MODEL_CONFIG_BYTES = 65_536
 _SECRET_MODEL_KEY_MARKERS = (
     "apikey",
@@ -284,6 +286,7 @@ class ProfileHermesRuntime:
         runs_factory: Callable[[str], Any],
         api_server_key: str,
         model_config_path: Path,
+        toolsets: tuple[str, ...] = (),
     ) -> None:
         if not isinstance(profiles_root, Path) or not profiles_root.is_absolute():
             raise ValueError("profiles root must be an absolute Path")
@@ -300,10 +303,21 @@ class ProfileHermesRuntime:
             or not model_config_path.is_absolute()
         ):
             raise ValueError("model config path must be an absolute Path")
+        if (
+            type(toolsets) is not tuple
+            or len(toolsets) > _MAX_EXECUTION_TOOLSETS
+            or any(
+                type(toolset) is not str or _TOOLSET_RE.fullmatch(toolset) is None
+                for toolset in toolsets
+            )
+            or len(set(toolsets)) != len(toolsets)
+        ):
+            raise ValueError("execution toolsets are invalid")
         self._profiles_root = profiles_root
         self._runs_factory = runs_factory
         self._api_server_key = api_server_key
         self._model_config_path = model_config_path
+        self._toolsets = toolsets
         self._runs: dict[str, Any] = {}
 
     def materialize(
@@ -315,6 +329,8 @@ class ProfileHermesRuntime:
         if type(package) is not ExactExecutionPackage:
             raise ValueError("execution package is invalid")
         model_config = _load_model_config(self._model_config_path)
+        if self._toolsets:
+            model_config["platform_toolsets"] = {"api_server": list(self._toolsets)}
         profile = _EXECUTION_PROFILE
         destination = self._profiles_root / profile
         environment: dict[str, str] = {}

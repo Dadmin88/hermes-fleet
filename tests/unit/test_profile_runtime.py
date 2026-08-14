@@ -160,6 +160,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
         runs_factory=lambda profile: Runs(profile=profile, calls=calls),
         api_server_key="profile-api-key",
         model_config_path=model_config,
+        toolsets=("fleet-terminal",),
     )
 
     profile = runtime.materialize(
@@ -179,6 +180,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     assert (profile_path / "config.yaml").read_text() == (
         "agent:\n  max_turns: 5\n"
         "model:\n  default: gpt-test\n  provider: openai-codex\n"
+        "platform_toolsets:\n  api_server:\n  - fleet-terminal\n"
     )
     assert (
         runtime.start(
@@ -243,6 +245,27 @@ def test_profile_runtime_rejects_invalid_profile_api_server_key(
             runs_factory=lambda profile: Runs(profile=profile, calls=[]),
             api_server_key=api_server_key,
             model_config_path=hermes_model_config(tmp_path),
+        )
+
+
+@pytest.mark.parametrize(
+    "toolsets",
+    [
+        ("Fleet-terminal",),
+        ("fleet-terminal", "fleet-terminal"),
+        tuple(f"tool-{index}" for index in range(33)),
+    ],
+)
+def test_profile_runtime_rejects_invalid_execution_toolsets(tmp_path, toolsets) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    with pytest.raises(ValueError, match="execution toolsets are invalid"):
+        ProfileHermesRuntime(
+            profiles_root=tmp_path / "profiles",
+            runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+            api_server_key="profile-api-key",
+            model_config_path=hermes_model_config(tmp_path),
+            toolsets=toolsets,
         )
 
 

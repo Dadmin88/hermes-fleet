@@ -32,6 +32,9 @@ from .selection import select_nodes
 
 logger = logging.getLogger(__name__)
 
+_EXECUTION_TOOLSET_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_MAX_EXECUTION_TOOLSETS = 32
+
 
 class _Node(Protocol):
     peer_id: str
@@ -119,6 +122,7 @@ class NodeRuntimeConfig:
     managed_network_id: str | None = None
     managed_device_id: str | None = None
     observation_interval_seconds: int = 30
+    execution_toolsets: tuple[str, ...] = ()
     file_secret_sources: tuple[tuple[str, Path, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -219,6 +223,17 @@ class NodeRuntimeConfig:
             or self.observation_interval_seconds > 3_600
         ):
             raise ValueError("observation_interval_seconds must be between 5 and 3600")
+        if (
+            type(self.execution_toolsets) is not tuple
+            or len(self.execution_toolsets) > _MAX_EXECUTION_TOOLSETS
+            or any(
+                type(toolset) is not str
+                or _EXECUTION_TOOLSET_RE.fullmatch(toolset) is None
+                for toolset in self.execution_toolsets
+            )
+            or len(set(self.execution_toolsets)) != len(self.execution_toolsets)
+        ):
+            raise ValueError("execution toolsets are invalid")
         if type(self.file_secret_sources) is not tuple:
             raise ValueError("file secret sources must be a tuple")
         references: set[str] = set()
@@ -347,6 +362,7 @@ def _build_recipe_executor(
         profiles_root=runtime.profiles_root,
         api_server_key=runtime.hermes_api_key,
         model_config_path=runtime.model_config_path,
+        toolsets=runtime.execution_toolsets,
         runs_factory=lambda profile: hermes_factory(
             endpoint=runtime.hermes_endpoint,
             api_key=runtime.hermes_api_key,
@@ -863,6 +879,7 @@ def _runtime_from_args(
         remote_observation_ca_cert_path = Path(
             environment["HERMES_KERYX_REGISTRY_CA_CERT"]
         )
+    execution_toolsets = _execution_toolsets(environment)
     file_secret_sources = _file_secret_sources(environment)
     return NodeRuntimeConfig(
         target=selected[0],
@@ -885,8 +902,25 @@ def _runtime_from_args(
         managed_network_id=managed_network_id,
         managed_device_id=managed_device_id,
         observation_interval_seconds=args.observation_interval,
+        execution_toolsets=execution_toolsets,
         file_secret_sources=file_secret_sources,
     )
+
+
+def _execution_toolsets(environment: Mapping[str, str]) -> tuple[str, ...]:
+    raw = environment.get("FLEET_EXECUTION_TOOLSETS")
+    if raw is None:
+        return ()
+    if not raw or raw != raw.strip():
+        raise ValueError("execution toolsets are invalid")
+    toolsets = tuple(part.strip() for part in raw.split(","))
+    if (
+        len(toolsets) > _MAX_EXECUTION_TOOLSETS
+        or any(_EXECUTION_TOOLSET_RE.fullmatch(toolset) is None for toolset in toolsets)
+        or len(set(toolsets)) != len(toolsets)
+    ):
+        raise ValueError("execution toolsets are invalid")
+    return toolsets
 
 
 def _file_secret_sources(
