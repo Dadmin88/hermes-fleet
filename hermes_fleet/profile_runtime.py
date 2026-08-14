@@ -449,6 +449,7 @@ def _prepare_owned_slot(destination: Path) -> None:
             and marker_metadata.st_nlink == 1
             and marker.read_text(encoding="utf-8") == _SLOT_CONTENT
             and not owner.exists()
+            and not owner.is_symlink()
         )
     except (OSError, UnicodeError):
         valid = False
