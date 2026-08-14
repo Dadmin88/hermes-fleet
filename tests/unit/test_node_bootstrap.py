@@ -471,6 +471,25 @@ def test_credential_reuse_and_consistent_wiring(tmp_path: Path) -> None:
     )
 
 
+def test_installer_converges_loopback_daemon_listener_and_client_endpoint(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    _manifest(bundle)
+    home = _worker_home(tmp_path, bundle)
+    installer = bootstrap.Installer(home=home, bundle=bundle, runner=FakeRunner())
+
+    installer._converge_environment("daemon-token", "api-key")
+
+    keryxd = bootstrap._read_env(home / ".config/hermes-fleet/keryxd.env")
+    edge = bootstrap._read_env(home / ".config/hermes-fleet/keryx-node.env")
+    fleet = bootstrap._read_env(home / ".config/hermes-fleet/fleet-node.env")
+    assert keryxd["HERMES_KERYX_DAEMON_ADDR"] == "127.0.0.1:50051"
+    assert keryxd["HERMES_KERYX_DAEMON_ENDPOINT"] == "http://127.0.0.1:50051"
+    assert edge["HERMES_KERYX_DAEMON_ENDPOINT"] == "http://127.0.0.1:50051"
+    assert fleet["HERMES_KERYX_DAEMON_ENDPOINT"] == "http://127.0.0.1:50051"
+
+
 def _read_token(home: Path, name: str) -> str | None:
     return bootstrap._read_env(home / ".config/hermes-fleet" / name).get(
         bootstrap.TOKEN_KEY
@@ -881,6 +900,7 @@ def test_second_correct_convergence_does_not_restart_or_regenerate(
     installer.state.mkdir(parents=True, exist_ok=True)
     installer._write_receipt(manifest)
     installer._converge_execution_profile()
+    installer._converge_environment("stable-token", "stable-api-key")
     installer.changes.clear()
     for name in bootstrap.UNITS:
         source = Path(bootstrap.__file__).resolve().parent.parent / "ops/systemd" / name
