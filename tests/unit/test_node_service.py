@@ -246,11 +246,17 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
 ) -> None:
     from dataclasses import replace
 
+    from hermes_fleet.models import NodePolicy
     from hermes_fleet.node_service import _build_recipe_executor
 
+    execution_policy = NodePolicy(
+        allowed_operations=("fleet.hermes.run",),
+        allowed_secret_references=("secret://worker/file/HERMES_AUTH",),
+    )
     runtime = replace(
         _runtime(tmp_path),
         execution_control_socket=tmp_path / "managed-control.sock",
+        execution_policy=execution_policy,
         remote_observation_endpoint="https://relay.example:50052",
         remote_observation_target_peer_id="peer-controller",
         remote_observation_ca_cert_path=tmp_path / "relay-ca.pem",
@@ -294,9 +300,9 @@ def test_recipe_executor_uses_local_control_with_remote_observation(
     assert created["socket"] == runtime.execution_control_socket
     assert created["profiles_root"] == tmp_path / "profiles"
     assert created["runs"].profile == "fleet-execution"
-    assert created["allowed"] == runtime.target.policy.allowed_secret_references
+    assert created["allowed"] == execution_policy.allowed_secret_references
     assert created["file_sources"] == {}
-    assert created["current_policy_digest"]() == runtime.target.policy.content_hash
+    assert created["current_policy_digest"]() == execution_policy.content_hash
     assert created["current_capabilities_hash"]() == "sha256:" + "3" * 64
 
 
