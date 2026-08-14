@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, cast
 
 from .execution_package import ExactExecutionPackage
+from .hermes_runs import HermesRunSubmissionUnknown
 from .profile_runtime import LocalFileSecret
 
 _BACKEND_KIND = "hermes.local/profile-runs"
@@ -33,7 +34,7 @@ class DestinationRuntime(Protocol):
 
     def wait(self, profile: str, *, run_id: str, timeout_seconds: float) -> Any: ...
 
-    def cleanup(self, profile: str) -> None: ...
+    def cleanup(self, profile: str, *, expected_owner: str) -> None: ...
 
     def inspect_owner(self, profile: str) -> str | None: ...
 
@@ -182,7 +183,7 @@ class DestinationRecipeExecutor:
                     session_id=f"fleet:{package.execution_id}",
                     timeout_seconds=remaining,
                 )
-            except Exception:
+            except HermesRunSubmissionUnknown:
                 self._transition(
                     package.execution_id,
                     generation,
@@ -199,6 +200,34 @@ class DestinationRecipeExecutor:
                     incoming, "Hermes execution outcome is indeterminate"
                 )
                 return "indeterminate"
+            except Exception:
+                generation = self._transition(
+                    package.execution_id,
+                    generation,
+                    {
+                        "kind": "failed",
+                        "backend_kind": _BACKEND_KIND,
+                        "realization_id": profile,
+                        "keryx_task_id": package.execution_id,
+                        "hermes_run_id": None,
+                    },
+                )
+                generation = self._transition(
+                    package.execution_id,
+                    generation,
+                    {
+                        "kind": "cleanup_pending",
+                        "backend_kind": _BACKEND_KIND,
+                        "realization_id": profile,
+                        "keryx_task_id": package.execution_id,
+                        "hermes_run_id": None,
+                        "reason": "failed Hermes start requires profile cleanup",
+                    },
+                )
+                self._runtime.cleanup(profile, expected_owner=package.execution_id)
+                self._transition(package.execution_id, generation, {"kind": "cleaned"})
+                await _fail_incoming(incoming, "Hermes execution failed")
+                return "failed"
             generation = self._transition(
                 package.execution_id,
                 generation,
@@ -255,7 +284,7 @@ class DestinationRecipeExecutor:
                         "reason": "failed Hermes run requires profile cleanup",
                     },
                 )
-                self._runtime.cleanup(profile)
+                self._runtime.cleanup(profile, expected_owner=package.execution_id)
                 self._transition(package.execution_id, generation, {"kind": "cleaned"})
                 await _fail_incoming(incoming, "Hermes execution failed")
                 return "failed"
@@ -287,7 +316,7 @@ class DestinationRecipeExecutor:
                     "reason": "terminal Hermes run requires profile cleanup",
                 },
             )
-            self._runtime.cleanup(profile)
+            self._runtime.cleanup(profile, expected_owner=package.execution_id)
             self._transition(package.execution_id, generation, {"kind": "cleaned"})
             complete = getattr(incoming, "complete", None)
             if not callable(complete):
@@ -355,7 +384,7 @@ class DestinationRecipeExecutor:
                 "reason": "reconciled Hermes run requires profile cleanup",
             },
         )
-        self._runtime.cleanup(profile)
+        self._runtime.cleanup(profile, expected_owner=package.execution_id)
         self._transition(package.execution_id, generation, {"kind": "cleaned"})
         complete = getattr(incoming, "complete", None)
         if not callable(complete):

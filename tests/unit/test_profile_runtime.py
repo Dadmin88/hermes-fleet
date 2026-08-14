@@ -139,6 +139,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=calls),
+        api_server_key="profile-api-key",
     )
 
     profile = runtime.materialize(
@@ -151,9 +152,9 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     assert (profile_path / ".fleet-execution-owner").read_text() == "execution-1\n"
     assert (profile_path / "SOUL.md").read_text() == "exact soul"
     assert not (profile_path / "sessions").exists()
-    assert (
-        profile_path / ".env"
-    ).read_text() == "OPENROUTER_API_KEY=test-secret-value\n"
+    assert (profile_path / ".env").read_text() == (
+        "API_SERVER_KEY=profile-api-key\nOPENROUTER_API_KEY=test-secret-value\n"
+    )
     assert (profile_path / ".env").stat().st_mode & 0o777 == 0o600
     assert (
         runtime.start(
@@ -166,7 +167,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     )
     assert runtime.wait(profile, run_id="run-1", timeout_seconds=1).text == "done"
 
-    runtime.cleanup(profile)
+    runtime.cleanup(profile, expected_owner="execution-1")
 
     assert profile_path.is_dir()
     assert sorted(path.name for path in profile_path.iterdir()) == [
@@ -195,12 +196,48 @@ def test_profile_runtime_rejects_unapproved_secret_reference(
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
     slot = execution_slot(tmp_path)
     with pytest.raises(ValueError, match="secret reference"):
         runtime.materialize(
             package(b"not-used"), secrets={reference: "test-secret-value"}
         )
+    assert sorted(path.name for path in slot.iterdir()) == [".fleet-execution-slot"]
+
+
+@pytest.mark.parametrize("api_server_key", ["", "bad\nkey", "bad\x00key"])
+def test_profile_runtime_rejects_invalid_profile_api_server_key(
+    tmp_path, api_server_key
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    with pytest.raises(ValueError, match="API server key"):
+        ProfileHermesRuntime(
+            profiles_root=tmp_path / "profiles",
+            runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+            api_server_key=api_server_key,
+        )
+
+
+def test_profile_runtime_rejects_recipe_override_of_profile_api_server_key(
+    tmp_path,
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+    )
+    slot = execution_slot(tmp_path)
+
+    with pytest.raises(ValueError, match="reserved execution state"):
+        runtime.materialize(
+            package(b"not-used"),
+            secrets={"secret://worker/env/API_SERVER_KEY": "recipe-override"},
+        )
+
     assert sorted(path.name for path in slot.iterdir()) == [".fleet-execution-slot"]
 
 
@@ -213,12 +250,13 @@ def test_profile_runtime_refuses_foreign_execution_slot(tmp_path) -> None:
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
 
     with pytest.raises(ValueError, match="not an empty owned slot"):
         runtime.materialize(package(b"not-a-tar"), secrets={})
     with pytest.raises(ValueError, match="not owned"):
-        runtime.cleanup("fleet-execution")
+        runtime.cleanup("fleet-execution", expected_owner="execution-1")
 
     assert (slot / "foreign").read_text() == "preserve"
 
@@ -236,6 +274,7 @@ def test_profile_runtime_rejects_permissive_owned_slot(tmp_path, target) -> None
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
 
     with pytest.raises(ValueError, match="empty owned slot"):
@@ -253,6 +292,7 @@ def test_profile_runtime_inspects_exact_slot_owner_and_run_without_starting(
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: runs,
+        api_server_key="profile-api-key",
     )
     (slot / ".fleet-execution-owner").write_text("execution-1\n")
     profile = "fleet-execution"
@@ -264,6 +304,51 @@ def test_profile_runtime_inspects_exact_slot_owner_and_run_without_starting(
     assert calls == [("status", "fleet-execution", "run-1")]
 
 
+def test_profile_runtime_cleanup_rejects_changed_execution_owner(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    owner = slot / ".fleet-execution-owner"
+    owner.write_text("execution-2\n")
+    payload = slot / "SOUL.md"
+    payload.write_text("preserve exact owner state")
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+    )
+
+    with pytest.raises(ValueError, match="ownership changed"):
+        runtime.cleanup("fleet-execution", expected_owner="execution-1")
+
+    assert owner.read_text() == "execution-2\n"
+    assert payload.read_text() == "preserve exact owner state"
+
+
+@pytest.mark.parametrize("stored_owner", [" execution-1\n", "execution-1 \n"])
+def test_profile_runtime_cleanup_rejects_normalized_owner_substitution(
+    tmp_path, stored_owner
+) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    owner = slot / ".fleet-execution-owner"
+    owner.write_text(stored_owner)
+    payload = slot / "SOUL.md"
+    payload.write_text("preserve exact serialized owner")
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
+    )
+
+    with pytest.raises(ValueError, match="ownership changed"):
+        runtime.cleanup("fleet-execution", expected_owner="execution-1")
+
+    assert owner.read_text() == stored_owner
+    assert payload.read_text() == "preserve exact serialized owner"
+
+
 def test_profile_runtime_refuses_dangling_execution_owner_symlink(tmp_path) -> None:
     from hermes_fleet.profile_runtime import ProfileHermesRuntime
 
@@ -273,6 +358,7 @@ def test_profile_runtime_refuses_dangling_execution_owner_symlink(tmp_path) -> N
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
 
     with pytest.raises(ValueError, match="empty owned slot"):
@@ -292,6 +378,7 @@ def test_profile_runtime_preserves_scaffold_when_agency_bundle_is_invalid(
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
 
     with pytest.raises(Exception):
@@ -340,6 +427,7 @@ def test_profile_runtime_preserves_scaffold_when_file_secret_changed(
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
 
     with pytest.raises(ValueError, match="changed before use"):
@@ -371,6 +459,7 @@ def test_profile_runtime_rejects_staged_fleet_slot_marker(
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
 
     with pytest.raises(ValueError, match="reserved Fleet state"):
@@ -440,6 +529,7 @@ def test_local_file_secret_is_copied_minimally_and_source_is_unchanged(
     runtime = ProfileHermesRuntime(
         profiles_root=tmp_path / "profiles",
         runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+        api_server_key="profile-api-key",
     )
     agency_source = tmp_path / "agency"
     (agency_source / "skills").mkdir(parents=True)
@@ -478,7 +568,7 @@ def test_local_file_secret_is_copied_minimally_and_source_is_unchanged(
     assert str(source) not in repr(resolver)
     assert source.read_text() not in repr(resolved[reference])
 
-    runtime.cleanup(profile)
+    runtime.cleanup(profile, expected_owner="execution-1")
     assert not copied.exists()
     assert source.read_bytes() == before[0]
 

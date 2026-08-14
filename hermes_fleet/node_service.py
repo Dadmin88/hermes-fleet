@@ -309,6 +309,7 @@ def _build_recipe_executor(
     )
     profile_runtime = profile_runtime_factory(
         profiles_root=runtime.profiles_root,
+        api_server_key=runtime.hermes_api_key,
         runs_factory=lambda profile: hermes_factory(
             endpoint=runtime.hermes_endpoint,
             api_key=runtime.hermes_api_key,

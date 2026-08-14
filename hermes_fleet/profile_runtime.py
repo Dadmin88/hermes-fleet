@@ -185,14 +185,25 @@ class ProfileHermesRuntime:
     """Materialize, invoke, and delete one immutable execution-owned profile."""
 
     def __init__(
-        self, *, profiles_root: Path, runs_factory: Callable[[str], Any]
+        self,
+        *,
+        profiles_root: Path,
+        runs_factory: Callable[[str], Any],
+        api_server_key: str,
     ) -> None:
         if not isinstance(profiles_root, Path) or not profiles_root.is_absolute():
             raise ValueError("profiles root must be an absolute Path")
         if not callable(runs_factory):
             raise ValueError("runs_factory must be callable")
+        if (
+            type(api_server_key) is not str
+            or not api_server_key
+            or any(character in api_server_key for character in ("\x00", "\n", "\r"))
+        ):
+            raise ValueError("API server key must be nonempty bounded text")
         self._profiles_root = profiles_root
         self._runs_factory = runs_factory
+        self._api_server_key = api_server_key
         self._runs: dict[str, Any] = {}
 
     def materialize(
@@ -226,6 +237,9 @@ class ProfileHermesRuntime:
                 file_secrets.append(value)
             else:
                 raise ValueError("secret reference is invalid")
+        if "API_SERVER_KEY" in environment:
+            raise ValueError("API server key is reserved execution state")
+        environment["API_SERVER_KEY"] = self._api_server_key
         _prepare_owned_slot(destination)
         staging = destination / ".materializing"
         if staging.exists() or staging.is_symlink():
@@ -293,9 +307,16 @@ class ProfileHermesRuntime:
     ) -> None:
         self._client(profile).stop(run_id, timeout_seconds=timeout_seconds)
 
-    def cleanup(self, profile: str) -> None:
+    def cleanup(self, profile: str, *, expected_owner: str) -> None:
         if profile != _EXECUTION_PROFILE:
             raise ValueError("execution profile is invalid")
+        if (
+            type(expected_owner) is not str
+            or not expected_owner
+            or "\n" in expected_owner
+            or "\r" in expected_owner
+        ):
+            raise ValueError("expected execution owner is invalid")
         destination = self._profiles_root / profile
         if destination.parent != self._profiles_root:
             raise ValueError("execution profile path is invalid")
@@ -310,11 +331,11 @@ class ProfileHermesRuntime:
         if not owner.is_file() or owner.is_symlink():
             raise ValueError("execution profile is not owned by Fleet")
         try:
-            execution_id = owner.read_text(encoding="utf-8").strip()
+            serialized_owner = owner.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             raise ValueError("execution profile ownership is invalid") from error
-        if not execution_id or "\n" in execution_id or "\r" in execution_id:
-            raise ValueError("execution profile ownership is invalid")
+        if serialized_owner != expected_owner + "\n":
+            raise ValueError("execution profile ownership changed")
         _clear_owned_slot(destination)
         if set(item.name for item in destination.iterdir()) != {_SLOT_FILE}:
             raise RuntimeError("execution profile cleanup is unproven")
