@@ -1010,9 +1010,7 @@ def test_convergence_waits_for_restarted_worker_readiness(
                 "hermes.installed",
                 (bootstrap.Check("hermes.installed", False, "unreachable"),),
             ),
-            bootstrap.DoctorReport(
-                "hermes-fleet-worker-doctor.v1", True, None, ()
-            ),
+            bootstrap.DoctorReport("hermes-fleet-worker-doctor.v1", True, None, ()),
         )
     )
     sleeps: list[float] = []
