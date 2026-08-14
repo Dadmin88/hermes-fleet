@@ -241,6 +241,8 @@ _KERYX_BASELINE_PROTOCOL_FEATURES = (
     "result_artifact_bytes_v1",
 )
 _FLEET_OBSERVATION_PUBLISH_PROTOCOL_FEATURE = "fleet.observation.publish.v1"
+_HERMES_READINESS_ATTEMPTS = 30
+_HERMES_READINESS_DELAY_SECONDS = 1.0
 
 
 def operation_specs(*, include_hermes_run: bool = True) -> tuple[tuple[str, str], ...]:
@@ -253,6 +255,17 @@ def operation_specs(*, include_hermes_run: bool = True) -> tuple[tuple[str, str]
     if not include_hermes_run:
         return direct
     return direct + (("fleet.hermes.run", "Deliberate authenticated local Hermes run"),)
+
+
+async def _wait_for_hermes_runs(hermes: Any) -> dict[str, Any]:
+    health: dict[str, Any] = {}
+    for attempt in range(_HERMES_READINESS_ATTEMPTS):
+        candidate = await asyncio.to_thread(hermes.health)
+        health = candidate if type(candidate) is dict else {}
+        if _runs_available(health) or attempt + 1 == _HERMES_READINESS_ATTEMPTS:
+            return health
+        await asyncio.sleep(_HERMES_READINESS_DELAY_SECONDS)
+    return health
 
 
 async def _keryx_signals(
@@ -428,7 +441,7 @@ async def run_node_service(
         endpoint=runtime.hermes_endpoint,
         api_key=runtime.hermes_api_key,
     )
-    health = await asyncio.to_thread(hermes.health)
+    health = await _wait_for_hermes_runs(hermes)
     include_hermes_run = _runs_available(health)
     observer = _build_observation_publisher(
         runtime,

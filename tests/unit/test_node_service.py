@@ -241,6 +241,47 @@ def test_fleet_node_service_registers_four_operations_and_stops_cleanly(
     assert node.node_token == "test-node-token"
 
 
+def test_fleet_node_service_waits_for_restarted_hermes_api(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_fleet import node_service
+
+    cards = []
+    health_calls = 0
+
+    class RestartingHermes(_Hermes):
+        def health(self) -> dict[str, object]:
+            nonlocal health_calls
+            health_calls += 1
+            self.healthy = health_calls > 1
+            return super().health()
+
+    monkeypatch.setattr(
+        node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0, raising=False
+    )
+
+    async def exercise() -> None:
+        shutdown = asyncio.Event()
+        shutdown.set()
+        await node_service.run_node_service(
+            _runtime(tmp_path),
+            card_factory=_card_factory(cards),
+            node_factory=_Node,
+            shutdown=shutdown,
+            hermes_factory=RestartingHermes,
+        )
+
+    asyncio.run(exercise())
+
+    assert health_calls == 2
+    assert [skill.id for skill in cards[0].skills] == [
+        "fleet.health",
+        "fleet.inventory",
+        "fleet.message",
+        "fleet.hermes.run",
+    ]
+
+
 def test_recipe_executor_uses_local_control_with_remote_observation(
     tmp_path,
 ) -> None:
@@ -394,9 +435,13 @@ def test_fleet_node_service_rejects_wrong_local_keryx_identity(tmp_path) -> None
 
 
 def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
-    tmp_path,
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from hermes_fleet import node_service
     from hermes_fleet.node_service import operation_specs, run_node_service
+
+    monkeypatch.setattr(node_service, "_HERMES_READINESS_ATTEMPTS", 2)
+    monkeypatch.setattr(node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0)
 
     cards = []
     created = []
@@ -437,11 +482,15 @@ def test_fleet_node_service_advertises_direct_only_when_runs_are_unavailable(
 
 
 def test_fleet_node_service_advertises_observation_protocol_feature(
-    tmp_path,
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from dataclasses import replace
 
+    from hermes_fleet import node_service
     from hermes_fleet.node_service import operation_specs, run_node_service
+
+    monkeypatch.setattr(node_service, "_HERMES_READINESS_ATTEMPTS", 2)
+    monkeypatch.setattr(node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0)
 
     cards = []
     created: list[_Node] = []
@@ -504,10 +553,16 @@ def test_observation_publish_environment_flag_is_strict() -> None:
             _environment_flag({name: invalid}, name)
 
 
-def test_direct_only_node_publishes_worker_unavailable(tmp_path) -> None:
+def test_direct_only_node_publishes_worker_unavailable(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from dataclasses import replace
 
+    from hermes_fleet import node_service
     from hermes_fleet.node_service import run_node_service
+
+    monkeypatch.setattr(node_service, "_HERMES_READINESS_ATTEMPTS", 2)
+    monkeypatch.setattr(node_service, "_HERMES_READINESS_DELAY_SECONDS", 0.0)
 
     runtime = replace(
         _runtime(tmp_path),
