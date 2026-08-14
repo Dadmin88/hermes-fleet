@@ -316,6 +316,24 @@ def test_agency_model_config_cannot_override_destination_model(tmp_path) -> None
     assert agency_config.read_text(encoding="utf-8") == original
 
 
+def test_oversized_agency_config_is_rejected_unchanged(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import _stage_model_config
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    agency_config = staging / "config.yaml"
+    original = b"#" * 65_537
+    agency_config.write_bytes(original)
+
+    with pytest.raises(ValueError, match="Agency model config is invalid"):
+        _stage_model_config(
+            staging,
+            {"model": {"default": "gpt-test", "provider": "openai-codex"}},
+        )
+
+    assert agency_config.read_bytes() == original
+
+
 def test_profile_runtime_rejects_recipe_override_of_profile_api_server_key(
     tmp_path,
 ) -> None:

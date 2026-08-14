@@ -234,7 +234,7 @@ def _load_model_config(path: Path) -> dict[str, Any]:
         raise ValueError("model config capability is invalid")
     try:
         source = yaml.safe_load(payload)
-    except yaml.YAMLError as error:
+    except (UnicodeError, yaml.YAMLError) as error:
         raise ValueError("model config capability is invalid") from error
     if type(source) is not dict or type(source.get("model")) is not dict:
         raise ValueError("model config capability is invalid")
@@ -257,8 +257,11 @@ def _stage_model_config(staging: Path, model_config: dict[str, Any]) -> None:
         if destination.is_symlink() or not destination.is_file():
             raise ValueError("Agency model config is invalid")
         try:
-            parsed = yaml.safe_load(destination.read_bytes())
-        except (OSError, yaml.YAMLError) as error:
+            payload = destination.read_bytes()
+            if len(payload) > _MAX_MODEL_CONFIG_BYTES:
+                raise ValueError("Agency model config is invalid")
+            parsed = yaml.safe_load(payload)
+        except (OSError, UnicodeError, yaml.YAMLError) as error:
             raise ValueError("Agency model config is invalid") from error
         if type(parsed) is not dict or "model" in parsed:
             raise ValueError("Agency model config cannot override destination model")
