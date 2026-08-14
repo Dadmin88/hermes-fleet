@@ -75,6 +75,7 @@ class NodeRuntimeConfig:
     registration_ttl_seconds: int = 300
     advertise_observation_publish: bool = False
     observation_socket: Path | None = None
+    execution_control_socket: Path | None = None
     remote_observation_endpoint: str | None = None
     remote_observation_target_peer_id: str | None = None
     remote_observation_ca_cert_path: Path | None = None
@@ -146,6 +147,11 @@ class NodeRuntimeConfig:
             or not self.observation_socket.is_absolute()
         ):
             raise ValueError("observation socket is invalid")
+        if self.execution_control_socket is not None and (
+            not is_concrete_path(self.execution_control_socket)
+            or not self.execution_control_socket.is_absolute()
+        ):
+            raise ValueError("execution control socket is invalid")
         if observation_enabled and (
             not _managed_identifier(self.managed_network_id)
             or not _managed_identifier(self.managed_device_id)
@@ -247,7 +253,7 @@ def _build_recipe_executor(
 ) -> Any | None:
     """Build destination FX8 authority only for a complete local managed node."""
     if (
-        runtime.observation_socket is None
+        runtime.execution_control_socket is None
         or runtime.managed_network_id is None
         or runtime.managed_device_id is None
     ):
@@ -267,7 +273,7 @@ def _build_recipe_executor(
     )
     return executor_factory(
         execution_control=execution_control_factory(
-            socket_path=runtime.observation_socket
+            socket_path=runtime.execution_control_socket
         ),
         runtime=profile_runtime,
         secret_resolver=secret_resolver_factory(
@@ -706,6 +712,11 @@ def _runtime_from_args(
     observation_socket = args.observation_socket
     if observation_socket is None and environment.get("FLEET_OBSERVATION_SOCKET"):
         observation_socket = Path(environment["FLEET_OBSERVATION_SOCKET"])
+    execution_control_socket = (
+        Path(environment["FLEET_EXECUTION_CONTROL_SOCKET"])
+        if environment.get("FLEET_EXECUTION_CONTROL_SOCKET")
+        else observation_socket
+    )
     managed_network_id = args.managed_network_id or environment.get(
         "NODESCALE_NETWORK_ID"
     )
@@ -737,6 +748,7 @@ def _runtime_from_args(
         registration_ttl_seconds=args.registration_ttl,
         advertise_observation_publish=advertise_observation_publish,
         observation_socket=observation_socket,
+        execution_control_socket=execution_control_socket,
         remote_observation_endpoint=remote_observation_endpoint,
         remote_observation_target_peer_id=remote_observation_target_peer_id,
         remote_observation_ca_cert_path=remote_observation_ca_cert_path,
