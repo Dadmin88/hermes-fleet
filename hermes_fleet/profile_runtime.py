@@ -185,14 +185,25 @@ class ProfileHermesRuntime:
     """Materialize, invoke, and delete one immutable execution-owned profile."""
 
     def __init__(
-        self, *, profiles_root: Path, runs_factory: Callable[[str], Any]
+        self,
+        *,
+        profiles_root: Path,
+        runs_factory: Callable[[str], Any],
+        api_server_key: str,
     ) -> None:
         if not isinstance(profiles_root, Path) or not profiles_root.is_absolute():
             raise ValueError("profiles root must be an absolute Path")
         if not callable(runs_factory):
             raise ValueError("runs_factory must be callable")
+        if (
+            type(api_server_key) is not str
+            or not api_server_key
+            or any(character in api_server_key for character in ("\x00", "\n", "\r"))
+        ):
+            raise ValueError("API server key must be nonempty bounded text")
         self._profiles_root = profiles_root
         self._runs_factory = runs_factory
+        self._api_server_key = api_server_key
         self._runs: dict[str, Any] = {}
 
     def materialize(
@@ -226,6 +237,9 @@ class ProfileHermesRuntime:
                 file_secrets.append(value)
             else:
                 raise ValueError("secret reference is invalid")
+        if "API_SERVER_KEY" in environment:
+            raise ValueError("API server key is reserved execution state")
+        environment["API_SERVER_KEY"] = self._api_server_key
         _prepare_owned_slot(destination)
         staging = destination / ".materializing"
         if staging.exists() or staging.is_symlink():

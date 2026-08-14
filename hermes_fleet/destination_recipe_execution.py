@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, cast
 
 from .execution_package import ExactExecutionPackage
+from .hermes_runs import HermesRunSubmissionUnknown
 from .profile_runtime import LocalFileSecret
 
 _BACKEND_KIND = "hermes.local/profile-runs"
@@ -182,7 +183,7 @@ class DestinationRecipeExecutor:
                     session_id=f"fleet:{package.execution_id}",
                     timeout_seconds=remaining,
                 )
-            except Exception:
+            except HermesRunSubmissionUnknown:
                 self._transition(
                     package.execution_id,
                     generation,
@@ -199,6 +200,34 @@ class DestinationRecipeExecutor:
                     incoming, "Hermes execution outcome is indeterminate"
                 )
                 return "indeterminate"
+            except Exception:
+                generation = self._transition(
+                    package.execution_id,
+                    generation,
+                    {
+                        "kind": "failed",
+                        "backend_kind": _BACKEND_KIND,
+                        "realization_id": profile,
+                        "keryx_task_id": package.execution_id,
+                        "hermes_run_id": None,
+                    },
+                )
+                generation = self._transition(
+                    package.execution_id,
+                    generation,
+                    {
+                        "kind": "cleanup_pending",
+                        "backend_kind": _BACKEND_KIND,
+                        "realization_id": profile,
+                        "keryx_task_id": package.execution_id,
+                        "hermes_run_id": None,
+                        "reason": "failed Hermes start requires profile cleanup",
+                    },
+                )
+                self._runtime.cleanup(profile)
+                self._transition(package.execution_id, generation, {"kind": "cleaned"})
+                await _fail_incoming(incoming, "Hermes execution failed")
+                return "failed"
             generation = self._transition(
                 package.execution_id,
                 generation,

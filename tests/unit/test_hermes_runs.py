@@ -16,6 +16,7 @@ class _RunsAPI:
         self.statuses = list(statuses)
         self.requests: list[tuple[str, str, str, dict[str, Any] | None]] = []
         self.post_delay_seconds = 0.0
+        self.post_status = 202
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -37,7 +38,12 @@ class _RunsAPI:
                 if route == "/v1/runs":
                     if api.post_delay_seconds:
                         time.sleep(api.post_delay_seconds)
-                    self._json(202, {"run_id": "run-test", "status": "started"})
+                    self._json(
+                        api.post_status,
+                        {"run_id": "run-test", "status": "started"}
+                        if api.post_status == 202
+                        else {"error": {"message": "rejected"}},
+                    )
                     return
                 if route == "/v1/runs/run-test/stop":
                     if api.stop_delay_seconds:
@@ -277,6 +283,20 @@ def test_hermes_runs_client_bounds_blocking_post_by_remaining_deadline() -> None
         elapsed = time.monotonic() - started
 
     assert elapsed < 0.15
+
+
+def test_hermes_runs_client_preserves_deterministic_http_rejection() -> None:
+    from hermes_fleet.hermes_runs import HermesRunError, HermesRunsClient
+
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    api.post_status = 401
+    with api.serve() as endpoint:
+        with pytest.raises(HermesRunError, match="did not accept"):
+            HermesRunsClient(
+                endpoint=endpoint,
+                api_key="wrong-profile-token",
+                profile="fleet-execution",
+            ).start(prompt="Do not create a run.", timeout_seconds=1)
 
 
 def test_hermes_runs_client_fails_closed_when_approval_is_required() -> None:

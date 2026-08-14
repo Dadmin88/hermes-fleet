@@ -11,7 +11,11 @@ import pytest
 from hermes_fleet.agency_materialization import ImmutableAgencyBundle
 from hermes_fleet.destination_recipe_execution import DestinationExecutionError
 from hermes_fleet.execution_package import ExactExecutionPackage
-from hermes_fleet.hermes_runs import HermesRunResult
+from hermes_fleet.hermes_runs import (
+    HermesRunError,
+    HermesRunResult,
+    HermesRunSubmissionUnknown,
+)
 from hermes_fleet.recipes import ResolvedRecipe
 
 HASH_1 = "sha256:" + "1" * 64
@@ -127,7 +131,9 @@ class Runtime:
         assert prompt == "Return the exact FX8 marker."
         assert session_id == "fleet:execution-1"
         if self.fail_at == "start":
-            raise TimeoutError("uncertain start response")
+            raise HermesRunSubmissionUnknown("uncertain start response")
+        if self.fail_at == "start_known":
+            raise HermesRunError("deterministic start rejection")
         return "hermes-run-1"
 
     def wait(self, profile, *, run_id, timeout_seconds):
@@ -295,6 +301,32 @@ def test_uncertain_start_is_indeterminate_and_preserves_profile_for_inspection(
     ]
     assert incoming.failed == "Hermes execution outcome is indeterminate"
     assert runtime.cleaned is False
+
+
+def test_deterministic_start_failure_is_durable_cleaned_and_failed_to_keryx(
+    tmp_path,
+) -> None:
+    service, control, runtime, events = executor(tmp_path, fail_at="start_known")
+    incoming = Incoming()
+
+    result = asyncio.run(
+        service.execute(
+            package=package(),
+            authenticated_sender="peer-controller-1",
+            incoming=incoming,
+        )
+    )
+
+    assert result == "failed"
+    assert events == ["secrets", "materialize", "start", "cleanup"]
+    assert [phase["kind"] for phase in control.transitions] == [
+        "prepared",
+        "failed",
+        "cleanup_pending",
+        "cleaned",
+    ]
+    assert incoming.failed == "Hermes execution failed"
+    assert runtime.cleaned is True
 
 
 def test_restart_reconciles_exact_completed_run_without_start_or_secrets(
