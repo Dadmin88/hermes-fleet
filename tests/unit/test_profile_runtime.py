@@ -264,6 +264,23 @@ def test_profile_runtime_inspects_exact_slot_owner_and_run_without_starting(
     assert calls == [("status", "fleet-execution", "run-1")]
 
 
+def test_profile_runtime_refuses_dangling_execution_owner_symlink(tmp_path) -> None:
+    from hermes_fleet.profile_runtime import ProfileHermesRuntime
+
+    slot = execution_slot(tmp_path)
+    owner = slot / ".fleet-execution-owner"
+    owner.symlink_to(slot / "missing-owner-target")
+    runtime = ProfileHermesRuntime(
+        profiles_root=tmp_path / "profiles",
+        runs_factory=lambda profile: Runs(profile=profile, calls=[]),
+    )
+
+    with pytest.raises(ValueError, match="empty owned slot"):
+        runtime.materialize(package(b"not-used"), secrets={})
+
+    assert owner.is_symlink()
+
+
 def test_environment_secret_resolver_is_explicitly_allowlisted_and_never_repr_leaks(
     monkeypatch,
 ) -> None:
