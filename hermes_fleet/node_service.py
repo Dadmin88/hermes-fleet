@@ -23,7 +23,7 @@ from .execution_control import ExecutionControlClient
 from .fleet_node import FleetNodeWorker
 from .hermes_runs import HermesRunsClient
 from .host_profile_capabilities import host_profile_capabilities
-from .models import FleetDefaults, NodeConfig, _require_exact_type
+from .models import FleetDefaults, NodeConfig, NodePolicy, _require_exact_type
 from .observation import ObservationClient, build_observation
 from .profile_inventory import scan_profile_distributions
 from .profile_runtime import DestinationSecretResolver, ProfileHermesRuntime
@@ -76,6 +76,7 @@ class NodeRuntimeConfig:
     advertise_observation_publish: bool = False
     observation_socket: Path | None = None
     execution_control_socket: Path | None = None
+    execution_policy: NodePolicy | None = None
     remote_observation_endpoint: str | None = None
     remote_observation_target_peer_id: str | None = None
     remote_observation_ca_cert_path: Path | None = None
@@ -152,6 +153,12 @@ class NodeRuntimeConfig:
             or not self.execution_control_socket.is_absolute()
         ):
             raise ValueError("execution control socket is invalid")
+        if self.execution_policy is not None:
+            _require_exact_type(
+                self.execution_policy,
+                NodePolicy,
+                "execution_policy must be a NodePolicy",
+            )
         if observation_enabled and (
             not _managed_identifier(self.managed_network_id)
             or not _managed_identifier(self.managed_device_id)
@@ -254,10 +261,12 @@ def _build_recipe_executor(
     """Build destination FX8 authority only for a complete local managed node."""
     if (
         runtime.execution_control_socket is None
+        or runtime.execution_policy is None
         or runtime.managed_network_id is None
         or runtime.managed_device_id is None
     ):
         return None
+    execution_policy = runtime.execution_policy
     capabilities = (
         backend_capabilities
         if backend_capabilities is not None
@@ -277,13 +286,13 @@ def _build_recipe_executor(
         ),
         runtime=profile_runtime,
         secret_resolver=secret_resolver_factory(
-            allowed_references=runtime.target.policy.allowed_secret_references,
+            allowed_references=execution_policy.allowed_secret_references,
             file_sources={
                 reference: (source, destination_name)
                 for reference, source, destination_name in runtime.file_secret_sources
             },
         ),
-        current_policy_digest=lambda: runtime.target.policy.content_hash,
+        current_policy_digest=lambda: execution_policy.content_hash,
         current_capabilities_hash=lambda: capabilities.content_hash,
         now_ms=now_ms or (lambda: int(time.time() * 1_000)),
     )
@@ -721,6 +730,14 @@ def _runtime_from_args(
         "NODESCALE_NETWORK_ID"
     )
     managed_device_id = args.managed_device_id or environment.get("NODESCALE_DEVICE_ID")
+    execution_policies = tuple(
+        item.policy
+        for item in config.managed_targets
+        if item.source == "nodescale"
+        and item.network_id == managed_network_id
+        and item.device_id == managed_device_id
+    )
+    execution_policy = execution_policies[0] if len(execution_policies) == 1 else None
     remote_observation_endpoint = args.remote_observation_endpoint or environment.get(
         "FLEET_REMOTE_OBSERVATION_ENDPOINT"
     )
@@ -749,6 +766,7 @@ def _runtime_from_args(
         advertise_observation_publish=advertise_observation_publish,
         observation_socket=observation_socket,
         execution_control_socket=execution_control_socket,
+        execution_policy=execution_policy,
         remote_observation_endpoint=remote_observation_endpoint,
         remote_observation_target_peer_id=remote_observation_target_peer_id,
         remote_observation_ca_cert_path=remote_observation_ca_cert_path,
