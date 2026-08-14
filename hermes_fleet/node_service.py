@@ -55,6 +55,41 @@ class _Observation(Protocol):
     def admission_generation(self) -> int: ...
 
 
+class _MirroredObservationPublisher:
+    """Publish one normalized observation locally before publishing it remotely."""
+
+    def __init__(self, *, local: _Observation, remote: _Observation) -> None:
+        self._local = local
+        self._remote = remote
+
+    def _admission_generation(self) -> int:
+        local = self._local.admission_generation()
+        remote = self._remote.admission_generation()
+        if local != remote:
+            raise RuntimeError("local and remote admission generations differ")
+        return local
+
+    def admission_generation(self) -> int:
+        return self._admission_generation()
+
+    def publish(self, observation: dict[str, Any]) -> str:
+        generation = self._admission_generation()
+        if observation.get("admission_generation") != generation:
+            raise RuntimeError("observation admission generation is stale")
+        self._local.publish(observation)
+        return self._remote.publish(observation)
+
+    def close(self) -> None:
+        local_close = getattr(self._local, "close", None)
+        remote_close = getattr(self._remote, "close", None)
+        try:
+            if callable(local_close):
+                local_close()
+        finally:
+            if callable(remote_close):
+                remote_close()
+
+
 class _ObservedWorker(Protocol):
     @property
     def observed_active_worker_count(self) -> int: ...
@@ -320,6 +355,56 @@ def _live_host_capabilities() -> BackendCapabilities:
     )
 
 
+def _build_observation_publisher(
+    runtime: NodeRuntimeConfig,
+    *,
+    observation_factory: Callable[..., Any],
+    remote_observation_factory: Callable[..., Any],
+) -> _Observation | None:
+    if runtime.observation_socket is not None:
+        assert runtime.managed_network_id is not None
+        assert runtime.managed_device_id is not None
+        return cast(
+            _Observation,
+            observation_factory(
+                socket_path=runtime.observation_socket,
+                network_id=runtime.managed_network_id,
+                device_id=runtime.managed_device_id,
+            ),
+        )
+    if runtime.remote_observation_endpoint is None:
+        return None
+
+    assert runtime.managed_network_id is not None
+    assert runtime.managed_device_id is not None
+    assert runtime.remote_observation_target_peer_id is not None
+    remote = cast(
+        _Observation,
+        remote_observation_factory(
+            RemoteObservationConfig(
+                relay_endpoint=runtime.remote_observation_endpoint,
+                relay_ca_cert_path=runtime.remote_observation_ca_cert_path,
+                source_peer_id=runtime.target.peer_id,
+                node_token=runtime.keryx_node_token,
+                target_peer_id=runtime.remote_observation_target_peer_id,
+                network_id=runtime.managed_network_id,
+                device_id=runtime.managed_device_id,
+            )
+        ),
+    )
+    if runtime.execution_control_socket is None:
+        return remote
+    local = cast(
+        _Observation,
+        observation_factory(
+            socket_path=runtime.execution_control_socket,
+            network_id=runtime.managed_network_id,
+            device_id=runtime.managed_device_id,
+        ),
+    )
+    return _MirroredObservationPublisher(local=local, remote=remote)
+
+
 async def run_node_service(
     runtime: NodeRuntimeConfig,
     *,
@@ -344,30 +429,11 @@ async def run_node_service(
     )
     health = await asyncio.to_thread(hermes.health)
     include_hermes_run = _runs_available(health)
-    observer: _Observation | None = None
-    if runtime.observation_socket is not None:
-        assert runtime.managed_network_id is not None
-        assert runtime.managed_device_id is not None
-        observer = observation_factory(
-            socket_path=runtime.observation_socket,
-            network_id=runtime.managed_network_id,
-            device_id=runtime.managed_device_id,
-        )
-    elif runtime.remote_observation_endpoint is not None:
-        assert runtime.managed_network_id is not None
-        assert runtime.managed_device_id is not None
-        assert runtime.remote_observation_target_peer_id is not None
-        observer = remote_observation_factory(
-            RemoteObservationConfig(
-                relay_endpoint=runtime.remote_observation_endpoint,
-                relay_ca_cert_path=runtime.remote_observation_ca_cert_path,
-                source_peer_id=runtime.target.peer_id,
-                node_token=runtime.keryx_node_token,
-                target_peer_id=runtime.remote_observation_target_peer_id,
-                network_id=runtime.managed_network_id,
-                device_id=runtime.managed_device_id,
-            )
-        )
+    observer = _build_observation_publisher(
+        runtime,
+        observation_factory=observation_factory,
+        remote_observation_factory=remote_observation_factory,
+    )
     card = card_factory(include_hermes_run)
     _preserve_keryx_baseline_protocol_features(card)
     if runtime.advertise_observation_publish:

@@ -620,6 +620,124 @@ def test_remote_observation_uses_existing_node_lifecycle(tmp_path) -> None:
     assert publisher.closed is True
 
 
+def test_mirrored_observation_updates_local_and_remote_authority() -> None:
+    from hermes_fleet.node_service import (
+        _build_observation_publisher,
+        _MirroredObservationPublisher,
+    )
+
+    class Publisher:
+        def __init__(
+            self, generation: int, *, publish_error: Exception | None = None
+        ) -> None:
+            self.generation = generation
+            self.publish_error = publish_error
+            self.samples = []
+            self.closed = False
+
+        def publish(self, observation: dict[str, Any]) -> str:
+            if self.publish_error is not None:
+                raise self.publish_error
+            self.samples.append(observation)
+            return "published"
+
+        def admission_generation(self) -> int:
+            return self.generation
+
+        def close(self) -> None:
+            self.closed = True
+
+    local = Publisher(11)
+    remote = Publisher(11)
+    publisher = _MirroredObservationPublisher(local=local, remote=remote)
+    sample = {"worker": "available", "admission_generation": 11}
+
+    assert publisher.admission_generation() == 11
+    assert publisher.publish(sample) == "published"
+    publisher.close()
+
+    assert local.samples == [sample]
+    assert remote.samples == [sample]
+    assert local.closed is True
+    assert remote.closed is True
+
+    mismatched = _MirroredObservationPublisher(
+        local=Publisher(11), remote=Publisher(12)
+    )
+    with pytest.raises(RuntimeError, match="admission generations differ"):
+        mismatched.admission_generation()
+
+    local_failure = Publisher(11, publish_error=RuntimeError("local failed"))
+    remote_not_called = Publisher(11)
+    with pytest.raises(RuntimeError, match="local failed"):
+        _MirroredObservationPublisher(
+            local=local_failure, remote=remote_not_called
+        ).publish(sample)
+    assert remote_not_called.samples == []
+
+    local_succeeded = Publisher(11)
+    remote_failure = Publisher(11, publish_error=RuntimeError("remote failed"))
+    with pytest.raises(RuntimeError, match="remote failed"):
+        _MirroredObservationPublisher(
+            local=local_succeeded, remote=remote_failure
+        ).publish(sample)
+    assert local_succeeded.samples == [sample]
+
+    from dataclasses import replace
+
+    root = Path("/tmp/fleet-observation-selection")
+    local_runtime = replace(
+        _runtime(root),
+        observation_socket=root / "observation.sock",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    remote_runtime = replace(
+        _runtime(root),
+        remote_observation_endpoint="https://relay.example:50052",
+        remote_observation_target_peer_id="peer-katana",
+        remote_observation_ca_cert_path=root / "ca.pem",
+        managed_network_id="network-1",
+        managed_device_id="device-1",
+    )
+    local_created = []
+    remote_created = []
+
+    def local_factory(**kwargs):
+        value = Publisher(11)
+        local_created.append((kwargs, value))
+        return value
+
+    def remote_factory(config):
+        value = Publisher(11)
+        remote_created.append((config, value))
+        return value
+
+    assert (
+        _build_observation_publisher(
+            local_runtime,
+            observation_factory=local_factory,
+            remote_observation_factory=remote_factory,
+        )
+        is local_created[-1][1]
+    )
+    assert remote_created == []
+    assert (
+        _build_observation_publisher(
+            remote_runtime,
+            observation_factory=local_factory,
+            remote_observation_factory=remote_factory,
+        )
+        is remote_created[-1][1]
+    )
+    mirrored = _build_observation_publisher(
+        replace(remote_runtime, execution_control_socket=root / "control.sock"),
+        observation_factory=local_factory,
+        remote_observation_factory=remote_factory,
+    )
+    assert isinstance(mirrored, _MirroredObservationPublisher)
+
+
 def test_remote_observation_acquire_failure_publishes_no_fresh_sample(tmp_path) -> None:
     from dataclasses import replace
 
