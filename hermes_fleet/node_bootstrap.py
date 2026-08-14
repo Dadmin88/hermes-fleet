@@ -652,39 +652,7 @@ class Installer:
         try:
             self._install_artifacts(manifest)
             self._converge_execution_profile()
-            for filename in ENV_FILES:
-                values: dict[str, str] = {}
-                if filename not in {
-                    "hermes-api.env",
-                    "fleet-managed-projection.env",
-                }:
-                    values[TOKEN_KEY] = token
-                if filename in {"fleet-node.env", "hermes-api.env"}:
-                    values[API_KEY] = api_key
-                if filename == "hermes-api.env":
-                    values["API_SERVER_ENABLED"] = "true"
-                    values["API_SERVER_HOST"] = "127.0.0.1"
-                    values["API_SERVER_PORT"] = "8642"
-                runtime = Path(f"/run/user/{os.getuid()}/hermes-fleet")
-                if filename == "fleet-managed-projection.env":
-                    runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
-                    values.update(
-                        {
-                            "FLEET_MANAGED_PROJECTION_SOCKET": str(
-                                runtime / "managed-control.sock"
-                            ),
-                            "FLEET_MANAGED_PROJECTION_DATABASE": str(
-                                self.state / "managed-control.sqlite3"
-                            ),
-                            "FLEET_MANAGED_PROJECTION_ALLOWED_UID": str(os.getuid()),
-                        }
-                    )
-                if filename == "fleet-node.env":
-                    values["FLEET_OBSERVATION_SOCKET"] = str(
-                        runtime / "managed-control.sock"
-                    )
-                if _write_env(self.config / filename, values):
-                    self.changes.append(f"env:{filename}")
+            self._converge_environment(token, api_key)
             changed_before_services = bool(self.changes)
             if changed_before_services:
                 self._run(["systemctl", "--user", "daemon-reload"])
@@ -750,6 +718,42 @@ class Installer:
         failed = [item for item in checks if item.blocker and not item.ok]
         if failed:
             raise RuntimeError(f"runtime preflight failed: {failed[0].name}")
+
+    def _converge_environment(self, token: str, api_key: str) -> None:
+        runtime = Path(f"/run/user/{os.getuid()}/hermes-fleet")
+        for filename in ENV_FILES:
+            values: dict[str, str] = {}
+            if filename not in {"hermes-api.env", "fleet-managed-projection.env"}:
+                values[TOKEN_KEY] = token
+            if filename in {"fleet-node.env", "hermes-api.env"}:
+                values[API_KEY] = api_key
+            if filename == "keryxd.env":
+                values["HERMES_KERYX_DAEMON_ADDR"] = "127.0.0.1:50051"
+            if filename in {"keryxd.env", "keryx-node.env", "fleet-node.env"}:
+                values["HERMES_KERYX_DAEMON_ENDPOINT"] = "http://127.0.0.1:50051"
+            if filename == "hermes-api.env":
+                values["API_SERVER_ENABLED"] = "true"
+                values["API_SERVER_HOST"] = "127.0.0.1"
+                values["API_SERVER_PORT"] = "8642"
+            if filename == "fleet-managed-projection.env":
+                runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
+                values.update(
+                    {
+                        "FLEET_MANAGED_PROJECTION_SOCKET": str(
+                            runtime / "managed-control.sock"
+                        ),
+                        "FLEET_MANAGED_PROJECTION_DATABASE": str(
+                            self.state / "managed-control.sqlite3"
+                        ),
+                        "FLEET_MANAGED_PROJECTION_ALLOWED_UID": str(os.getuid()),
+                    }
+                )
+            if filename == "fleet-node.env":
+                values["FLEET_OBSERVATION_SOCKET"] = str(
+                    runtime / "managed-control.sock"
+                )
+            if _write_env(self.config / filename, values):
+                self.changes.append(f"env:{filename}")
 
     def _snapshot_root(self) -> Path:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
