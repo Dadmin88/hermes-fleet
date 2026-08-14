@@ -325,15 +325,15 @@ def test_worker_adopt_transfers_contents_into_stable_staging_directory(
         "worker-example", bundle=bundle
     )
 
-    mkdir = [
+    staging = [
         "ssh",
         "-o",
         "BatchMode=yes",
         "worker-example",
-        "mkdir -p .local/state/hermes-fleet",
+        "install -d -m 700 .local/state/hermes-fleet",
     ]
-    assert mkdir in runner.calls
-    assert runner.calls.index(mkdir) < next(
+    assert staging in runner.calls
+    assert runner.calls.index(staging) < next(
         index for index, call in enumerate(runner.calls) if call[0] == "scp"
     )
     assert next(call for call in runner.calls if call[0] == "scp") == [
