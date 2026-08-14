@@ -241,7 +241,7 @@ def test_fleet_node_service_registers_four_operations_and_stops_cleanly(
     assert node.node_token == "test-node-token"
 
 
-def test_destination_recipe_executor_is_built_only_for_managed_local_worker(
+def test_recipe_executor_uses_local_control_with_remote_observation(
     tmp_path,
 ) -> None:
     from dataclasses import replace
@@ -250,7 +250,10 @@ def test_destination_recipe_executor_is_built_only_for_managed_local_worker(
 
     runtime = replace(
         _runtime(tmp_path),
-        observation_socket=tmp_path / "managed-control.sock",
+        execution_control_socket=tmp_path / "managed-control.sock",
+        remote_observation_endpoint="https://relay.example:50052",
+        remote_observation_target_peer_id="peer-controller",
+        remote_observation_ca_cert_path=tmp_path / "relay-ca.pem",
         managed_network_id="network-1",
         managed_device_id="device-1",
     )
@@ -288,7 +291,7 @@ def test_destination_recipe_executor_is_built_only_for_managed_local_worker(
     )
 
     assert isinstance(value, Executor)
-    assert created["socket"] == runtime.observation_socket
+    assert created["socket"] == runtime.execution_control_socket
     assert created["profiles_root"] == tmp_path / "profiles"
     assert created["runs"].profile == "fleet-execution"
     assert created["allowed"] == runtime.target.policy.allowed_secret_references
