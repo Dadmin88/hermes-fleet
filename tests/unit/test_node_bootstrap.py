@@ -490,6 +490,49 @@ def test_installer_converges_loopback_daemon_listener_and_client_endpoint(
     assert fleet["HERMES_KERYX_DAEMON_ENDPOINT"] == "127.0.0.1:50051"
 
 
+def test_installer_converges_established_edge_peer_to_daemon(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    _manifest(bundle)
+    home = _worker_home(tmp_path, bundle)
+    edge_path = home / ".config/hermes-fleet/keryx-node.env"
+    bootstrap._write_env(
+        edge_path,
+        {"HERMES_KERYX_NODE_PEER_ID": "12D3KooWStableWorker"},
+    )
+    installer = bootstrap.Installer(home=home, bundle=bundle, runner=FakeRunner())
+
+    installer._preflight()
+    installer._converge_environment("daemon-token", "api-key")
+    installer._converge_environment("daemon-token", "api-key")
+
+    daemon = bootstrap._read_env(home / ".config/hermes-fleet/keryxd.env")
+    edge = bootstrap._read_env(edge_path)
+    assert daemon["HERMES_KERYX_DAEMON_PEER_ID"] == "12D3KooWStableWorker"
+    assert edge["HERMES_KERYX_NODE_PEER_ID"] == "12D3KooWStableWorker"
+
+
+def test_installer_rejects_inconsistent_daemon_and_edge_peers(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    _manifest(bundle)
+    home = _worker_home(tmp_path, bundle)
+    bootstrap._write_env(
+        home / ".config/hermes-fleet/keryxd.env",
+        {"HERMES_KERYX_DAEMON_PEER_ID": "12D3KooWDaemon"},
+    )
+    bootstrap._write_env(
+        home / ".config/hermes-fleet/keryx-node.env",
+        {"HERMES_KERYX_NODE_PEER_ID": "12D3KooWEdge"},
+    )
+    before = {path: path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    installer = bootstrap.Installer(home=home, bundle=bundle, runner=FakeRunner())
+
+    with pytest.raises(RuntimeError, match="Keryx peer identities are inconsistent"):
+        installer._preflight()
+
+    after = {path: path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    assert after == before
+
+
 def _read_token(home: Path, name: str) -> str | None:
     return bootstrap._read_env(home / ".config/hermes-fleet" / name).get(
         bootstrap.TOKEN_KEY
