@@ -218,7 +218,7 @@ def test_worker_adopt_shell_encodes_each_remote_argv_once(tmp_path: Path) -> Non
     ] in remote_calls
 
 
-def test_worker_adopt_runs_remote_doctor_then_installer_without_nodescale_authority(
+def test_worker_adopt_runs_installer_owned_preflight_without_nodescale_authority(
     tmp_path: Path,
 ) -> None:
     bundle = _bundle(tmp_path / "bundle")
@@ -247,8 +247,8 @@ def test_worker_adopt_runs_remote_doctor_then_installer_without_nodescale_author
     report = service.adopt_worker("worker-test", bundle=bundle)
     joined = "\n".join(" ".join(call) for call in runner.calls)
     assert "hermes-fleet-node snapshot" in joined
-    assert "hermes-fleet-node doctor" in joined
     assert "hermes-fleet-node install" in joined
+    assert "hermes-fleet-node doctor" not in joined
     assert "nodescale-owner" not in joined
     assert "nodescale-adopt" not in joined
     assert report.provider_node_id == "provider-stable-id"

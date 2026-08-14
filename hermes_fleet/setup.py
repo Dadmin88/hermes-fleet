@@ -168,23 +168,15 @@ class SetupService:
         )
         if snapshot.returncode != 0:
             raise SetupError("Worker rollback snapshot failed.")
-        for command in (
-            [
-                remote_venv + "/bin/hermes-fleet-node",
-                "doctor",
-                "--bundle",
-                remote_bundle,
-            ],
-            [
-                remote_venv + "/bin/hermes-fleet-node",
-                "install",
-                "--bundle",
-                remote_bundle,
-            ],
-        ):
-            result = self._run(self._ssh(ssh_target, command))
-            if result.returncode != 0:
-                raise SetupError("Worker software convergence failed.")
+        install = [
+            remote_venv + "/bin/hermes-fleet-node",
+            "install",
+            "--bundle",
+            remote_bundle,
+        ]
+        result = self._run(self._ssh(ssh_target, install))
+        if result.returncode != 0:
+            raise SetupError("Worker software convergence failed.")
         return AdoptionReport(
             ssh_target=ssh_target,
             provider_node_id=provider_node_id,
