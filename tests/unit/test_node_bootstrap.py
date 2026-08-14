@@ -995,6 +995,47 @@ def test_restart_ordering_and_no_authority_commands(
     assert report.ready
 
 
+def test_convergence_waits_for_restarted_worker_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = tmp_path / "bundle"
+    _manifest(bundle)
+    home = _worker_home(tmp_path, bundle)
+    runner = FakeRunner()
+    reports = iter(
+        (
+            bootstrap.DoctorReport(
+                "hermes-fleet-worker-doctor.v1",
+                False,
+                "hermes.installed",
+                (bootstrap.Check("hermes.installed", False, "unreachable"),),
+            ),
+            bootstrap.DoctorReport(
+                "hermes-fleet-worker-doctor.v1", True, None, ()
+            ),
+        )
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(bootstrap.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/bin/tool")
+    monkeypatch.setattr(bootstrap.socket, "getaddrinfo", lambda *_: [(None,)])
+    monkeypatch.setattr(
+        bootstrap.Installer,
+        "_install_artifacts",
+        lambda self, manifest: self.changes.append("artifact:test"),
+    )
+    monkeypatch.setattr(
+        bootstrap.Installer, "_write_receipt", lambda self, manifest: None
+    )
+    monkeypatch.setattr(bootstrap.Doctor, "run", lambda self: next(reports))
+    monkeypatch.setattr(bootstrap.time, "sleep", sleeps.append)
+
+    report = bootstrap.Installer(home=home, bundle=bundle, runner=runner).converge()
+
+    assert report.ready
+    assert sleeps == [0.5]
+
+
 def test_install_receipt_contains_no_secrets_and_is_stable(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     manifest = _manifest(bundle)
