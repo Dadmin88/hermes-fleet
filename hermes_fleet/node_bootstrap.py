@@ -86,6 +86,9 @@ class Runner(Protocol):
 
 
 class SubprocessRunner:
+    def __init__(self, *, timeout_seconds: float = 20) -> None:
+        self.timeout_seconds = timeout_seconds
+
     def run(
         self, argv: list[str], *, env: Mapping[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
@@ -94,7 +97,7 @@ class SubprocessRunner:
             check=False,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=self.timeout_seconds,
             env=None if env is None else dict(env),
         )
 
@@ -628,7 +631,7 @@ class Installer:
     ) -> None:
         self.home = home
         self.bundle = bundle
-        self.runner = runner or SubprocessRunner()
+        self.runner = runner or SubprocessRunner(timeout_seconds=300)
         self.config = home / ".config/hermes-fleet"
         self.install = home / ".local/share/hermes-fleet"
         self.state = home / ".local/state/hermes-fleet"
@@ -871,9 +874,12 @@ class Installer:
                     raise RuntimeError("worker rollback snapshot is incomplete")
                 shutil.copytree(saved, path, symlinks=True)
         self._run(["systemctl", "--user", "daemon-reload"])
-        self._restore_services(root)
+        existing_units = {
+            name for name in UNITS if inventory[str(self.units / name)] != "absent"
+        }
+        self._restore_services(root, existing_units=existing_units)
 
-    def _restore_services(self, root: Path) -> None:
+    def _restore_services(self, root: Path, *, existing_units: set[str]) -> None:
         try:
             state = json.loads((root / "services.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -890,14 +896,10 @@ class Installer:
                 or any(type(item[key]) is not bool for key in item)
             ):
                 raise RuntimeError("worker rollback service state is invalid")
-            self._run(
-                [
-                    "systemctl",
-                    "--user",
-                    "enable" if item["enabled"] else "disable",
-                    name,
-                ]
-            )
+            if item["enabled"]:
+                self._run(["systemctl", "--user", "enable", name])
+            elif name in existing_units:
+                self._run(["systemctl", "--user", "disable", name])
             self._run(
                 [
                     "systemctl",
