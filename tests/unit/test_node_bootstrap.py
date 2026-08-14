@@ -683,6 +683,7 @@ def test_restore_absent_units_does_not_require_disable_to_succeed(
 
     assert all(not (installer.units / name).exists() for name in bootstrap.UNITS)
     assert not [call for call in runner.calls if "disable" in call]
+    assert not [call for call in runner.calls if "stop" in call]
 
 
 def test_installer_default_runner_allows_bounded_package_install(
@@ -692,6 +693,23 @@ def test_installer_default_runner_allows_bounded_package_install(
 
     assert isinstance(installer.runner, bootstrap.SubprocessRunner)
     assert installer.runner.timeout_seconds == 300
+
+
+def test_installer_retries_transport_until_daemon_auth_is_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer = bootstrap.Installer(
+        home=tmp_path, bundle=tmp_path / "bundle", runner=FakeRunner()
+    )
+    results = iter(["transport_failure", "transport_failure", "enforced"])
+    monkeypatch.setattr(
+        bootstrap.Doctor,
+        "_auth_probe",
+        lambda self, python, token: next(results),
+    )
+    monkeypatch.setattr(bootstrap.time, "sleep", lambda _: None)
+
+    assert installer._wait_for_auth("test-token") == "enforced"
 
 
 def test_installer_materializes_verified_units_on_bare_worker(

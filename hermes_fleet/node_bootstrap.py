@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -688,9 +689,7 @@ class Installer:
             if changed_before_services:
                 self._run(["systemctl", "--user", "daemon-reload"])
                 self._restart("keryxd.service")
-            auth = Doctor(
-                home=self.home, bundle=self.bundle, runner=self.runner
-            )._auth_probe(self.install / "venv/bin/python", token)
+            auth = self._wait_for_auth(token)
             if auth != "enforced":
                 raise RuntimeError(f"daemon authentication proof failed: {auth}")
             doctor = Doctor(home=self.home, bundle=self.bundle, runner=self.runner)
@@ -900,6 +899,8 @@ class Installer:
                 self._run(["systemctl", "--user", "enable", name])
             elif name in existing_units:
                 self._run(["systemctl", "--user", "disable", name])
+            if name not in existing_units and not item["active"]:
+                continue
             self._run(
                 [
                     "systemctl",
@@ -908,6 +909,15 @@ class Installer:
                     name,
                 ]
             )
+
+    def _wait_for_auth(self, token: str) -> str:
+        doctor = Doctor(home=self.home, bundle=self.bundle, runner=self.runner)
+        for attempt in range(10):
+            result = doctor._auth_probe(self.install / "venv/bin/python", token)
+            if result != "transport_failure" or attempt == 9:
+                return result
+            time.sleep(0.25)
+        raise AssertionError("unreachable")
 
     def _existing_token(self) -> str | None:
         for name in ENV_FILES:
