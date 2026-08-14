@@ -504,7 +504,15 @@ def test_fleet_node_admits_exact_immutable_execution_package_before_binding(
     tmp_path,
 ) -> None:
     package = _execution_package()
-    incoming = _packaged_incoming(package)
+    incoming = _packaged_incoming(
+        package,
+        metadata_overrides={
+            "target_node_id": "peer-vps",
+            "keryx.authenticated_source_protocol_features": (
+                "absolute_deadlines_v1,result_artifact_bytes_v1"
+            ),
+        },
+    )
     hermes = _Hermes()
 
     class Executor:
@@ -543,6 +551,14 @@ def test_fleet_node_admits_exact_immutable_execution_package_before_binding(
                 metadata_overrides={
                     "fleet.execution_package_hash": "sha256:" + "0" * 64
                 },
+            ),
+            9,
+            "network-1",
+            "device-1",
+        ),
+        (
+            _packaged_incoming(
+                _execution_package(), metadata_overrides={"unexpected": "value"}
             ),
             9,
             "network-1",
