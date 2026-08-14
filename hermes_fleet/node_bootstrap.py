@@ -696,7 +696,7 @@ class Installer:
                 self._restart("fleet-managed-projection.service")
                 self._restart("fleet-node.service")
             self._write_receipt(manifest)
-            return Doctor(home=self.home, bundle=self.bundle, runner=self.runner).run()
+            return self._wait_for_readiness()
         except BaseException:
             self._restore_snapshot(snapshot)
             raise
@@ -958,6 +958,15 @@ class Installer:
             if result != "transport_failure" or attempt == 9:
                 return result
             time.sleep(0.25)
+        raise AssertionError("unreachable")
+
+    def _wait_for_readiness(self) -> DoctorReport:
+        doctor = Doctor(home=self.home, bundle=self.bundle, runner=self.runner)
+        for attempt in range(30):
+            report = doctor.run()
+            if report.ready or attempt == 29:
+                return report
+            time.sleep(0.5)
         raise AssertionError("unreachable")
 
     def _existing_token(self) -> str | None:
