@@ -431,6 +431,7 @@ def _health_response(
         "run_stop": False,
         "run_finalize": False,
         "run_approval_budget": False,
+        "run_tool_evidence": False,
     }
     healthy = health.get("api") == "healthy" and all(
         health.get(field) is True
@@ -440,6 +441,7 @@ def _health_response(
             "run_stop",
             "run_finalize",
             "run_approval_budget",
+            "run_tool_evidence",
         )
     )
     response = {

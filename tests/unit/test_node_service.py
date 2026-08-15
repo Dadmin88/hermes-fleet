@@ -104,6 +104,7 @@ class _Hermes:
             "run_stop": self.healthy,
             "run_finalize": self.healthy,
             "run_approval_budget": self.healthy,
+            "run_tool_evidence": self.healthy,
         }
 
     def start(self, **_kwargs):  # pragma: no cover - service lifecycle only

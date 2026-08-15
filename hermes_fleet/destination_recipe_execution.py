@@ -14,7 +14,10 @@ from .hermes_runs import HermesRunSubmissionUnknown
 from .profile_runtime import LocalFileSecret
 
 _BACKEND_KIND = "hermes.local/profile-runs"
+_OUTCOME_ARTIFACT_NAME = "fleet-execution-outcome.v1.json"
+_OUTCOME_SCHEMA = "fleet.execution-outcome.v1"
 _APPROVAL_EXTENSION = "fleet.hermes/approvals.v1"
+_OUTCOME_EXTENSION = "fleet.hermes/outcome.v1"
 _FINALIZE_TIMEOUT_SECONDS = 5.0
 
 
@@ -26,6 +29,12 @@ class DestinationExecutionError(RuntimeError):
 class ApprovalPolicy:
     mode: str
     max_requests: int
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomePolicy:
+    min_successful_tool_calls: int
+    require_last_tool_success: bool
 
 
 class DestinationRuntime(Protocol):
@@ -125,6 +134,7 @@ class DestinationRecipeExecutor:
         approval_budget = (
             approval_policy.max_requests if approval_policy is not None else None
         )
+        outcome_policy = _outcome_policy(package)
 
         instance = {
             "instance_id": package.execution_id,
@@ -337,6 +347,74 @@ class DestinationRecipeExecutor:
                 or type(getattr(result, "text", None)) is not str
             ):
                 raise DestinationExecutionError("Hermes returned an invalid result")
+            try:
+                finalization = await self._finalize_profile(profile, run_id)
+            except Exception:
+                self._transition(
+                    package.execution_id,
+                    generation,
+                    {
+                        "kind": "indeterminate",
+                        "backend_kind": _BACKEND_KIND,
+                        "realization_id": profile,
+                        "keryx_task_id": package.execution_id,
+                        "hermes_run_id": run_id,
+                        "reason": (
+                            "Hermes execution completed but profile quiescence is unproven"
+                        ),
+                    },
+                )
+                await _complete_outcome(
+                    incoming,
+                    execution_id=package.execution_id,
+                    status="indeterminate",
+                    reason=(
+                        "Hermes execution completed but profile quiescence is unproven"
+                    ),
+                )
+                return "indeterminate"
+
+            verification = _verify_outcome_policy(outcome_policy, finalization)
+            if verification is not None:
+                verification_status, reason = verification
+                transition = {"kind": verification_status}
+                transition.update(
+                    {
+                        "backend_kind": _BACKEND_KIND,
+                        "realization_id": profile,
+                        "keryx_task_id": package.execution_id,
+                        "hermes_run_id": run_id,
+                    }
+                )
+                if verification_status == "indeterminate":
+                    transition["reason"] = reason
+                generation = self._transition(
+                    package.execution_id,
+                    generation,
+                    transition,
+                )
+                generation = self._transition(
+                    package.execution_id,
+                    generation,
+                    {
+                        "kind": "cleanup_pending",
+                        "backend_kind": _BACKEND_KIND,
+                        "realization_id": profile,
+                        "keryx_task_id": package.execution_id,
+                        "hermes_run_id": run_id,
+                        "reason": "verified terminal Hermes run requires profile cleanup",
+                    },
+                )
+                self._runtime.cleanup(profile, expected_owner=package.execution_id)
+                self._transition(package.execution_id, generation, {"kind": "cleaned"})
+                await _complete_outcome(
+                    incoming,
+                    execution_id=package.execution_id,
+                    status=verification_status,
+                    reason=reason,
+                )
+                return verification_status
+
             generation = self._transition(
                 package.execution_id,
                 generation,
@@ -357,14 +435,9 @@ class DestinationRecipeExecutor:
                     "realization_id": profile,
                     "keryx_task_id": package.execution_id,
                     "hermes_run_id": run_id,
-                    "reason": "terminal Hermes run requires quiescent profile cleanup",
+                    "reason": "verified Hermes run requires quiescent profile cleanup",
                 },
             )
-            try:
-                await self._finalize_profile(profile, run_id)
-            except Exception:
-                await _fail_incoming(incoming, "Hermes execution outcome is indeterminate")
-                return "indeterminate"
             self._runtime.cleanup(profile, expected_owner=package.execution_id)
             self._transition(package.execution_id, generation, {"kind": "cleaned"})
             complete = getattr(incoming, "complete", None)
@@ -410,6 +483,70 @@ class DestinationRecipeExecutor:
             await _fail_incoming(incoming, "Hermes execution failed during recovery")
             return "failed"
         generation = instance["generation"]
+        try:
+            finalization = await self._finalize_profile(profile, run_id)
+        except Exception:
+            self._transition(
+                package.execution_id,
+                generation,
+                {
+                    "kind": "indeterminate",
+                    "backend_kind": _BACKEND_KIND,
+                    "realization_id": profile,
+                    "keryx_task_id": package.execution_id,
+                    "hermes_run_id": run_id,
+                    "reason": "Reconciled Hermes run quiescence is unproven",
+                },
+            )
+            await _complete_outcome(
+                incoming,
+                execution_id=package.execution_id,
+                status="indeterminate",
+                reason="Reconciled Hermes run quiescence is unproven",
+            )
+            return "indeterminate"
+
+        verification = _verify_outcome_policy(_outcome_policy(package), finalization)
+        if verification is not None:
+            verification_status, reason = verification
+            transition = {"kind": verification_status}
+            transition.update(
+                {
+                    "backend_kind": _BACKEND_KIND,
+                    "realization_id": profile,
+                    "keryx_task_id": package.execution_id,
+                    "hermes_run_id": run_id,
+                }
+            )
+            if verification_status == "indeterminate":
+                transition["reason"] = reason
+            generation = self._transition(
+                package.execution_id,
+                generation,
+                transition,
+            )
+            generation = self._transition(
+                package.execution_id,
+                generation,
+                {
+                    "kind": "cleanup_pending",
+                    "backend_kind": _BACKEND_KIND,
+                    "realization_id": profile,
+                    "keryx_task_id": package.execution_id,
+                    "hermes_run_id": run_id,
+                    "reason": "reconciled verified Hermes run requires profile cleanup",
+                },
+            )
+            self._runtime.cleanup(profile, expected_owner=package.execution_id)
+            self._transition(package.execution_id, generation, {"kind": "cleaned"})
+            await _complete_outcome(
+                incoming,
+                execution_id=package.execution_id,
+                status=verification_status,
+                reason=reason,
+            )
+            return verification_status
+
         generation = self._transition(
             package.execution_id,
             generation,
@@ -430,14 +567,9 @@ class DestinationRecipeExecutor:
                 "realization_id": profile,
                 "keryx_task_id": package.execution_id,
                 "hermes_run_id": run_id,
-                "reason": "reconciled Hermes run requires quiescent profile cleanup",
+                "reason": "reconciled verified Hermes run requires profile cleanup",
             },
         )
-        try:
-            await self._finalize_profile(profile, run_id)
-        except Exception:
-            await _fail_incoming(incoming, "Hermes execution outcome is indeterminate")
-            return "indeterminate"
         self._runtime.cleanup(profile, expected_owner=package.execution_id)
         self._transition(package.execution_id, generation, {"kind": "cleaned"})
         complete = getattr(incoming, "complete", None)
@@ -500,6 +632,54 @@ def _approval_policy(package: ExactExecutionPackage) -> ApprovalPolicy | None:
     return ApprovalPolicy(mode="once", max_requests=approval["max_requests"])
 
 
+def _outcome_policy(package: ExactExecutionPackage) -> OutcomePolicy | None:
+    outcome = package.resolved_recipe.extensions.get(_OUTCOME_EXTENSION)
+    if outcome is None:
+        return None
+    if (
+        not isinstance(outcome, Mapping)
+        or set(outcome) != {"min_successful_tool_calls", "require_last_tool_success"}
+        or type(outcome.get("min_successful_tool_calls")) is not int
+        or not 0 <= outcome["min_successful_tool_calls"] <= 32
+        or type(outcome.get("require_last_tool_success")) is not bool
+    ):
+        raise DestinationExecutionError("execution outcome extension is invalid")
+    return OutcomePolicy(
+        min_successful_tool_calls=outcome["min_successful_tool_calls"],
+        require_last_tool_success=outcome["require_last_tool_success"],
+    )
+
+
+def _verify_outcome_policy(
+    policy: OutcomePolicy | None,
+    finalization: dict[str, Any],
+) -> tuple[str, str] | None:
+    if policy is None:
+        return None
+    tool_calls = finalization.get("tool_calls")
+    tool_errors = finalization.get("tool_errors")
+    last_tool_error = finalization.get("last_tool_error")
+    if (
+        type(tool_calls) is not int
+        or type(tool_errors) is not int
+        or tool_calls < 0
+        or tool_errors < 0
+        or tool_errors > tool_calls
+        or last_tool_error not in {None, False, True}
+        or (tool_calls == 0 and last_tool_error is not None)
+        or (tool_calls > 0 and type(last_tool_error) is not bool)
+    ):
+        return "indeterminate", "Hermes tool outcome evidence is invalid"
+    successful_tool_calls = tool_calls - tool_errors
+    if successful_tool_calls < policy.min_successful_tool_calls:
+        return "failed", "Hermes tool outcome verification failed"
+    if policy.require_last_tool_success and (
+        tool_calls == 0 or last_tool_error is not False
+    ):
+        return "failed", "Hermes tool outcome verification failed"
+    return None
+
+
 def _secret_refs_digest(references: list[str]) -> str:
     payload = json.dumps(
         references, ensure_ascii=True, separators=(",", ":"), sort_keys=False
@@ -523,6 +703,45 @@ def _result_artifact(*, text: str, run_id: str, execution_id: str) -> list[Any]:
             ],
         }
     ]
+
+
+def _outcome_artifact(*, execution_id: str, status: str, reason: str) -> list[Any]:
+    document = json.dumps(
+        {
+            "schema": _OUTCOME_SCHEMA,
+            "execution_id": execution_id,
+            "status": status,
+            "reason": reason,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return [
+        {
+            "name": _OUTCOME_ARTIFACT_NAME,
+            "parts": [{"text": document, "media_type": "application/json"}],
+        }
+    ]
+
+
+async def _complete_outcome(
+    incoming: object,
+    *,
+    execution_id: str,
+    status: str,
+    reason: str,
+) -> None:
+    complete = getattr(incoming, "complete", None)
+    if not callable(complete):
+        raise DestinationExecutionError("Keryx completion is unavailable")
+    await cast(Callable[[list[Any]], Awaitable[None]], complete)(
+        _outcome_artifact(
+            execution_id=execution_id,
+            status=status,
+            reason=reason,
+        )
+    )
 
 
 async def _fail_incoming(incoming: object, reason: str) -> None:

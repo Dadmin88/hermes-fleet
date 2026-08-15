@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -119,6 +120,9 @@ class Runtime:
         self.fail_at = fail_at
         self.start_calls = 0
         self.inspection: Any = None
+        self.tool_calls = 1
+        self.tool_errors = 0
+        self.last_tool_error: bool | None = False
 
     def materialize(self, package, *, secrets):
         self.events.append("materialize")
@@ -173,7 +177,14 @@ class Runtime:
         if self.fail_at == "finalize":
             raise RuntimeError("quiescence unavailable")
         status = "failed" if self.fail_at == "wait" else "completed"
-        return {"run_id": run_id, "status": status, "quiescent": True}
+        return {
+            "run_id": run_id,
+            "status": status,
+            "quiescent": True,
+            "tool_calls": self.tool_calls,
+            "tool_errors": self.tool_errors,
+            "last_tool_error": self.last_tool_error,
+        }
 
     def cleanup(self, profile, *, expected_owner):
         self.events.append("cleanup")
@@ -211,6 +222,14 @@ class Incoming:
 
     async def fail(self, reason):
         self.failed = reason
+
+
+def completed_outcome(incoming: Incoming) -> dict[str, Any]:
+    assert incoming.completed is not None
+    assert incoming.failed is None
+    artifact = incoming.completed[0]
+    assert artifact["name"] == "fleet-execution-outcome.v1.json"
+    return json.loads(artifact["parts"][0]["text"])
 
 
 def executor(tmp_path, *, status="admitted", fail_at=None):
@@ -356,13 +375,135 @@ def test_quiescence_failure_preserves_profile_and_returns_indeterminate(
     assert [phase["kind"] for phase in control.transitions] == [
         "prepared",
         "running",
-        "completed",
-        "cleanup_pending",
+        "indeterminate",
     ]
     assert runtime.cleaned is False
     assert (tmp_path / "fleet-exec-execution-1" / "marker").read_text() == "execution-1"
-    assert incoming.failed == "Hermes execution outcome is indeterminate"
-    assert incoming.completed is None
+    assert completed_outcome(incoming) == {
+        "execution_id": "execution-1",
+        "reason": "Hermes execution completed but profile quiescence is unproven",
+        "schema": "fleet.execution-outcome.v1",
+        "status": "indeterminate",
+    }
+
+
+def test_outcome_policy_accepts_successful_tool_evidence(tmp_path) -> None:
+    service, control, runtime, events = executor(tmp_path)
+    incoming = Incoming()
+    outcome_extension = {
+        "fleet.hermes/outcome.v1": {
+            "min_successful_tool_calls": 1,
+            "require_last_tool_success": True,
+        }
+    }
+
+    result = asyncio.run(
+        service.execute(
+            package=package(extensions=outcome_extension),
+            authenticated_sender="peer-controller-1",
+            incoming=incoming,
+        )
+    )
+
+    assert result == "completed"
+    assert events == [
+        "secrets",
+        "materialize",
+        "start",
+        "wait",
+        "finalize",
+        "cleanup",
+    ]
+    assert [phase["kind"] for phase in control.transitions] == [
+        "prepared",
+        "running",
+        "completed",
+        "cleanup_pending",
+        "cleaned",
+    ]
+    assert runtime.cleaned is True
+    assert incoming.completed[0]["parts"][0]["text"] == "FX8_OK"
+
+
+def test_outcome_policy_rejects_failed_last_tool_despite_model_success(
+    tmp_path,
+) -> None:
+    service, control, runtime, events = executor(tmp_path)
+    runtime.tool_errors = 1
+    runtime.last_tool_error = True
+    incoming = Incoming()
+    outcome_extension = {
+        "fleet.hermes/outcome.v1": {
+            "min_successful_tool_calls": 0,
+            "require_last_tool_success": True,
+        }
+    }
+
+    result = asyncio.run(
+        service.execute(
+            package=package(extensions=outcome_extension),
+            authenticated_sender="peer-controller-1",
+            incoming=incoming,
+        )
+    )
+
+    assert result == "failed"
+    assert events == [
+        "secrets",
+        "materialize",
+        "start",
+        "wait",
+        "finalize",
+        "cleanup",
+    ]
+    assert [phase["kind"] for phase in control.transitions] == [
+        "prepared",
+        "running",
+        "failed",
+        "cleanup_pending",
+        "cleaned",
+    ]
+    assert runtime.cleaned is True
+    assert completed_outcome(incoming) == {
+        "execution_id": "execution-1",
+        "reason": "Hermes tool outcome verification failed",
+        "schema": "fleet.execution-outcome.v1",
+        "status": "failed",
+    }
+
+
+def test_outcome_policy_malformed_evidence_is_indeterminate_and_cleaned(
+    tmp_path,
+) -> None:
+    service, control, runtime, _events = executor(tmp_path)
+    runtime.tool_calls = 1
+    runtime.tool_errors = 2
+    incoming = Incoming()
+    outcome_extension = {
+        "fleet.hermes/outcome.v1": {
+            "min_successful_tool_calls": 0,
+            "require_last_tool_success": False,
+        }
+    }
+
+    result = asyncio.run(
+        service.execute(
+            package=package(extensions=outcome_extension),
+            authenticated_sender="peer-controller-1",
+            incoming=incoming,
+        )
+    )
+
+    assert result == "indeterminate"
+    assert [phase["kind"] for phase in control.transitions] == [
+        "prepared",
+        "running",
+        "indeterminate",
+        "cleanup_pending",
+        "cleaned",
+    ]
+    assert runtime.cleaned is True
+    assert completed_outcome(incoming)["status"] == "indeterminate"
 
 
 def test_known_hermes_failure_is_durable_cleaned_and_failed_to_keryx(tmp_path) -> None:

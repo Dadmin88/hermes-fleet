@@ -461,6 +461,7 @@ def build_observation(
                 "run_stop",
                 "run_finalize",
                 "run_approval_budget",
+                "run_tool_evidence",
             )
         )
     )
