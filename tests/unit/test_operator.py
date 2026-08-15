@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -205,6 +206,68 @@ def _service(
     )
 
 
+def _exact_request(*, deadline_seconds: int = 30):
+    from hermes_fleet.agency_snapshot import AgencySource
+    from hermes_fleet.operator import ExactRecipeRequest
+    from hermes_fleet.recipes import FleetRecipe
+
+    recipe = FleetRecipe.from_dict(
+        {
+            "schema": "fleet.recipe.v1",
+            "agent": {
+                "kind": "agency_profile",
+                "name": "acceptance",
+                "version": "1.0.0",
+            },
+            "environment": {"os": ["linux"], "architecture": ["x86_64"]},
+            "resources": {"cpu_millis": 1000, "memory_bytes": 1000},
+            "security": {"isolation": "process", "network": "provider"},
+            "extensions": {},
+        }
+    )
+    return ExactRecipeRequest(
+        target="worker-a",
+        prompt="Return FX8_OK.",
+        recipe=recipe,
+        agency_source=AgencySource("https://example.invalid/agency.git", "a" * 40),
+        deadline_seconds=deadline_seconds,
+    )
+
+
+def _run_exact_with_wait_error(
+    error: Exception,
+    *,
+    status: str,
+    deadline_ms: int,
+):
+    service = _service(FakeState([_managed_node()]))
+    resolved = service.resolve_target("worker-a")
+
+    class Status:
+        value = status
+
+    class FailingHandle:
+        def __init__(self) -> None:
+            self.status = Status()
+
+        async def wait(self, _timeout: float):
+            raise error
+
+    submission = SimpleNamespace(
+        task_id="task-deadline",
+        routed_to="peer-current",
+        delivery_route="relay",
+        deadline_ms=deadline_ms,
+        handle=FailingHandle(),
+    )
+
+    async def submit_exact(_request):
+        return submission, resolved
+
+    service._submit_exact = submit_exact  # type: ignore[method-assign]
+    return service
+
+
 def test_inventory_probe_retries_transient_failures() -> None:
     class Controller:
         def __init__(self) -> None:
@@ -347,6 +410,61 @@ def test_prompt_only_execution_is_unavailable_without_recipe_authority() -> None
     with pytest.raises(OperatorError) as unavailable:
         asyncio.run(service.run_exact("worker-a"))  # type: ignore[arg-type]
     assert unavailable.value.code is OperatorErrorCode.OPERATION_UNAVAILABLE
+
+
+def test_run_exact_timeout_returns_typed_deadline_result() -> None:
+    service = _run_exact_with_wait_error(
+        TimeoutError("wait expired"),
+        status="working",
+        deadline_ms=1_000,
+    )
+
+    result = asyncio.run(service.run_exact(_exact_request(deadline_seconds=1)))
+
+    assert result.task_id == "task-deadline"
+    assert result.terminal_state == "timed_out"
+    assert result.transport_status == "indeterminate"
+    assert result.execution_status == "timed_out"
+    assert result.error_category is OperatorErrorCode.DEADLINE_EXCEEDED
+    assert result.result == "Fleet execution deadline exceeded."
+
+
+def test_terminal_result_unavailable_after_deadline_is_typed_timeout(
+    monkeypatch,
+) -> None:
+    from keryx.task import TaskResultUnavailableError
+
+    monkeypatch.setattr(operator_mod.time, "time", lambda: 2.0)
+    service = _run_exact_with_wait_error(
+        TaskResultUnavailableError("terminal_result_unavailable"),
+        status="failed",
+        deadline_ms=1_000,
+    )
+
+    result = asyncio.run(service.run_exact(_exact_request(deadline_seconds=1)))
+
+    assert result.terminal_state == "timed_out"
+    assert result.transport_status == "indeterminate"
+    assert result.execution_status == "timed_out"
+    assert result.error_category is OperatorErrorCode.DEADLINE_EXCEEDED
+
+
+def test_terminal_result_unavailable_before_deadline_stays_transport_failure(
+    monkeypatch,
+) -> None:
+    from keryx.task import TaskResultUnavailableError
+
+    monkeypatch.setattr(operator_mod.time, "time", lambda: 1.0)
+    service = _run_exact_with_wait_error(
+        TaskResultUnavailableError("terminal_result_unavailable"),
+        status="failed",
+        deadline_ms=2_000,
+    )
+
+    with pytest.raises(OperatorError) as caught:
+        asyncio.run(service.run_exact(_exact_request(deadline_seconds=1)))
+
+    assert caught.value.code is OperatorErrorCode.TRANSPORT_UNAVAILABLE
 
 
 def test_exact_recipe_request_uses_destination_capabilities_and_shared_submission() -> (

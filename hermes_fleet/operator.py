@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
+
+from keryx.task import TaskResultUnavailableError
 
 from .agency_snapshot import AgencySource
 from .backend_capabilities import BackendCapabilities
@@ -254,10 +257,24 @@ class OperatorService:
         submission, resolved = await self._submit_exact(request)
         try:
             task = await submission.handle.wait(float(request.deadline_seconds) + 5.0)
-        except TimeoutError as error:
+        except TimeoutError:
+            return self._deadline_completion(
+                submission=submission,
+                request=request,
+                resolved=resolved,
+            )
+        except TaskResultUnavailableError as error:
+            status = getattr(getattr(submission.handle, "status", None), "value", None)
+            deadline_elapsed = int(time.time() * 1_000) >= submission.deadline_ms
+            if status == "failed" and deadline_elapsed:
+                return self._deadline_completion(
+                    submission=submission,
+                    request=request,
+                    resolved=resolved,
+                )
             raise OperatorError(
-                OperatorErrorCode.DEADLINE_EXCEEDED,
-                "Fleet task did not reach a terminal state before the deadline.",
+                OperatorErrorCode.TRANSPORT_UNAVAILABLE,
+                "Fleet transport is unavailable.",
                 detail=error,
             ) from error
         except Exception as error:
@@ -275,6 +292,29 @@ class OperatorService:
             delivery_route=submission.delivery_route,
             operation="fleet.hermes.run",
             deadline_ms=submission.deadline_ms,
+        )
+
+    @staticmethod
+    def _deadline_completion(
+        *,
+        submission: Any,
+        request: ExactRecipeRequest,
+        resolved: ResolvedOperatorTarget,
+    ) -> OperatorCompletionResult:
+        return OperatorCompletionResult(
+            task_id=submission.task_id,
+            terminal_state="timed_out",
+            requested_target=request.target,
+            resolved_target=resolved,
+            routed_to=submission.routed_to,
+            delivery_route=submission.delivery_route,
+            operation="fleet.hermes.run",
+            deadline_ms=submission.deadline_ms,
+            run_id=None,
+            result="Fleet execution deadline exceeded.",
+            error_category=OperatorErrorCode.DEADLINE_EXCEEDED,
+            transport_status="indeterminate",
+            execution_status="timed_out",
         )
 
     async def submit_exact(
