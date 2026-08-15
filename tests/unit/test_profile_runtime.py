@@ -211,7 +211,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     )
     assert (profile_path / ".env").stat().st_mode & 0o777 == 0o600
     assert (profile_path / "config.yaml").read_text() == (
-        "agent:\n  max_turns: 5\n"
+        "agent:\n  max_turns: 8\n"
         "model:\n  default: gpt-test\n  provider: openai-codex\n"
         "platform_toolsets:\n  api_server:\n  - fleet-terminal\n"
         "terminal:\n  force_foreground: true\n"

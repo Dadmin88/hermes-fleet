@@ -301,7 +301,13 @@ def _stage_model_config(staging: Path, model_config: dict[str, Any]) -> None:
         if type(parsed) is not dict or "model" in parsed:
             raise ValueError("Agency model config cannot override destination model")
         existing = parsed
+    destination_agent = model_config.get("agent")
+    agency_agent = existing.get("agent")
     existing.update(model_config)
+    if type(agency_agent) is dict and type(destination_agent) is dict:
+        merged_agent = dict(agency_agent)
+        merged_agent.update(destination_agent)
+        existing["agent"] = merged_agent
     destination.write_text(
         yaml.safe_dump(existing, sort_keys=True),
         encoding="utf-8",
@@ -362,6 +368,7 @@ class ProfileHermesRuntime:
         if type(package) is not ExactExecutionPackage:
             raise ValueError("execution package is invalid")
         model_config = _load_model_config(self._model_config_path)
+        model_config["agent"] = {"max_turns": 8}
         recipe_toolsets = _recipe_toolsets(package, ceiling=self._toolsets)
         if recipe_toolsets:
             model_config["platform_toolsets"] = {"api_server": list(recipe_toolsets)}
