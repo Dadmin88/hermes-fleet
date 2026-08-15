@@ -365,6 +365,7 @@ class ProfileHermesRuntime:
         recipe_toolsets = _recipe_toolsets(package, ceiling=self._toolsets)
         if recipe_toolsets:
             model_config["platform_toolsets"] = {"api_server": list(recipe_toolsets)}
+        model_config["terminal"] = {"force_foreground": True}
         model_config["tool_loop_guardrails"] = {
             "warnings_enabled": True,
             "hard_stop_enabled": True,
