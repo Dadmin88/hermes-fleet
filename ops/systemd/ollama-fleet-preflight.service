@@ -1,0 +1,18 @@
+[Unit]
+Description=Hermes Fleet local-model structured-tool preflight
+Requires=ollama-fleet.service
+After=ollama-fleet.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/hermes-fleet/fleet-node-local-model.conf
+ExecStart=%h/.local/share/hermes-fleet/venv/bin/python %h/.local/share/hermes-fleet/scripts/ollama_fleet_preflight.py
+TimeoutStartSec=90
+RemainAfterExit=yes
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target

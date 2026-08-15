@@ -1,0 +1,23 @@
+[Unit]
+Description=Hermes Fleet local Ollama inference runtime
+After=network.target
+
+[Service]
+Type=simple
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_CONTEXT_LENGTH=8192
+Environment=OLLAMA_VULKAN=false
+Environment=OLLAMA_LLM_LIBRARY=cpu
+Environment=OLLAMA_GPU_OVERHEAD=0
+EnvironmentFile=-%h/.config/hermes-fleet/ollama-fleet.conf
+ExecStart=%h/.local/bin/ollama serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/ollama-models
+
+[Install]
+WantedBy=default.target
