@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from hermes_fleet import operator as operator_mod
 from hermes_fleet.config import FleetConfig, ManagedTargetPolicy
 from hermes_fleet.models import FleetDefaults, NodePolicy
 from hermes_fleet.operator import OperatorError, OperatorErrorCode, OperatorService
@@ -202,6 +203,70 @@ def _service(
         recipe_submission=recipe_submission,
         execution_id_factory=lambda: "execution-1",
     )
+
+
+def test_inventory_probe_retries_transient_failures() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.deadlines: list[int] = []
+
+        async def get_inventory(self, target: str, *, deadline_seconds: int):
+            assert target == "worker"
+            self.deadlines.append(deadline_seconds)
+            if len(self.deadlines) < 3:
+                raise RuntimeError("transient inventory transport failure")
+            return "inventory-ok"
+
+    controller = Controller()
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    result = asyncio.run(
+        operator_mod._inventory_probe_with_retry(
+            controller,  # type: ignore[arg-type]
+            "worker",
+            deadline_seconds=30,
+            sleep=sleep,
+        )
+    )
+
+    assert result == "inventory-ok"
+    assert controller.deadlines == [10, 10, 10]
+    assert delays == [0.25, 0.75]
+
+
+def test_inventory_probe_exhaustion_is_typed_transport_failure() -> None:
+    class Controller:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_inventory(self, target: str, *, deadline_seconds: int):
+            assert target == "worker"
+            assert deadline_seconds == 10
+            self.calls += 1
+            raise RuntimeError(f"inventory transport failure {self.calls}")
+
+    controller = Controller()
+
+    async def sleep(_delay: float) -> None:
+        return None
+
+    with pytest.raises(OperatorError) as caught:
+        asyncio.run(
+            operator_mod._inventory_probe_with_retry(
+                controller,  # type: ignore[arg-type]
+                "worker",
+                deadline_seconds=90,
+                sleep=sleep,
+            )
+        )
+
+    assert caught.value.code is OperatorErrorCode.TRANSPORT_UNAVAILABLE
+    assert caught.value.public_message == "Destination inventory probe is unavailable."
+    assert "inventory transport failure 3" in caught.value.debug_detail
+    assert controller.calls == 3
 
 
 def test_list_and_inspect_use_authoritative_state_and_readiness() -> None:

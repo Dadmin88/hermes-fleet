@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from dataclasses import dataclass
@@ -19,6 +20,9 @@ from .recipes import FleetRecipe
 _SECRET = re.compile(r"(?i)(bearer|token|key|secret|password|credential)\s*[=:]\s*\S+")
 _PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s/]+/)+[^\s]*")
 _MAX_RESULT_CHARS = 65_536
+_INVENTORY_PROBE_ATTEMPTS = 3
+_INVENTORY_PROBE_DEADLINE_SECONDS = 10
+_INVENTORY_RETRY_DELAYS = (0.0, 0.25, 0.75)
 
 
 class OperatorErrorCode(StrEnum):
@@ -57,6 +61,36 @@ class OperatorError(RuntimeError):
         self.public_message = _safe_message(message)
         self.debug_detail = str(detail if detail is not None else message)
         super().__init__(self.public_message)
+
+
+async def _inventory_probe_with_retry(
+    controller: FleetController,
+    target: str,
+    *,
+    deadline_seconds: int,
+    sleep=asyncio.sleep,
+):
+    """Retry only the read-only inventory probe; execution submission stays single-shot."""
+    last_error: Exception | None = None
+    for attempt in range(_INVENTORY_PROBE_ATTEMPTS):
+        delay = _INVENTORY_RETRY_DELAYS[attempt]
+        if delay:
+            await sleep(delay)
+        try:
+            return await controller.get_inventory(
+                target,
+                deadline_seconds=min(
+                    deadline_seconds,
+                    _INVENTORY_PROBE_DEADLINE_SECONDS,
+                ),
+            )
+        except Exception as error:
+            last_error = error
+    raise OperatorError(
+        OperatorErrorCode.TRANSPORT_UNAVAILABLE,
+        "Destination inventory probe is unavailable.",
+        detail=last_error,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,10 +346,10 @@ class OperatorService:
             nodes=(node,),
         )
         try:
-            inventory = await FleetController(
-                keryx=self._keryx, config=submission_config
-            ).get_inventory(
-                node.name, deadline_seconds=min(request.deadline_seconds, 30)
+            inventory = await _inventory_probe_with_retry(
+                FleetController(keryx=self._keryx, config=submission_config),
+                node.name,
+                deadline_seconds=request.deadline_seconds,
             )
             response = inventory.response
             backend = (
