@@ -78,6 +78,8 @@ class FakeOperator:
             operation="fleet.hermes.run",
             deadline_ms=45_000,
             result="done",
+            transport_status="completed",
+            execution_status="succeeded",
         )
 
     async def inspect_task(self, task_id: str):
@@ -208,6 +210,8 @@ def test_run_wait_reports_structured_terminal_success(tmp_path: Path) -> None:
         "run_id": None,
         "task_id": "task-test",
         "terminal_state": "completed",
+        "transport_status": "completed",
+        "execution_status": "succeeded",
     }
 
 

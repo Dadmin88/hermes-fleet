@@ -113,6 +113,8 @@ class OperatorCompletionResult:
     run_id: str | None = None
     result: str | None = None
     error_category: OperatorErrorCode | None = None
+    transport_status: str | None = None
+    execution_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +257,8 @@ class OperatorService:
             delivery_route=submission.delivery_route,
             operation="fleet.hermes.run",
             deadline_ms=submission.deadline_ms,
+            transport_status="submitted",
+            execution_status=None,
         )
 
     async def _submit_exact(self, request: ExactRecipeRequest):
@@ -393,6 +397,11 @@ class OperatorService:
                 OperatorErrorCode.TASK_INDETERMINATE,
                 "Fleet task returned no trustworthy terminal state.",
             )
+        artifacts = getattr(task, "artifacts", None)
+        has_hermes_result = isinstance(artifacts, list) and any(
+            getattr(artifact, "name", None) == "hermes-result.txt"
+            for artifact in artifacts
+        )
         metadata = getattr(task, "metadata", None)
         metadata = metadata if type(metadata) is dict else {}
         result = metadata.get("result_text")
@@ -417,6 +426,15 @@ class OperatorService:
             error_category = error_categories.get(
                 status, OperatorErrorCode.TASK_INDETERMINATE
             )
+        execution_evidence = (
+            operation == "fleet.hermes.run" or has_hermes_result or run_id is not None
+        )
+        execution_status: str | None = None
+        if execution_evidence:
+            if status == "completed":
+                execution_status = "succeeded" if result is not None else "indeterminate"
+            elif status not in known_nonterminal:
+                execution_status = "indeterminate"
         return OperatorCompletionResult(
             task_id=task_id,
             terminal_state=status,
@@ -429,6 +447,8 @@ class OperatorService:
             run_id=run_id,
             result=result,
             error_category=error_category,
+            transport_status=status,
+            execution_status=execution_status,
         )
 
     async def inspect_task(self, task_id: str) -> OperatorCompletionResult:

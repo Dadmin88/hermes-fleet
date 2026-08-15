@@ -429,7 +429,49 @@ def test_task_inspection_preserves_nonterminal_state(status: str) -> None:
         )
     )
     assert result.terminal_state == status
+    assert result.transport_status == status
+    assert result.execution_status is None
     assert result.error_category is None
+
+
+def test_hermes_execution_status_is_separate_from_transport_status() -> None:
+    class Task:
+        class Status:
+            value = "completed"
+
+        status = Status()
+        metadata = {"result_text": "done", "run_id": "run-test"}
+        artifacts: list[object] = []
+
+    result = OperatorService._completion(
+        Task(),
+        task_id="task-test",
+        operation="fleet.hermes.run",
+    )
+
+    assert result.terminal_state == "completed"
+    assert result.transport_status == "completed"
+    assert result.execution_status == "succeeded"
+    assert result.result == "done"
+
+
+def test_completed_hermes_transport_without_result_is_execution_indeterminate() -> None:
+    class Task:
+        class Status:
+            value = "completed"
+
+        status = Status()
+        metadata: dict[str, str] = {}
+        artifacts: list[object] = []
+
+    result = OperatorService._completion(
+        Task(),
+        task_id="task-test",
+        operation="fleet.hermes.run",
+    )
+
+    assert result.transport_status == "completed"
+    assert result.execution_status == "indeterminate"
 
 
 def test_unknown_task_status_is_indeterminate() -> None:
