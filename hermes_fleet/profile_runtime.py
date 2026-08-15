@@ -365,6 +365,20 @@ class ProfileHermesRuntime:
         recipe_toolsets = _recipe_toolsets(package, ceiling=self._toolsets)
         if recipe_toolsets:
             model_config["platform_toolsets"] = {"api_server": list(recipe_toolsets)}
+        model_config["tool_loop_guardrails"] = {
+            "warnings_enabled": True,
+            "hard_stop_enabled": True,
+            "warn_after": {
+                "exact_failure": 2,
+                "same_tool_failure": 2,
+                "idempotent_no_progress": 2,
+            },
+            "hard_stop_after": {
+                "exact_failure": 3,
+                "same_tool_failure": 3,
+                "idempotent_no_progress": 3,
+            },
+        }
         profile = _EXECUTION_PROFILE
         destination = self._profiles_root / profile
         environment: dict[str, str] = {}

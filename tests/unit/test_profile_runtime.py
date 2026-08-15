@@ -214,6 +214,17 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
         "agent:\n  max_turns: 5\n"
         "model:\n  default: gpt-test\n  provider: openai-codex\n"
         "platform_toolsets:\n  api_server:\n  - fleet-terminal\n"
+        "tool_loop_guardrails:\n"
+        "  hard_stop_after:\n"
+        "    exact_failure: 3\n"
+        "    idempotent_no_progress: 3\n"
+        "    same_tool_failure: 3\n"
+        "  hard_stop_enabled: true\n"
+        "  warn_after:\n"
+        "    exact_failure: 2\n"
+        "    idempotent_no_progress: 2\n"
+        "    same_tool_failure: 2\n"
+        "  warnings_enabled: true\n"
     )
     assert (
         runtime.start(
