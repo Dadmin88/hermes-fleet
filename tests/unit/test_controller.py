@@ -152,7 +152,7 @@ def test_controller_submits_one_exact_execution_package_with_preselected_identit
     assert submission.task_id == "execution-1"
 
 
-def test_uncertain_submission_reopens_identity_without_resubmit() -> None:
+def test_uncertain_execution_submission_retries_same_identity_before_reopen() -> None:
     from hermes_fleet.controller import submit_execution_package
 
     class Uncertain(_Keryx):
@@ -161,6 +161,38 @@ def test_uncertain_submission_reopens_identity_without_resubmit() -> None:
             raise TimeoutError("response lost")
 
     keryx = Uncertain()
+    keryx.handle.task_id = "execution-1"
+    keryx.handle.receipt = None
+    submission = asyncio.run(
+        submit_execution_package(
+            keryx=keryx,
+            peer_id="peer-vps",
+            task_id="execution-1",
+            idempotency_key="execution-1",
+            package_payload=b"immutable execution package",
+            package_hash="sha256:" + "1" * 64,
+            deadline_ms=40_000,
+        )
+    )
+
+    assert len(keryx.calls) == 3
+    assert {call["task_id"] for call in keryx.calls} == {"execution-1"}
+    assert {call["idempotency_key"] for call in keryx.calls} == {"execution-1"}
+    assert submission.task_id == "execution-1"
+    assert submission.delivery_route == "reconciled"
+
+
+def test_transient_execution_submission_recovers_by_same_identity_redelivery() -> None:
+    from hermes_fleet.controller import submit_execution_package
+
+    class Flaky(_Keryx):
+        async def send_task(self, message, **kwargs):
+            self.calls.append({"message": message, **kwargs})
+            if len(self.calls) < 3:
+                raise TimeoutError("relay acknowledgement lost")
+            return self.handle
+
+    keryx = Flaky()
     keryx.handle.task_id = "execution-1"
     keryx.handle.receipt = _Receipt(task_id="execution-1")
     submission = asyncio.run(
@@ -175,8 +207,11 @@ def test_uncertain_submission_reopens_identity_without_resubmit() -> None:
         )
     )
 
-    assert len(keryx.calls) == 1
+    assert len(keryx.calls) == 3
+    assert all(call["task_id"] == "execution-1" for call in keryx.calls)
+    assert all(call["idempotency_key"] == "execution-1" for call in keryx.calls)
     assert submission.task_id == "execution-1"
+    assert submission.delivery_route == "relay"
 
 
 def test_controller_builds_each_initial_operation_without_transport_branching() -> None:

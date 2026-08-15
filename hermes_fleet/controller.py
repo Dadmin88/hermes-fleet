@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
@@ -17,6 +18,8 @@ from .policy import enforce_request_policy
 from .selection import select_nodes
 
 _MAX_RESULT_CHARS = 65_536
+_EXECUTION_SUBMIT_ATTEMPTS = 3
+_EXECUTION_SUBMIT_RETRY_DELAYS = (0.2, 0.5)
 
 
 class _TaskHandle(Protocol):
@@ -233,7 +236,7 @@ async def submit_execution_package(
     package_hash: str,
     deadline_ms: int,
 ) -> FleetSubmission:
-    """Submit immutable FX8 bytes once and reconcile uncertainty by task identity."""
+    """Submit immutable FX8 bytes with bounded same-identity redelivery."""
     for value, label in (
         (peer_id, "peer ID"),
         (task_id, "task ID"),
@@ -268,19 +271,31 @@ async def submit_execution_package(
         "fleet_deadline_ms": str(deadline_ms),
         "skill": "fleet.hermes.run",
     }
-    try:
-        handle = await keryx.send_task(
-            message,
-            peer_id=peer_id,
-            task_id=task_id,
-            idempotency_key=idempotency_key,
-            metadata=metadata,
-            deadline_ms=deadline_ms,
-        )
-    except Exception:
+    handle = None
+    last_error: Exception | None = None
+    for attempt in range(_EXECUTION_SUBMIT_ATTEMPTS):
+        try:
+            handle = await keryx.send_task(
+                message,
+                peer_id=peer_id,
+                task_id=task_id,
+                idempotency_key=idempotency_key,
+                metadata=metadata,
+                deadline_ms=deadline_ms,
+            )
+        except Exception as error:
+            last_error = error
+            if attempt + 1 >= _EXECUTION_SUBMIT_ATTEMPTS:
+                break
+            await asyncio.sleep(_EXECUTION_SUBMIT_RETRY_DELAYS[attempt])
+            continue
+        break
+    if handle is None:
         reopen = getattr(keryx, "task_handle", None)
         if not callable(reopen):
-            raise
+            if last_error is None:
+                raise RuntimeError("Keryx execution submission failed without an error")
+            raise last_error
         handle = reopen(task_id)
     if getattr(handle, "task_id", None) != task_id:
         raise RuntimeError("Keryx returned a mismatched execution task identity")
