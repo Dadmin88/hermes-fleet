@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -29,6 +31,7 @@ _MAX_REPOSITORY_CHARS: Final[int] = 2_048
 _MAX_GIT_OUTPUT_BYTES: Final[int] = 512
 _DEFAULT_GIT_TIMEOUT_SECONDS: Final[float] = 30.0
 _DEFAULT_CATALOG_TIMEOUT_SECONDS: Final[float] = 10.0
+_AGENCY_CACHE_ROOT_ENV: Final[str] = "FLEET_AGENCY_CACHE_ROOT"
 _SUPPORTED_DIGEST_SCHEMA: Final[str] = profile_inventory.PROFILE_CONTENT_DIGEST_SCHEMA
 
 
@@ -154,6 +157,189 @@ class AgencySnapshot:
         )
 
 
+def _resolved_cache_root(explicit: Path | None) -> Path | None:
+    candidate = explicit
+    if candidate is None:
+        raw = os.environ.get(_AGENCY_CACHE_ROOT_ENV, "").strip()
+        if not raw:
+            return None
+        candidate = Path(raw).expanduser()
+    if not isinstance(candidate, Path) or not candidate.is_absolute():
+        raise AgencySnapshotError("Agency cache root must be an absolute path")
+    try:
+        candidate.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise AgencySnapshotError("Agency cache root is invalid")
+        candidate.chmod(0o700)
+        return candidate.resolve(strict=True)
+    except OSError as error:
+        raise AgencySnapshotError("Agency cache root cannot be secured") from error
+
+
+def _git_unvalidated_text(
+    command: list[str], *, timeout_seconds: float, environment: dict[str, str]
+) -> str:
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+            env=environment,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise AgencySnapshotError("cached Agency git verification failed") from error
+    if completed.returncode != 0 or len(completed.stdout) > 4096:
+        raise AgencySnapshotError("cached Agency git verification failed")
+    try:
+        return completed.stdout.decode("utf-8").strip()
+    except UnicodeError as error:
+        raise AgencySnapshotError("cached Agency git verification failed") from error
+
+
+def _cached_commit_exists(
+    git: str,
+    repository: Path,
+    revision: str,
+    *,
+    timeout_seconds: float,
+    environment: dict[str, str],
+) -> bool:
+    try:
+        completed = subprocess.run(
+            [
+                git,
+                "--git-dir",
+                str(repository),
+                "cat-file",
+                "-e",
+                f"{revision}^{{commit}}",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+            env=environment,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise AgencySnapshotError("cached Agency git verification failed") from error
+    return completed.returncode == 0
+
+
+def _ensure_cached_repository(
+    source: AgencySource,
+    *,
+    cache_root: Path,
+    git: str,
+    timeout_seconds: float,
+    environment: dict[str, str],
+) -> Path:
+    repositories = cache_root / "repositories"
+    try:
+        repositories.mkdir(parents=True, exist_ok=True, mode=0o700)
+        repositories.chmod(0o700)
+    except OSError as error:
+        raise AgencySnapshotError(
+            "Agency repository cache cannot be secured"
+        ) from error
+
+    identity = hashlib.sha256(source.repository.encode("utf-8")).hexdigest()
+    repository = repositories / f"{identity}.git"
+    lock_path = repositories / f".{identity}.lock"
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as error:
+        raise AgencySnapshotError(
+            "Agency repository cache lock is unavailable"
+        ) from error
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if repository.exists():
+            if repository.is_symlink() or not repository.is_dir():
+                raise AgencySnapshotError("cached Agency repository is invalid")
+        else:
+            with tempfile.TemporaryDirectory(
+                prefix=f".{identity}-", dir=repositories
+            ) as temporary:
+                staged = Path(temporary) / "repository.git"
+                _run_git_quiet(
+                    [
+                        git,
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                        "clone",
+                        "--bare",
+                        "--no-tags",
+                        "--quiet",
+                        source.repository,
+                        str(staged),
+                    ],
+                    timeout_seconds=timeout_seconds,
+                    environment=environment,
+                )
+                staged.rename(repository)
+
+        origin = _git_unvalidated_text(
+            [
+                git,
+                "--git-dir",
+                str(repository),
+                "config",
+                "--get",
+                "remote.origin.url",
+            ],
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        )
+        if origin != source.repository:
+            raise AgencySnapshotError("cached Agency repository origin is invalid")
+        bare = _git_unvalidated_text(
+            [git, "--git-dir", str(repository), "rev-parse", "--is-bare-repository"],
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        )
+        if bare != "true":
+            raise AgencySnapshotError("cached Agency repository is not bare")
+
+        if not _cached_commit_exists(
+            git,
+            repository,
+            source.revision,
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        ):
+            _run_git_quiet(
+                [
+                    git,
+                    "--git-dir",
+                    str(repository),
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "origin",
+                ],
+                timeout_seconds=timeout_seconds,
+                environment=environment,
+            )
+        if not _cached_commit_exists(
+            git,
+            repository,
+            source.revision,
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        ):
+            raise AgencySnapshotError("pinned Agency revision is unavailable in cache")
+        return repository
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+
 @contextmanager
 def acquire_agency_snapshot(
     source: AgencySource,
@@ -161,8 +347,15 @@ def acquire_agency_snapshot(
     git_executable: str | None = None,
     git_timeout_seconds: float = _DEFAULT_GIT_TIMEOUT_SECONDS,
     catalog_timeout_seconds: float = _DEFAULT_CATALOG_TIMEOUT_SECONDS,
+    cache_root: Path | None = None,
 ) -> Iterator[AgencySnapshot]:
-    """Acquire, verify, and yield one temporary immutable Agency checkout."""
+    """Acquire, verify, and yield one temporary immutable Agency checkout.
+
+    When an Agency cache root is configured, the exact pinned Git object is
+    retained in a local bare repository and each execution checks out from that
+    local object store. Network access is then needed only when the requested
+    immutable object is not already present in the cache.
+    """
     if type(source) is not AgencySource:
         raise AgencySnapshotError("source must be an AgencySource")
     _bounded_timeout(git_timeout_seconds, "git timeout")
@@ -171,7 +364,37 @@ def acquire_agency_snapshot(
     if type(git) is not str or not git:
         raise AgencySnapshotError("git executable is unavailable")
 
-    with tempfile.TemporaryDirectory(prefix="hermes-fleet-agency-") as temporary:
+    environment = os.environ.copy()
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GCM_INTERACTIVE"] = "Never"
+    resolved_cache = _resolved_cache_root(cache_root)
+    clone_source = source.repository
+    clone_options: list[str] = []
+    temporary_parent: Path | None = None
+    if resolved_cache is not None:
+        cached_repository = _ensure_cached_repository(
+            source,
+            cache_root=resolved_cache,
+            git=git,
+            timeout_seconds=git_timeout_seconds,
+            environment=environment,
+        )
+        checkouts = resolved_cache / "checkouts"
+        try:
+            checkouts.mkdir(parents=True, exist_ok=True, mode=0o700)
+            checkouts.chmod(0o700)
+        except OSError as error:
+            raise AgencySnapshotError(
+                "Agency checkout cache cannot be secured"
+            ) from error
+        clone_source = str(cached_repository)
+        clone_options.append("--shared")
+        temporary_parent = checkouts
+
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-fleet-agency-",
+        dir=temporary_parent,
+    ) as temporary:
         temporary_root = Path(temporary)
         try:
             temporary_root.chmod(0o700)
@@ -180,9 +403,6 @@ def acquire_agency_snapshot(
                 "temporary Agency checkout cannot be secured"
             ) from error
         checkout = temporary_root / "checkout"
-        environment = os.environ.copy()
-        environment["GIT_TERMINAL_PROMPT"] = "0"
-        environment["GCM_INTERACTIVE"] = "Never"
 
         _run_git_quiet(
             [
@@ -190,10 +410,11 @@ def acquire_agency_snapshot(
                 "-c",
                 "core.hooksPath=/dev/null",
                 "clone",
+                *clone_options,
                 "--no-checkout",
                 "--no-tags",
                 "--quiet",
-                source.repository,
+                clone_source,
                 str(checkout),
             ],
             timeout_seconds=git_timeout_seconds,

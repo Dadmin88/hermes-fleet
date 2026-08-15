@@ -158,6 +158,42 @@ def test_source_requires_full_exact_lowercase_git_object_id(tmp_path) -> None:
             AgencySource(repository=str(repo), revision=invalid)
 
 
+def test_snapshot_cache_reuses_pinned_object_without_source_repository(
+    tmp_path, monkeypatch
+) -> None:
+    repo, revision = _repo(tmp_path)
+    cache_root = tmp_path / "agency-cache"
+    source = AgencySource(repository=str(repo), revision=revision)
+    monkeypatch.setenv("FLEET_AGENCY_CACHE_ROOT", str(cache_root))
+
+    with acquire_agency_snapshot(source) as snapshot:
+        package = snapshot.resolve_profile("agency-example")
+        assert package.name == "agency-example"
+        assert snapshot.checkout_root.is_relative_to(cache_root / "checkouts")
+
+    shutil.rmtree(repo)
+
+    with acquire_agency_snapshot(source) as snapshot:
+        package = snapshot.resolve_profile("agency-example")
+        assert package.content_digest == DIGEST
+        assert snapshot.checkout_root.is_relative_to(cache_root / "checkouts")
+
+    repositories = list((cache_root / "repositories").glob("*.git"))
+    assert len(repositories) == 1
+    assert _git(repositories[0], "rev-parse", "--is-bare-repository") == "true"
+    assert list((cache_root / "checkouts").iterdir()) == []
+
+
+def test_snapshot_cache_root_must_be_absolute(tmp_path) -> None:
+    repo, revision = _repo(tmp_path)
+    with pytest.raises(AgencySnapshotError, match="cache root must be an absolute"):
+        with acquire_agency_snapshot(
+            AgencySource(str(repo), revision),
+            cache_root=Path("relative-cache"),
+        ):
+            pass
+
+
 def test_acquisition_fails_when_exact_revision_is_not_in_repository(tmp_path) -> None:
     repo, _ = _repo(tmp_path)
     source = AgencySource(repository=str(repo), revision="a" * 40)
