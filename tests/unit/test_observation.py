@@ -246,6 +246,7 @@ def test_build_observation_reports_worker_capacity_and_optional_linux_resources(
             "run_submission": True,
             "run_status": True,
             "run_stop": True,
+            "run_finalize": True,
         },
         active_workers=1,
         max_workers=2,

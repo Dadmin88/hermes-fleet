@@ -147,6 +147,16 @@ class Runtime:
             raise RuntimeError("known terminal failure")
         return HermesRunResult(run_id=run_id, text="FX8_OK")
 
+    def finalize(self, profile, *, run_id, timeout_seconds):
+        self.events.append("finalize")
+        assert profile == "fleet-exec-execution-1"
+        assert run_id == "hermes-run-1"
+        assert timeout_seconds > 0
+        if self.fail_at == "finalize":
+            raise RuntimeError("quiescence unavailable")
+        status = "failed" if self.fail_at == "wait" else "completed"
+        return {"run_id": run_id, "status": status, "quiescent": True}
+
     def cleanup(self, profile, *, expected_owner):
         self.events.append("cleanup")
         assert expected_owner == "execution-1"
@@ -243,7 +253,14 @@ def test_destination_success_uses_execution_instance_and_cleans_profile(
     )
 
     assert result == "completed"
-    assert events == ["secrets", "materialize", "start", "wait", "cleanup"]
+    assert events == [
+        "secrets",
+        "materialize",
+        "start",
+        "wait",
+        "finalize",
+        "cleanup",
+    ]
     assert [phase["kind"] for phase in control.transitions] == [
         "prepared",
         "running",
@@ -296,6 +313,34 @@ def test_recipe_scoped_tool_approval_rejects_unsupported_mode(tmp_path) -> None:
         )
 
 
+def test_quiescence_failure_preserves_profile_and_returns_indeterminate(
+    tmp_path,
+) -> None:
+    service, control, runtime, events = executor(tmp_path, fail_at="finalize")
+    incoming = Incoming()
+
+    result = asyncio.run(
+        service.execute(
+            package=package(),
+            authenticated_sender="peer-controller-1",
+            incoming=incoming,
+        )
+    )
+
+    assert result == "indeterminate"
+    assert events == ["secrets", "materialize", "start", "wait", "finalize"]
+    assert [phase["kind"] for phase in control.transitions] == [
+        "prepared",
+        "running",
+        "completed",
+        "cleanup_pending",
+    ]
+    assert runtime.cleaned is False
+    assert (tmp_path / "fleet-exec-execution-1" / "marker").read_text() == "execution-1"
+    assert incoming.failed == "Hermes execution outcome is indeterminate"
+    assert incoming.completed is None
+
+
 def test_known_hermes_failure_is_durable_cleaned_and_failed_to_keryx(tmp_path) -> None:
     service, control, runtime, events = executor(tmp_path, fail_at="wait")
     incoming = Incoming()
@@ -309,7 +354,14 @@ def test_known_hermes_failure_is_durable_cleaned_and_failed_to_keryx(tmp_path) -
     )
 
     assert result == "failed"
-    assert events == ["secrets", "materialize", "start", "wait", "cleanup"]
+    assert events == [
+        "secrets",
+        "materialize",
+        "start",
+        "wait",
+        "finalize",
+        "cleanup",
+    ]
     assert [phase["kind"] for phase in control.transitions] == [
         "prepared",
         "running",
@@ -410,7 +462,7 @@ def test_restart_reconciles_exact_completed_run_without_start_or_secrets(
 
     assert result == "completed"
     assert runtime.start_calls == 0
-    assert events == ["inspect", "cleanup"]
+    assert events == ["inspect", "finalize", "cleanup"]
     assert [phase["kind"] for phase in control.transitions] == [
         "completed",
         "cleanup_pending",

@@ -105,6 +105,7 @@ class HermesRunsClient:
             "run_submission": False,
             "run_status": False,
             "run_stop": False,
+            "run_finalize": False,
         }
         deadline = None
         if timeout_seconds is not None:
@@ -146,6 +147,7 @@ class HermesRunsClient:
             "run_submission": features.get("run_submission") is True,
             "run_status": features.get("run_status") is True,
             "run_stop": features.get("run_stop") is True,
+            "run_finalize": features.get("run_finalize") is True,
         }
 
     def start(
@@ -285,6 +287,55 @@ class HermesRunsClient:
         if state in {"failed", "cancelled"}:
             return HermesRunInspection(run_id=run_id, status=state, text=None)
         raise HermesRunError("Hermes returned an unsupported run status")
+
+    def finalize(self, run_id: str, *, timeout_seconds: float) -> dict[str, Any]:
+        """Require Hermes to prove profile-owned runtime state is quiescent.
+
+        The endpoint is idempotent.  Short-lived 409 responses are retryable
+        because terminal status can become visible a few milliseconds before
+        the API task finishes its own in-process cleanup.
+        """
+        if type(run_id) is not str or not run_id:
+            raise ValueError("Hermes run ID must be a nonempty string")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int | float)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("Hermes finalization timeout must be positive")
+
+        deadline = time.monotonic() + float(timeout_seconds)
+        retryable_codes = {
+            "run_finalization_pending",
+            "run_profile_busy",
+            "run_not_terminal",
+        }
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HermesRunIndeterminate("Hermes run quiescence is indeterminate")
+            status_code, document = self._request_json(
+                "POST",
+                self._path(f"/v1/runs/{run_id}/finalize"),
+                timeout_seconds=remaining,
+            )
+            if status_code == 200:
+                if (
+                    document.get("run_id") != run_id
+                    or document.get("quiescent") is not True
+                    or document.get("status")
+                    not in {"completed", "failed", "cancelled"}
+                ):
+                    raise HermesRunError("Hermes finalization response is invalid")
+                return document
+            if status_code == 404:
+                raise HermesRunIndeterminate("Hermes run finalization is unavailable")
+            error = document.get("error")
+            code = error.get("code") if isinstance(error, dict) else None
+            if status_code == 409 and code in retryable_codes:
+                time.sleep(min(self._poll_interval_seconds, remaining))
+                continue
+            raise HermesRunError("Hermes run finalization failed")
 
     def stop(self, run_id: str, *, timeout_seconds: float | None = None) -> None:
         """Request and confirm cooperative stop for one exact known run."""

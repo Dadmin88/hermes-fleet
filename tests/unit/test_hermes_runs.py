@@ -83,6 +83,7 @@ class _RunsAPI:
                                 "run_submission": True,
                                 "run_status": True,
                                 "run_stop": True,
+                                "run_finalize": True,
                             },
                         },
                     )
@@ -203,8 +204,105 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_submission": True,
         "run_status": True,
         "run_stop": True,
+        "run_finalize": True,
     }
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
+
+
+def test_hermes_runs_client_finalizes_after_retryable_pending_state(
+    monkeypatch,
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    client = HermesRunsClient(
+        endpoint="http://127.0.0.1:8642",
+        api_key="[REDACTED]",
+        poll_interval_seconds=0.001,
+    )
+    calls: list[tuple[str, str]] = []
+    responses = iter(
+        (
+            (
+                409,
+                {
+                    "error": {
+                        "code": "run_finalization_pending",
+                        "message": "pending",
+                    }
+                },
+            ),
+            (
+                200,
+                {
+                    "object": "hermes.run.finalization",
+                    "run_id": "run-test",
+                    "status": "completed",
+                    "quiescent": True,
+                    "session_db_released": True,
+                    "log_handlers_released": 2,
+                },
+            ),
+        )
+    )
+
+    def request_json(method, path, document=None, *, timeout_seconds=None):
+        del document, timeout_seconds
+        calls.append((method, path))
+        return next(responses)
+
+    monkeypatch.setattr(client, "_request_json", request_json)
+
+    result = client.finalize("run-test", timeout_seconds=1.0)
+
+    assert result["quiescent"] is True
+    assert calls == [
+        ("POST", "/v1/runs/run-test/finalize"),
+        ("POST", "/v1/runs/run-test/finalize"),
+    ]
+
+
+def test_hermes_runs_client_rejects_malformed_finalization(monkeypatch) -> None:
+    from hermes_fleet.hermes_runs import HermesRunError, HermesRunsClient
+
+    client = HermesRunsClient(
+        endpoint="http://127.0.0.1:8642",
+        api_key="[REDACTED]",
+    )
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *args, **kwargs: (
+            200,
+            {
+                "object": "hermes.run.finalization",
+                "run_id": "run-test",
+                "status": "completed",
+                "quiescent": False,
+            },
+        ),
+    )
+
+    with pytest.raises(HermesRunError, match="finalization response is invalid"):
+        client.finalize("run-test", timeout_seconds=1.0)
+
+
+def test_hermes_runs_client_treats_missing_finalization_as_indeterminate(
+    monkeypatch,
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunIndeterminate, HermesRunsClient
+
+    client = HermesRunsClient(
+        endpoint="http://127.0.0.1:8642",
+        api_key="[REDACTED]",
+    )
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *args, **kwargs: (404, {"error": {"code": "run_not_found"}}),
+    )
+
+    with pytest.raises(HermesRunIndeterminate, match="finalization is unavailable"):
+        client.finalize("run-test", timeout_seconds=1.0)
 
 
 def test_hermes_runs_client_classifies_exact_run_without_mutation() -> None:
@@ -248,6 +346,7 @@ def test_hermes_runs_client_health_shares_one_absolute_request_budget(
                 "run_submission": True,
                 "run_status": True,
                 "run_stop": True,
+                "run_finalize": True,
             },
         }
 

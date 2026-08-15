@@ -429,6 +429,18 @@ class ProfileHermesRuntime:
             approval_mode=approval_mode,
         )
 
+    def finalize(
+        self,
+        profile: str,
+        *,
+        run_id: str,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        return self._client(profile).finalize(
+            run_id=run_id,
+            timeout_seconds=timeout_seconds,
+        )
+
     def stop(
         self, profile: str, run_id: str, *, timeout_seconds: float | None = None
     ) -> None:

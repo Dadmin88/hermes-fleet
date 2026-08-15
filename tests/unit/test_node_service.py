@@ -102,6 +102,7 @@ class _Hermes:
             "run_submission": self.healthy,
             "run_status": self.healthy,
             "run_stop": self.healthy,
+            "run_finalize": self.healthy,
         }
 
     def start(self, **_kwargs):  # pragma: no cover - service lifecycle only

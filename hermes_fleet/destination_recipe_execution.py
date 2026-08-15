@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
@@ -13,6 +14,7 @@ from .profile_runtime import LocalFileSecret
 
 _BACKEND_KIND = "hermes.local/profile-runs"
 _APPROVAL_EXTENSION = "fleet.hermes/approvals.v1"
+_FINALIZE_TIMEOUT_SECONDS = 5.0
 
 
 class DestinationExecutionError(RuntimeError):
@@ -41,6 +43,14 @@ class DestinationRuntime(Protocol):
         timeout_seconds: float,
         approval_mode: str | None = None,
     ) -> Any: ...
+
+    def finalize(
+        self,
+        profile: str,
+        *,
+        run_id: str,
+        timeout_seconds: float,
+    ) -> dict[str, Any]: ...
 
     def cleanup(self, profile: str, *, expected_owner: str) -> None: ...
 
@@ -293,9 +303,16 @@ class DestinationRecipeExecutor:
                         "realization_id": profile,
                         "keryx_task_id": package.execution_id,
                         "hermes_run_id": run_id,
-                        "reason": "failed Hermes run requires profile cleanup",
+                        "reason": "failed Hermes run requires quiescent profile cleanup",
                     },
                 )
+                try:
+                    await self._finalize_profile(profile, run_id)
+                except Exception:
+                    await _fail_incoming(
+                        incoming, "Hermes execution outcome is indeterminate"
+                    )
+                    return "indeterminate"
                 self._runtime.cleanup(profile, expected_owner=package.execution_id)
                 self._transition(package.execution_id, generation, {"kind": "cleaned"})
                 await _fail_incoming(incoming, "Hermes execution failed")
@@ -325,9 +342,14 @@ class DestinationRecipeExecutor:
                     "realization_id": profile,
                     "keryx_task_id": package.execution_id,
                     "hermes_run_id": run_id,
-                    "reason": "terminal Hermes run requires profile cleanup",
+                    "reason": "terminal Hermes run requires quiescent profile cleanup",
                 },
             )
+            try:
+                await self._finalize_profile(profile, run_id)
+            except Exception:
+                await _fail_incoming(incoming, "Hermes execution outcome is indeterminate")
+                return "indeterminate"
             self._runtime.cleanup(profile, expected_owner=package.execution_id)
             self._transition(package.execution_id, generation, {"kind": "cleaned"})
             complete = getattr(incoming, "complete", None)
@@ -393,9 +415,14 @@ class DestinationRecipeExecutor:
                 "realization_id": profile,
                 "keryx_task_id": package.execution_id,
                 "hermes_run_id": run_id,
-                "reason": "reconciled Hermes run requires profile cleanup",
+                "reason": "reconciled Hermes run requires quiescent profile cleanup",
             },
         )
+        try:
+            await self._finalize_profile(profile, run_id)
+        except Exception:
+            await _fail_incoming(incoming, "Hermes execution outcome is indeterminate")
+            return "indeterminate"
         self._runtime.cleanup(profile, expected_owner=package.execution_id)
         self._transition(package.execution_id, generation, {"kind": "cleaned"})
         complete = getattr(incoming, "complete", None)
@@ -409,6 +436,23 @@ class DestinationRecipeExecutor:
             )
         )
         return "completed"
+
+    async def _finalize_profile(self, profile: str, run_id: str) -> dict[str, Any]:
+        """Require Hermes quiescence before deleting execution-owned state."""
+        document = await asyncio.to_thread(
+            self._runtime.finalize,
+            profile,
+            run_id=run_id,
+            timeout_seconds=_FINALIZE_TIMEOUT_SECONDS,
+        )
+        if (
+            type(document) is not dict
+            or document.get("run_id") != run_id
+            or document.get("quiescent") is not True
+            or document.get("status") not in {"completed", "failed", "cancelled"}
+        ):
+            raise DestinationExecutionError("Hermes profile quiescence is unproven")
+        return document
 
     def _transition(
         self, execution_id: str, generation: int, phase: dict[str, Any]

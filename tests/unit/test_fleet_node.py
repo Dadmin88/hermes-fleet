@@ -179,6 +179,7 @@ class _Hermes:
             "run_submission": True,
             "run_status": True,
             "run_stop": True,
+            "run_finalize": True,
         }
 
     def start(
@@ -379,6 +380,7 @@ def test_fleet_node_health_and_inventory_never_start_hermes(tmp_path) -> None:
             "api": "healthy",
             "run_status": True,
             "run_stop": True,
+            "run_finalize": True,
             "run_submission": True,
         },
         "keryx_delivery": "received",
@@ -436,6 +438,7 @@ def test_fleet_node_health_fails_within_remaining_absolute_deadline(tmp_path) ->
                 "run_submission": True,
                 "run_status": True,
                 "run_stop": True,
+            "run_finalize": True,
             }
 
     operation = "fleet.health"
