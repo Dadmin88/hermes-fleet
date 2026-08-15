@@ -84,6 +84,7 @@ class _RunsAPI:
                                 "run_status": True,
                                 "run_stop": True,
                                 "run_finalize": True,
+                                "run_approval_budget": True,
                             },
                         },
                     )
@@ -205,6 +206,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_status": True,
         "run_stop": True,
         "run_finalize": True,
+        "run_approval_budget": True,
     }
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
 
@@ -347,6 +349,7 @@ def test_hermes_runs_client_health_shares_one_absolute_request_budget(
                 "run_status": True,
                 "run_stop": True,
                 "run_finalize": True,
+                "run_approval_budget": True,
             },
         }
 
@@ -437,14 +440,26 @@ def test_hermes_runs_client_resolves_recipe_scoped_approval_once() -> None:
             api_key="[REDACTED]",
             poll_interval_seconds=0.001,
         )
-        run_id = client.start(prompt="Do approved work.", timeout_seconds=1)
+        run_id = client.start(
+            prompt="Do approved work.",
+            approval_budget=1,
+            timeout_seconds=1,
+        )
         result = client.wait(
             run_id=run_id,
             timeout_seconds=1,
             approval_mode="once",
+            approval_budget=1,
         )
 
     assert result.text == "done"
+    assert any(
+        method == "POST"
+        and path.endswith("/v1/runs")
+        and body is not None
+        and body.get("approval_budget") == 1
+        for method, path, _, body in api.requests
+    )
     assert any(
         method == "POST"
         and path.endswith("/approval")
@@ -452,6 +467,43 @@ def test_hermes_runs_client_resolves_recipe_scoped_approval_once() -> None:
         for method, path, _, body in api.requests
     )
     assert not any(path.endswith("/stop") for _, path, _, _ in api.requests)
+
+
+def test_hermes_runs_client_refuses_approval_beyond_budget() -> None:
+    from hermes_fleet.hermes_runs import HermesRunError, HermesRunsClient
+
+    api = _RunsAPI(
+        [
+            {"status": "waiting_for_approval"},
+            {"status": "waiting_for_approval"},
+        ]
+    )
+    with api.serve() as endpoint:
+        client = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="[REDACTED]",
+            poll_interval_seconds=0.001,
+        )
+        run_id = client.start(
+            prompt="Try too many approvals.",
+            approval_budget=1,
+            timeout_seconds=1,
+        )
+        with pytest.raises(HermesRunError, match="exceeded approval budget"):
+            client.wait(
+                run_id=run_id,
+                timeout_seconds=1,
+                approval_mode="once",
+                approval_budget=1,
+            )
+
+    approval_posts = [
+        request
+        for request in api.requests
+        if request[0] == "POST" and request[1].endswith("/approval")
+    ]
+    assert len(approval_posts) == 1
+    assert any(path.endswith("/stop") for _, path, _, _ in api.requests)
 
 
 def test_hermes_runs_client_requests_stop_at_the_fleet_deadline() -> None:

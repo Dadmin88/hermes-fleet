@@ -106,6 +106,7 @@ class HermesRunsClient:
             "run_status": False,
             "run_stop": False,
             "run_finalize": False,
+            "run_approval_budget": False,
         }
         deadline = None
         if timeout_seconds is not None:
@@ -148,6 +149,7 @@ class HermesRunsClient:
             "run_status": features.get("run_status") is True,
             "run_stop": features.get("run_stop") is True,
             "run_finalize": features.get("run_finalize") is True,
+            "run_approval_budget": features.get("run_approval_budget") is True,
         }
 
     def start(
@@ -155,6 +157,7 @@ class HermesRunsClient:
         *,
         prompt: str,
         session_id: str | None = None,
+        approval_budget: int | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
         """Create exactly one run and return its server-generated ID."""
@@ -167,9 +170,15 @@ class HermesRunsClient:
             or any(ord(character) < 32 for character in session_id)
         ):
             raise ValueError("Hermes session ID must be bounded text")
+        if approval_budget is not None and (
+            type(approval_budget) is not int or not 1 <= approval_budget <= 32
+        ):
+            raise ValueError("Hermes approval budget must be between 1 and 32")
         request = {"input": prompt}
         if session_id is not None:
             request["session_id"] = session_id
+        if approval_budget is not None:
+            request["approval_budget"] = approval_budget
         try:
             status_code, document = self._request_json(
                 "POST",
@@ -192,6 +201,7 @@ class HermesRunsClient:
         run_id: str,
         timeout_seconds: float,
         approval_mode: str | None = None,
+        approval_budget: int | None = None,
     ) -> HermesRunResult:
         """Poll one known run to terminal text without creating another run."""
         if type(run_id) is not str or not run_id:
@@ -204,7 +214,14 @@ class HermesRunsClient:
             raise ValueError("Hermes run timeout must be positive")
         if approval_mode not in {None, "once"}:
             raise ValueError("Hermes approval mode is invalid")
+        if approval_budget is not None and (
+            type(approval_budget) is not int or not 1 <= approval_budget <= 32
+        ):
+            raise ValueError("Hermes approval budget must be between 1 and 32")
+        if approval_budget is not None and approval_mode != "once":
+            raise ValueError("Hermes approval budget requires once approval mode")
 
+        approvals_granted = 0
         deadline = time.monotonic() + float(timeout_seconds)
         while True:
             remaining = deadline - time.monotonic()
@@ -228,6 +245,12 @@ class HermesRunsClient:
                 return HermesRunResult(run_id=run_id, text=output)
             if state == "waiting_for_approval":
                 if approval_mode == "once":
+                    if (
+                        approval_budget is not None
+                        and approvals_granted >= approval_budget
+                    ):
+                        self.stop(run_id, timeout_seconds=min(0.25, remaining))
+                        raise HermesRunError("Hermes run exceeded approval budget")
                     approval_status, _ = self._request_json(
                         "POST",
                         self._path(f"/v1/runs/{run_id}/approval"),
@@ -235,6 +258,7 @@ class HermesRunsClient:
                         timeout_seconds=remaining,
                     )
                     if approval_status == 200:
+                        approvals_granted += 1
                         continue
                     self.stop(run_id, timeout_seconds=min(0.25, remaining))
                     raise HermesRunError("Hermes run approval failed")

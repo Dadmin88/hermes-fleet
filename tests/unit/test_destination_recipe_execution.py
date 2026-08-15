@@ -128,8 +128,17 @@ class Runtime:
         assert secrets == {}
         return profile.name
 
-    def start(self, profile, *, prompt, session_id, timeout_seconds):
+    def start(
+        self,
+        profile,
+        *,
+        prompt,
+        session_id,
+        timeout_seconds,
+        approval_budget=None,
+    ):
         self.start_calls += 1
+        self.approval_budget = approval_budget
         self.events.append("start")
         assert profile == "fleet-exec-execution-1"
         assert prompt == "Return the exact FX8 marker."
@@ -140,9 +149,18 @@ class Runtime:
             raise HermesRunError("deterministic start rejection")
         return "hermes-run-1"
 
-    def wait(self, profile, *, run_id, timeout_seconds, approval_mode=None):
+    def wait(
+        self,
+        profile,
+        *,
+        run_id,
+        timeout_seconds,
+        approval_mode=None,
+        approval_budget=None,
+    ):
         self.events.append("wait")
         self.approval_mode = approval_mode
+        self.approval_budget = approval_budget
         if self.fail_at == "wait":
             raise RuntimeError("known terminal failure")
         return HermesRunResult(run_id=run_id, text="FX8_OK")
@@ -284,7 +302,12 @@ def test_recipe_scoped_tool_approval_is_forwarded_once(tmp_path) -> None:
     result = asyncio.run(
         service.execute(
             package=package(
-                extensions={"fleet.hermes/approvals.v1": {"mode": "once"}}
+                extensions={
+                    "fleet.hermes/approvals.v1": {
+                        "mode": "once",
+                        "max_requests": 4,
+                    }
+                }
             ),
             authenticated_sender="peer-controller-1",
             incoming=incoming,
@@ -293,6 +316,7 @@ def test_recipe_scoped_tool_approval_is_forwarded_once(tmp_path) -> None:
 
     assert result == "completed"
     assert runtime.approval_mode == "once"
+    assert runtime.approval_budget == 4
 
 
 def test_recipe_scoped_tool_approval_rejects_unsupported_mode(tmp_path) -> None:

@@ -16,6 +16,7 @@ def _health() -> dict[str, object]:
         "run_status": True,
         "run_stop": True,
         "run_finalize": True,
+        "run_approval_budget": True,
     }
 
 

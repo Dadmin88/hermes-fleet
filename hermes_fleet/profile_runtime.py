@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ _DESTINATION_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _TOOLSET_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _MAX_FILE_SECRET_BYTES = 1_048_576
 _MAX_EXECUTION_TOOLSETS = 32
+_TOOLSETS_EXTENSION = "fleet.hermes/toolsets.v1"
 _MAX_MODEL_CONFIG_BYTES = 65_536
 _SECRET_MODEL_KEY_MARKERS = (
     "apikey",
@@ -35,6 +36,38 @@ _SECRET_MODEL_KEY_MARKERS = (
     "secret",
     "token",
 )
+
+
+def _recipe_toolsets(
+    package: ExactExecutionPackage,
+    *,
+    ceiling: tuple[str, ...],
+) -> tuple[str, ...]:
+    extension = package.resolved_recipe.extensions.get(_TOOLSETS_EXTENSION)
+    if extension is None:
+        return ()
+    if (
+        not isinstance(extension, Mapping)
+        or set(extension) != {"names"}
+        or type(extension.get("names")) not in {list, tuple}
+    ):
+        raise ValueError("execution toolsets extension is invalid")
+    names = extension["names"]
+    if (
+        len(names) > _MAX_EXECUTION_TOOLSETS
+        or any(
+            type(name) is not str or _TOOLSET_RE.fullmatch(name) is None
+            for name in names
+        )
+        or len(set(names)) != len(names)
+    ):
+        raise ValueError("execution toolsets extension is invalid")
+    allowed = set(ceiling)
+    if any(name not in allowed for name in names):
+        raise ValueError("execution Recipe requests a disallowed toolset")
+    return tuple(names)
+
+
 _RESERVED_ENV = frozenset(
     {
         "PATH",
@@ -329,8 +362,9 @@ class ProfileHermesRuntime:
         if type(package) is not ExactExecutionPackage:
             raise ValueError("execution package is invalid")
         model_config = _load_model_config(self._model_config_path)
-        if self._toolsets:
-            model_config["platform_toolsets"] = {"api_server": list(self._toolsets)}
+        recipe_toolsets = _recipe_toolsets(package, ceiling=self._toolsets)
+        if recipe_toolsets:
+            model_config["platform_toolsets"] = {"api_server": list(recipe_toolsets)}
         profile = _EXECUTION_PROFILE
         destination = self._profiles_root / profile
         environment: dict[str, str] = {}
@@ -407,11 +441,13 @@ class ProfileHermesRuntime:
         prompt: str,
         session_id: str,
         timeout_seconds: float,
+        approval_budget: int | None = None,
     ) -> str:
         client = self._client(profile)
         return client.start(
             prompt=prompt,
             session_id=session_id,
+            approval_budget=approval_budget,
             timeout_seconds=timeout_seconds,
         )
 
@@ -422,11 +458,13 @@ class ProfileHermesRuntime:
         run_id: str,
         timeout_seconds: float,
         approval_mode: str | None = None,
+        approval_budget: int | None = None,
     ) -> Any:
         return self._client(profile).wait(
             run_id=run_id,
             timeout_seconds=timeout_seconds,
             approval_mode=approval_mode,
+            approval_budget=approval_budget,
         )
 
     def finalize(

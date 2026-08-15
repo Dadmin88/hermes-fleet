@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from .execution_package import ExactExecutionPackage
@@ -21,6 +22,12 @@ class DestinationExecutionError(RuntimeError):
     """The destination cannot safely execute or reconcile an exact package."""
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalPolicy:
+    mode: str
+    max_requests: int
+
+
 class DestinationRuntime(Protocol):
     def materialize(
         self, package: ExactExecutionPackage, *, secrets: dict[str, str]
@@ -33,6 +40,7 @@ class DestinationRuntime(Protocol):
         prompt: str,
         session_id: str,
         timeout_seconds: float,
+        approval_budget: int | None = None,
     ) -> str: ...
 
     def wait(
@@ -42,6 +50,7 @@ class DestinationRuntime(Protocol):
         run_id: str,
         timeout_seconds: float,
         approval_mode: str | None = None,
+        approval_budget: int | None = None,
     ) -> Any: ...
 
     def finalize(
@@ -111,7 +120,11 @@ class DestinationRecipeExecutor:
             raise DestinationExecutionError("execution policy authorization is stale")
         if package.capabilities_hash != capabilities_hash:
             raise DestinationExecutionError("execution capabilities are stale")
-        approval_mode = _approval_mode(package)
+        approval_policy = _approval_policy(package)
+        approval_mode = approval_policy.mode if approval_policy is not None else None
+        approval_budget = (
+            approval_policy.max_requests if approval_policy is not None else None
+        )
 
         instance = {
             "instance_id": package.execution_id,
@@ -200,6 +213,7 @@ class DestinationRecipeExecutor:
                     profile,
                     prompt=package.prompt,
                     session_id=f"fleet:{package.execution_id}",
+                    approval_budget=approval_budget,
                     timeout_seconds=remaining,
                 )
             except HermesRunSubmissionUnknown:
@@ -264,6 +278,7 @@ class DestinationRecipeExecutor:
                     run_id=run_id,
                     timeout_seconds=remaining,
                     approval_mode=approval_mode,
+                    approval_budget=approval_budget,
                 )
             except TimeoutError:
                 self._transition(
@@ -470,13 +485,19 @@ class DestinationRecipeExecutor:
         return next_generation
 
 
-def _approval_mode(package: ExactExecutionPackage) -> str | None:
+def _approval_policy(package: ExactExecutionPackage) -> ApprovalPolicy | None:
     approval = package.resolved_recipe.extensions.get(_APPROVAL_EXTENSION)
     if approval is None:
         return None
-    if approval != {"mode": "once"}:
+    if (
+        not isinstance(approval, Mapping)
+        or set(approval) != {"mode", "max_requests"}
+        or approval.get("mode") != "once"
+        or type(approval.get("max_requests")) is not int
+        or not 1 <= approval["max_requests"] <= 32
+    ):
         raise DestinationExecutionError("execution approval extension is invalid")
-    return "once"
+    return ApprovalPolicy(mode="once", max_requests=approval["max_requests"])
 
 
 def _secret_refs_digest(references: list[str]) -> str:

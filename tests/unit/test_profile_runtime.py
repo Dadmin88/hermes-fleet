@@ -18,7 +18,7 @@ HASH_3 = "sha256:" + "3" * 64
 HASH_4 = "sha256:" + "4" * 64
 
 
-def package(payload: bytes) -> ExactExecutionPackage:
+def package(payload: bytes, *, extensions: dict | None = None) -> ExactExecutionPackage:
     recipe = ResolvedRecipe.from_dict(
         {
             "schema": "fleet.resolved-recipe.v1",
@@ -31,7 +31,7 @@ def package(payload: bytes) -> ExactExecutionPackage:
                 "version": "1.0.0",
                 "content_digest": HASH_2,
             },
-            "extensions": {},
+            "extensions": extensions or {},
         }
     )
     return ExactExecutionPackage(
@@ -68,12 +68,21 @@ class Runs:
         self.profile = profile
         self.calls = calls
 
-    def start(self, *, prompt, session_id, timeout_seconds):
+    def start(self, *, prompt, session_id, timeout_seconds, approval_budget=None):
+        self.approval_budget = approval_budget
         self.calls.append(("start", self.profile, prompt, session_id))
         return "run-1"
 
-    def wait(self, *, run_id, timeout_seconds, approval_mode=None):
+    def wait(
+        self,
+        *,
+        run_id,
+        timeout_seconds,
+        approval_mode=None,
+        approval_budget=None,
+    ):
         self.approval_mode = approval_mode
+        self.approval_budget = approval_budget
         self.calls.append(("wait", self.profile, run_id))
         return HermesRunResult(run_id=run_id, text="done")
 
@@ -83,6 +92,25 @@ class Runs:
     def status(self, run_id):
         self.calls.append(("status", self.profile, run_id))
         return "running"
+
+
+def test_recipe_toolsets_default_to_no_tools() -> None:
+    from hermes_fleet.profile_runtime import _recipe_toolsets
+
+    assert _recipe_toolsets(package(b"x"), ceiling=("fleet-terminal",)) == ()
+
+
+def test_recipe_toolsets_must_fit_node_ceiling() -> None:
+    from hermes_fleet.profile_runtime import _recipe_toolsets
+
+    value = package(
+        b"x",
+        extensions={
+            "fleet.hermes/toolsets.v1": {"names": ["fleet-terminal"]}
+        },
+    )
+    with pytest.raises(ValueError, match="disallowed toolset"):
+        _recipe_toolsets(value, ceiling=("file",))
 
 
 def execution_slot(root: Path) -> Path:
@@ -141,7 +169,12 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
         _profile_content_digest(source, "acceptance", "1.0.0"),
     )
     bundle = bundle_agency_profile(agency)
-    value = package(bundle.payload)
+    value = package(
+        bundle.payload,
+        extensions={
+            "fleet.hermes/toolsets.v1": {"names": ["fleet-terminal"]}
+        },
+    )
     object.__setattr__(value, "resolved_recipe", value.resolved_recipe)
     object.__setattr__(value, "agency_bundle", bundle)
     calls: list[tuple] = []

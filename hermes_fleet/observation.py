@@ -455,7 +455,13 @@ def build_observation(
         and hermes_health.get("api") == "healthy"
         and all(
             hermes_health.get(field) is True
-            for field in ("run_submission", "run_status", "run_stop", "run_finalize")
+            for field in (
+                "run_submission",
+                "run_status",
+                "run_stop",
+                "run_finalize",
+                "run_approval_budget",
+            )
         )
     )
     sample = {
