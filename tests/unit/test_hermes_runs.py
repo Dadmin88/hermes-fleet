@@ -86,6 +86,7 @@ class _RunsAPI:
                                 "run_finalize": True,
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
+                                "run_command_evidence": True,
                             },
                         },
                     )
@@ -209,6 +210,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_finalize": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
+        "run_command_evidence": True,
     }
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
 
@@ -353,6 +355,7 @@ def test_hermes_runs_client_health_shares_one_absolute_request_budget(
                 "run_finalize": True,
                 "run_approval_budget": True,
                 "run_tool_evidence": True,
+                "run_command_evidence": True,
             },
         }
 

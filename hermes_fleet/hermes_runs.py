@@ -108,6 +108,7 @@ class HermesRunsClient:
             "run_finalize": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
+            "run_command_evidence": False,
         }
         deadline = None
         if timeout_seconds is not None:
@@ -152,6 +153,7 @@ class HermesRunsClient:
             "run_finalize": features.get("run_finalize") is True,
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
+            "run_command_evidence": features.get("run_command_evidence") is True,
         }
 
     def start(

@@ -33,8 +33,9 @@ class ApprovalPolicy:
 
 @dataclass(frozen=True, slots=True)
 class OutcomePolicy:
-    min_successful_tool_calls: int
-    require_last_tool_success: bool
+    min_successful_commands: int
+    require_last_command_success: bool
+    require_no_pending_processes: bool
 
 
 class DestinationRuntime(Protocol):
@@ -636,17 +637,24 @@ def _outcome_policy(package: ExactExecutionPackage) -> OutcomePolicy | None:
     outcome = package.resolved_recipe.extensions.get(_OUTCOME_EXTENSION)
     if outcome is None:
         return None
+    expected = {
+        "min_successful_commands",
+        "require_last_command_success",
+        "require_no_pending_processes",
+    }
     if (
         not isinstance(outcome, Mapping)
-        or set(outcome) != {"min_successful_tool_calls", "require_last_tool_success"}
-        or type(outcome.get("min_successful_tool_calls")) is not int
-        or not 0 <= outcome["min_successful_tool_calls"] <= 32
-        or type(outcome.get("require_last_tool_success")) is not bool
+        or set(outcome) != expected
+        or type(outcome.get("min_successful_commands")) is not int
+        or not 0 <= outcome["min_successful_commands"] <= 32
+        or type(outcome.get("require_last_command_success")) is not bool
+        or type(outcome.get("require_no_pending_processes")) is not bool
     ):
         raise DestinationExecutionError("execution outcome extension is invalid")
     return OutcomePolicy(
-        min_successful_tool_calls=outcome["min_successful_tool_calls"],
-        require_last_tool_success=outcome["require_last_tool_success"],
+        min_successful_commands=outcome["min_successful_commands"],
+        require_last_command_success=outcome["require_last_command_success"],
+        require_no_pending_processes=outcome["require_no_pending_processes"],
     )
 
 
@@ -656,27 +664,35 @@ def _verify_outcome_policy(
 ) -> tuple[str, str] | None:
     if policy is None:
         return None
-    tool_calls = finalization.get("tool_calls")
-    tool_errors = finalization.get("tool_errors")
-    last_tool_error = finalization.get("last_tool_error")
+    command_calls = finalization.get("command_calls")
+    command_errors = finalization.get("command_errors")
+    last_command_error = finalization.get("last_command_error")
+    pending_processes = finalization.get("pending_processes")
+    evidence_invalid = finalization.get("command_evidence_invalid")
     if (
-        type(tool_calls) is not int
-        or type(tool_errors) is not int
-        or tool_calls < 0
-        or tool_errors < 0
-        or tool_errors > tool_calls
-        or last_tool_error not in {None, False, True}
-        or (tool_calls == 0 and last_tool_error is not None)
-        or (tool_calls > 0 and type(last_tool_error) is not bool)
+        type(command_calls) is not int
+        or type(command_errors) is not int
+        or type(pending_processes) is not int
+        or type(evidence_invalid) is not bool
+        or command_calls < 0
+        or command_errors < 0
+        or command_errors > command_calls
+        or pending_processes < 0
+        or last_command_error not in {None, False, True}
+        or (command_calls == 0 and last_command_error is not None)
+        or (command_calls > 0 and type(last_command_error) is not bool)
+        or evidence_invalid
     ):
-        return "indeterminate", "Hermes tool outcome evidence is invalid"
-    successful_tool_calls = tool_calls - tool_errors
-    if successful_tool_calls < policy.min_successful_tool_calls:
-        return "failed", "Hermes tool outcome verification failed"
-    if policy.require_last_tool_success and (
-        tool_calls == 0 or last_tool_error is not False
+        return "indeterminate", "Hermes command outcome evidence is invalid"
+    if policy.require_no_pending_processes and pending_processes != 0:
+        return "indeterminate", "Hermes command outcome remains pending"
+    successful_commands = command_calls - command_errors
+    if successful_commands < policy.min_successful_commands:
+        return "failed", "Hermes command outcome verification failed"
+    if policy.require_last_command_success and (
+        command_calls == 0 or last_command_error is not False
     ):
-        return "failed", "Hermes tool outcome verification failed"
+        return "failed", "Hermes command outcome verification failed"
     return None
 
 

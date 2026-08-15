@@ -1022,6 +1022,7 @@ def _runs_available(health: object) -> bool:
                 "run_finalize",
                 "run_approval_budget",
                 "run_tool_evidence",
+                "run_command_evidence",
             )
         )
     )

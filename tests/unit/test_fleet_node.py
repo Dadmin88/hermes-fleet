@@ -182,6 +182,7 @@ class _Hermes:
             "run_finalize": True,
             "run_approval_budget": True,
             "run_tool_evidence": True,
+            "run_command_evidence": True,
         }
 
     def start(
@@ -385,6 +386,7 @@ def test_fleet_node_health_and_inventory_never_start_hermes(tmp_path) -> None:
             "run_finalize": True,
             "run_approval_budget": True,
             "run_tool_evidence": True,
+            "run_command_evidence": True,
             "run_submission": True,
         },
         "keryx_delivery": "received",
@@ -445,6 +447,7 @@ def test_fleet_node_health_fails_within_remaining_absolute_deadline(tmp_path) ->
                 "run_finalize": True,
                 "run_approval_budget": True,
                 "run_tool_evidence": True,
+                "run_command_evidence": True,
             }
 
     operation = "fleet.health"

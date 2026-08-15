@@ -123,6 +123,11 @@ class Runtime:
         self.tool_calls = 1
         self.tool_errors = 0
         self.last_tool_error: bool | None = False
+        self.command_calls = 1
+        self.command_errors = 0
+        self.last_command_error: bool | None = False
+        self.pending_processes = 0
+        self.command_evidence_invalid = False
 
     def materialize(self, package, *, secrets):
         self.events.append("materialize")
@@ -184,6 +189,11 @@ class Runtime:
             "tool_calls": self.tool_calls,
             "tool_errors": self.tool_errors,
             "last_tool_error": self.last_tool_error,
+            "command_calls": self.command_calls,
+            "command_errors": self.command_errors,
+            "last_command_error": self.last_command_error,
+            "pending_processes": self.pending_processes,
+            "command_evidence_invalid": self.command_evidence_invalid,
         }
 
     def cleanup(self, profile, *, expected_owner):
@@ -387,13 +397,14 @@ def test_quiescence_failure_preserves_profile_and_returns_indeterminate(
     }
 
 
-def test_outcome_policy_accepts_successful_tool_evidence(tmp_path) -> None:
+def test_outcome_policy_accepts_successful_command_evidence(tmp_path) -> None:
     service, control, runtime, events = executor(tmp_path)
     incoming = Incoming()
     outcome_extension = {
         "fleet.hermes/outcome.v1": {
-            "min_successful_tool_calls": 1,
-            "require_last_tool_success": True,
+            "min_successful_commands": 1,
+            "require_last_command_success": True,
+            "require_no_pending_processes": True,
         }
     }
 
@@ -425,17 +436,18 @@ def test_outcome_policy_accepts_successful_tool_evidence(tmp_path) -> None:
     assert incoming.completed[0]["parts"][0]["text"] == "FX8_OK"
 
 
-def test_outcome_policy_rejects_failed_last_tool_despite_model_success(
+def test_outcome_policy_rejects_failed_last_command_despite_model_success(
     tmp_path,
 ) -> None:
     service, control, runtime, events = executor(tmp_path)
-    runtime.tool_errors = 1
-    runtime.last_tool_error = True
+    runtime.command_errors = 1
+    runtime.last_command_error = True
     incoming = Incoming()
     outcome_extension = {
         "fleet.hermes/outcome.v1": {
-            "min_successful_tool_calls": 0,
-            "require_last_tool_success": True,
+            "min_successful_commands": 0,
+            "require_last_command_success": True,
+            "require_no_pending_processes": True,
         }
     }
 
@@ -466,7 +478,7 @@ def test_outcome_policy_rejects_failed_last_tool_despite_model_success(
     assert runtime.cleaned is True
     assert completed_outcome(incoming) == {
         "execution_id": "execution-1",
-        "reason": "Hermes tool outcome verification failed",
+        "reason": "Hermes command outcome verification failed",
         "schema": "fleet.execution-outcome.v1",
         "status": "failed",
     }
@@ -476,13 +488,14 @@ def test_outcome_policy_malformed_evidence_is_indeterminate_and_cleaned(
     tmp_path,
 ) -> None:
     service, control, runtime, _events = executor(tmp_path)
-    runtime.tool_calls = 1
-    runtime.tool_errors = 2
+    runtime.command_calls = 1
+    runtime.command_errors = 2
     incoming = Incoming()
     outcome_extension = {
         "fleet.hermes/outcome.v1": {
-            "min_successful_tool_calls": 0,
-            "require_last_tool_success": False,
+            "min_successful_commands": 0,
+            "require_last_command_success": False,
+            "require_no_pending_processes": True,
         }
     }
 
@@ -503,7 +516,51 @@ def test_outcome_policy_malformed_evidence_is_indeterminate_and_cleaned(
         "cleaned",
     ]
     assert runtime.cleaned is True
-    assert completed_outcome(incoming)["status"] == "indeterminate"
+    assert completed_outcome(incoming) == {
+        "execution_id": "execution-1",
+        "reason": "Hermes command outcome evidence is invalid",
+        "schema": "fleet.execution-outcome.v1",
+        "status": "indeterminate",
+    }
+
+
+def test_outcome_policy_pending_processes_are_indeterminate_and_cleaned(
+    tmp_path,
+) -> None:
+    service, control, runtime, _events = executor(tmp_path)
+    runtime.pending_processes = 1
+    incoming = Incoming()
+    outcome_extension = {
+        "fleet.hermes/outcome.v1": {
+            "min_successful_commands": 1,
+            "require_last_command_success": True,
+            "require_no_pending_processes": True,
+        }
+    }
+
+    result = asyncio.run(
+        service.execute(
+            package=package(extensions=outcome_extension),
+            authenticated_sender="peer-controller-1",
+            incoming=incoming,
+        )
+    )
+
+    assert result == "indeterminate"
+    assert [phase["kind"] for phase in control.transitions] == [
+        "prepared",
+        "running",
+        "indeterminate",
+        "cleanup_pending",
+        "cleaned",
+    ]
+    assert runtime.cleaned is True
+    assert completed_outcome(incoming) == {
+        "execution_id": "execution-1",
+        "reason": "Hermes command outcome remains pending",
+        "schema": "fleet.execution-outcome.v1",
+        "status": "indeterminate",
+    }
 
 
 def test_known_hermes_failure_is_durable_cleaned_and_failed_to_keryx(tmp_path) -> None:
