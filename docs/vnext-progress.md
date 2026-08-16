@@ -26,8 +26,8 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 2 | COMPLETE | [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md); Fleet-owned generic workshop, hardening/deadline binding, observed Docker verification, Hermes attach-only independent verification, real-Docker proofs. |
 | 3 | COMPLETE | [Phase 3 workspace isolation](vnext-phase3-workspace-isolation.md); canonicalized project projection, verified authority scope, distinct immutable read staging, separately authorized writable copies, declared/scanned artifact export, and real-Docker N+1 zero-residue proof. |
 | 4 | COMPLETE | [Phase 4 network isolation](vnext-phase4-network-isolation.md); four explicit modes, offline provider traffic, authority/DNS pinning, internal-only workshop topology, hardened Fleet CONNECT gateway, proxy non-bypass, lateral/management/rebinding denial, audit, and independent Hermes verification. |
-| 5 | NEXT | Controlled host-action broker. Build only structured, authority-checked host effects; never expose generic host power to a workshop. |
-| 6 | NOT STARTED | Persistent Hermes Agent Instances. |
+| 5 | COMPLETE | [Phase 5 host-action broker](vnext-phase5-host-action-broker.md); structured fixed verbs/targets, exact authority/policy/Recipe/target/parameter validation, race-safe budgets, sticky indeterminate idempotency, structured evidence, narrowing-only advisory seam, and real atomic host-effect proof. |
+| 6 | NEXT | Persistent Hermes Agent Instances. Replace disposable-profile run lifecycle with durable Hermes-native profile-backed Agent identity without importing later run state into the profile. |
 | 7 | NOT STARTED | Run-scoped Hermes execution overrides. |
 | 8 | NOT STARTED | Run Capsule lifecycle. |
 | 9 | NOT STARTED | Principal identity. |
@@ -64,16 +64,17 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 5.**
+**Next work begins at Phase 6.**
 
-Before implementing Phase 5:
+Before implementing Phase 6:
 
-1. read the exact controlled host-action broker requirements from the operator-supplied master plan;
-2. audit historical broker experiments only as candidate material, never as automatic completion;
-3. keep containers free of generic host power: no arbitrary shell, Docker socket, unrestricted systemd, unrestricted SSH, or arbitrary host paths;
-4. define only structured verbs such as approved artifact deployment, approved service restart, approved publish/replace, and approved health queries;
-5. require every invocation to validate the principal/authority slice, Recipe, destination node policy, exact target, parameters, idempotency key, deadline, and rate limit;
-6. return structured effect evidence and preserve the invariant that Templar may later recommend deny/review but can never grant broker authority;
-7. close every Phase 5 requirement before marking Phase 6 active.
+1. read the exact persistent Hermes Agent Instance requirements from the operator-supplied master plan;
+2. use Hermes native profile machinery as the durable substrate; do not invent a second Agent storage format;
+3. define stable AgentInstance identity from stable Agency identity rather than one pinned revision so later Agency upgrades can preserve the brain;
+4. replace materialize → run → delete/clear assumptions with ensure persistent Agent Instance → run elsewhere → leave Agent state intact;
+5. keep all per-run state, authority, credentials, network grants, approvals, container IDs, and temporary config out of persistent profile state;
+6. add durable-memory/skill concurrency/versioning guards and prove concurrent runs do not collide in profile config;
+7. for now, reuse the same Agency base and fail closed with `upgrade-required` when the base changes; Phase 24 owns base + overlay upgrades;
+8. prove Agent identity/state survives run completion and relevant Hermes/Fleet restart boundaries before marking Phase 7 active.
 
 Do not resume an old later-phase worktree simply because it exists.
