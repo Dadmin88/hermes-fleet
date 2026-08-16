@@ -1012,6 +1012,7 @@ def test_observation_loop_refreshes_periodically_and_on_capacity_signal(
         }
 
     monkeypatch.setattr(node_service, "build_observation", build_observation)
+    monkeypatch.setattr(node_service, "scan_profile_distributions", lambda: ())
 
     async def exercise() -> None:
         node = _Node(card=object(), node_token="token", worker_concurrency=1)
