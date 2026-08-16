@@ -617,6 +617,73 @@ def test_task_inspection_preserves_nonterminal_state(status: str) -> None:
     assert result.error_category is None
 
 
+def test_typed_execution_outcome_keeps_transport_and_execution_status_separate() -> None:
+    artifact = SimpleNamespace(
+        name="fleet-execution-outcome.v1.json",
+        parts=[
+            SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "schema": "fleet.execution-outcome.v1",
+                        "execution_id": "execution-1",
+                        "status": "failed",
+                        "reason": "Hermes command outcome verification failed",
+                    }
+                )
+            )
+        ],
+    )
+
+    task = SimpleNamespace(
+        status=SimpleNamespace(value="completed"),
+        artifacts=[artifact],
+        metadata={},
+    )
+    result = OperatorService._completion(
+        task,
+        task_id="execution-1",
+        operation="fleet.hermes.run",
+    )
+
+    assert result.terminal_state == "failed"
+    assert result.transport_status == "completed"
+    assert result.execution_status == "failed"
+    assert result.error_category is OperatorErrorCode.TASK_FAILED
+    assert result.result == "Hermes command outcome verification failed"
+
+
+def test_typed_execution_outcome_is_bound_to_exact_execution_identity() -> None:
+    artifact = SimpleNamespace(
+        name="fleet-execution-outcome.v1.json",
+        parts=[
+            SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "schema": "fleet.execution-outcome.v1",
+                        "execution_id": "other-execution",
+                        "status": "failed",
+                        "reason": "wrong execution",
+                    }
+                )
+            )
+        ],
+    )
+    task = SimpleNamespace(
+        status=SimpleNamespace(value="completed"),
+        artifacts=[artifact],
+        metadata={},
+    )
+
+    with pytest.raises(OperatorError) as caught:
+        OperatorService._completion(
+            task,
+            task_id="execution-1",
+            operation="fleet.hermes.run",
+        )
+
+    assert caught.value.code is OperatorErrorCode.TASK_INDETERMINATE
+
+
 def test_hermes_execution_status_is_separate_from_transport_status() -> None:
     class Task:
         class Status:

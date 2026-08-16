@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -23,6 +24,9 @@ from .recipes import FleetRecipe
 _SECRET = re.compile(r"(?i)(bearer|token|key|secret|password|credential)\s*[=:]\s*\S+")
 _PATH = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s/]+/)+[^\s]*")
 _MAX_RESULT_CHARS = 65_536
+_EXECUTION_OUTCOME_ARTIFACT = "fleet-execution-outcome.v1.json"
+_EXECUTION_OUTCOME_SCHEMA = "fleet.execution-outcome.v1"
+_EXECUTION_OUTCOME_STATUS = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _INVENTORY_PROBE_ATTEMPTS = 3
 _INVENTORY_PROBE_DEADLINE_SECONDS = 10
 _INVENTORY_RETRY_DELAYS = (0.0, 0.25, 0.75)
@@ -64,6 +68,69 @@ class OperatorError(RuntimeError):
         self.public_message = _safe_message(message)
         self.debug_detail = str(detail if detail is not None else message)
         super().__init__(self.public_message)
+
+
+def _execution_outcome(task: object, *, task_id: str) -> tuple[str, str] | None:
+    artifacts = getattr(task, "artifacts", None)
+    if not isinstance(artifacts, list):
+        return None
+    matches = [
+        artifact
+        for artifact in artifacts
+        if getattr(artifact, "name", None) == _EXECUTION_OUTCOME_ARTIFACT
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise OperatorError(
+            OperatorErrorCode.TASK_INDETERMINATE,
+            "Fleet execution returned ambiguous outcome evidence.",
+        )
+    parts = getattr(matches[0], "parts", None)
+    if not isinstance(parts, list) or len(parts) != 1:
+        raise OperatorError(
+            OperatorErrorCode.TASK_INDETERMINATE,
+            "Fleet execution returned invalid outcome evidence.",
+        )
+    text = getattr(parts[0], "text", None)
+    if type(text) is not str or not 0 < len(text) <= 4096:
+        raise OperatorError(
+            OperatorErrorCode.TASK_INDETERMINATE,
+            "Fleet execution returned invalid outcome evidence.",
+        )
+    try:
+        document = json.loads(text)
+    except (ValueError, TypeError, RecursionError) as error:
+        raise OperatorError(
+            OperatorErrorCode.TASK_INDETERMINATE,
+            "Fleet execution returned invalid outcome evidence.",
+            detail=error,
+        ) from error
+    if type(document) is not dict or set(document) != {
+        "schema",
+        "execution_id",
+        "status",
+        "reason",
+    }:
+        raise OperatorError(
+            OperatorErrorCode.TASK_INDETERMINATE,
+            "Fleet execution returned invalid outcome evidence.",
+        )
+    status = document.get("status")
+    reason = document.get("reason")
+    if (
+        document.get("schema") != _EXECUTION_OUTCOME_SCHEMA
+        or document.get("execution_id") != task_id
+        or type(status) is not str
+        or _EXECUTION_OUTCOME_STATUS.fullmatch(status) is None
+        or type(reason) is not str
+        or not 0 < len(reason) <= 1024
+    ):
+        raise OperatorError(
+            OperatorErrorCode.TASK_INDETERMINATE,
+            "Fleet execution returned invalid outcome evidence.",
+        )
+    return status, _safe_message(reason)
 
 
 async def _inventory_probe_with_retry(
@@ -470,6 +537,38 @@ class OperatorService:
             raise OperatorError(
                 OperatorErrorCode.TASK_INDETERMINATE,
                 "Fleet task returned no trustworthy terminal state.",
+            )
+        outcome = _execution_outcome(task, task_id=task_id)
+        if outcome is not None:
+            outcome_status, reason = outcome
+            outcome_categories = {
+                "failed": OperatorErrorCode.TASK_FAILED,
+                "indeterminate": OperatorErrorCode.TASK_INDETERMINATE,
+                "policy_denied": OperatorErrorCode.POLICY_DENIED,
+                "not_ready": OperatorErrorCode.NOT_READY,
+                "no_capacity": OperatorErrorCode.NO_CAPACITY,
+                "deadline_exceeded": OperatorErrorCode.DEADLINE_EXCEEDED,
+                "expired": OperatorErrorCode.DEADLINE_EXCEEDED,
+                "stale_state": OperatorErrorCode.STALE_STATE,
+            }
+            return OperatorCompletionResult(
+                task_id=task_id,
+                terminal_state=outcome_status,
+                requested_target=requested_target,
+                resolved_target=resolved_target,
+                routed_to=routed_to,
+                delivery_route=delivery_route,
+                operation=operation,
+                deadline_ms=deadline_ms,
+                run_id=None,
+                result=reason,
+                error_category=outcome_categories.get(
+                    outcome_status, OperatorErrorCode.REMOTE_REJECTED
+                ),
+                transport_status=status,
+                execution_status=(
+                    "indeterminate" if outcome_status == "indeterminate" else "failed"
+                ),
             )
         artifacts = getattr(task, "artifacts", None)
         has_hermes_result = isinstance(artifacts, list) and any(
