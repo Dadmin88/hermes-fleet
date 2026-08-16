@@ -23,8 +23,8 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | ---: | --- | --- |
 | 0 | COMPLETE | [vNext foundation](vnext-foundation.md); ownership, invariants, machine-boundary rule, canonical lifecycle, terminology, and read-first docs frozen. |
 | 1 | COMPLETE | [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md); current Fleet + Agent reconciliation, upstream Nodescale socket fix, preserved 10-run soak. |
-| 2 | NEXT | Disposable OCI runtime as the execution body. Audit the existing OCI backend and old sandbox experiments against the exact Phase 2 contract before changing implementation. |
-| 3 | NOT STARTED | Workspace/filesystem isolation. |
+| 2 | COMPLETE | [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md); Fleet-owned generic workshop, hardening/deadline binding, observed Docker verification, Hermes attach-only independent verification, real-Docker proofs. |
+| 3 | NEXT | Workspace/filesystem isolation. Audit the current tmpfs workshop slice against the exact Phase 3 contract before expanding filesystem authority. |
 | 4 | NOT STARTED | Network isolation. |
 | 5 | NOT STARTED | Controlled host-action broker. |
 | 6 | NOT STARTED | Persistent Hermes Agent Instances. |
@@ -64,14 +64,14 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 2.**
+**Next work begins at Phase 3.**
 
-Before implementing Phase 2:
+Before implementing Phase 3:
 
-1. read the exact Phase 2 requirements from the operator-supplied master plan;
-2. inspect the current Fleet `ExecutionBackend`/Docker OCI implementation;
-3. inspect historical Agent/Fleet Docker-sandbox work only as candidate material;
-4. identify which Phase 2 requirements are already proven, partially implemented, conflicting with vNext, or absent;
-5. close every Phase 2 requirement before marking Phase 3 active.
+1. read the exact Phase 3 workspace/filesystem requirements from the operator-supplied master plan;
+2. audit the Phase 2 workshop tmpfs layout as existing candidate material, not automatic Phase 3 completion;
+3. identify the filesystem authority model for read-only inputs, explicit project mounts, writable project grants, and artifact export without importing later RunAuthority work early;
+4. prove path canonicalization, traversal/symlink rejection, mount bounds, forbidden host paths, and cross-run temporary-file isolation;
+5. close every Phase 3 requirement before marking Phase 4 active.
 
 Do not resume an old later-phase worktree simply because it exists.

@@ -12,7 +12,11 @@ from hermes_fleet.execution_backend import (
     ExecutionBackendErrorCode,
     ExecutionPlan,
 )
-from hermes_fleet.oci_backend import DockerExecutionBackend, OciRealizationSpec
+from hermes_fleet.oci_backend import (
+    DockerExecutionBackend,
+    DockerWorkshopBackend,
+    OciRealizationSpec,
+)
 from hermes_fleet.recipes import ResolvedRecipe
 
 IMAGE = "debian@sha256:" + "3" * 64
@@ -104,10 +108,49 @@ class FakeDocker:
                 for index, item in enumerate(argv)
                 if index > 0 and argv[index - 1] == "--label"
             }
+
+            def value(flag: str, default: str = "") -> str:
+                return argv[argv.index(flag) + 1] if flag in argv else default
+
+            def values(flag: str) -> list[str]:
+                return [
+                    argv[index + 1]
+                    for index, item in enumerate(argv[:-1])
+                    if item == flag
+                ]
+
+            tmpfs = {
+                item.split(":", 1)[0]: item.split(":", 1)[1]
+                for item in values("--tmpfs")
+            }
+            cpus = value("--cpus", "0")
             self.container = {
                 "Id": "container-1",
-                "Config": {"Image": IMAGE, "Labels": labels},
+                "Config": {
+                    "Image": IMAGE,
+                    "Labels": labels,
+                    "User": value("--user"),
+                    "WorkingDir": value("--workdir"),
+                    "Env": values("--env"),
+                },
+                "HostConfig": {
+                    "NetworkMode": value("--network"),
+                    "ReadonlyRootfs": "--read-only" in argv,
+                    "Privileged": False,
+                    "CapDrop": values("--cap-drop"),
+                    "CapAdd": None,
+                    "SecurityOpt": values("--security-opt"),
+                    "PidsLimit": int(value("--pids-limit", "0")),
+                    "Memory": int(value("--memory", "0")),
+                    "MemorySwap": int(value("--memory-swap", "0")),
+                    "NanoCpus": int(float(cpus) * 1_000_000_000),
+                    "Init": "--init" in argv,
+                    "Binds": None,
+                    "Tmpfs": tmpfs,
+                    "LogConfig": {"Type": value("--log-driver")},
+                },
                 "State": {"Status": "created", "ExitCode": 0},
+                "Mounts": [],
             }
             if self.lose_create_response:
                 raise ExecutionBackendError(
@@ -150,6 +193,250 @@ def backend(fake: FakeDocker, *, image: str = IMAGE) -> DockerExecutionBackend:
         ),
         command=fake.run,
     )
+
+
+def workshop_backend(fake: FakeDocker) -> DockerWorkshopBackend:
+    return DockerWorkshopBackend(
+        capabilities=capabilities(),
+        realization=OciRealizationSpec(
+            image=IMAGE,
+            argv=("sleep", "infinity"),
+            network="none",
+            cpu_millis=500,
+            memory_bytes=67_108_864,
+            pids_limit=32,
+        ),
+        deadline_ms=20_000,
+        now_ms=lambda: 10_000,
+        command=fake.run,
+    )
+
+
+def test_workshop_prepare_is_non_root_read_only_and_ephemeral() -> None:
+    fake = FakeDocker()
+    handle = workshop_backend(fake).prepare(plan())
+
+    create = next(call for call in fake.calls if call[1] == "create")
+    assert handle.state == BackendExecutionState.PREPARED
+    assert ["--user", "65532:65532"] == create[create.index("--user") :][:2]
+    assert ["--workdir", "/workspace"] == create[create.index("--workdir") :][:2]
+    assert "--read-only" in create
+    assert "--init" in create
+    assert ["--network", "none"] == create[create.index("--network") :][:2]
+    assert ["--cap-drop", "ALL"] == create[create.index("--cap-drop") :][:2]
+    assert ["--security-opt", "no-new-privileges:true"] == create[
+        create.index("--security-opt") :
+    ][:2]
+    tmpfs_values = [
+        create[index + 1]
+        for index, value in enumerate(create[:-1])
+        if value == "--tmpfs"
+    ]
+    assert any(
+        value.startswith("/workspace:rw,nosuid,nodev,exec,")
+        for value in tmpfs_values
+    )
+    assert any(value.startswith("/tmp:rw,nosuid,nodev,exec,") for value in tmpfs_values)
+    assert any(
+        value.startswith("/home/fleet:rw,nosuid,nodev,exec,")
+        for value in tmpfs_values
+    )
+    assert "HOME=/home/fleet" in create
+    assert "TMPDIR=/tmp" in create
+    assert not any(
+        value
+        in {
+            "--volume",
+            "-v",
+            "--mount",
+            "--privileged",
+            "--cap-add",
+            "--device",
+            "--env-file",
+        }
+        for value in create
+    )
+    forwarded_env = [
+        create[index + 1]
+        for index, value in enumerate(create[:-1])
+        if value == "--env"
+    ]
+    assert forwarded_env == ["HOME=/home/fleet", "TMPDIR=/tmp"]
+    labels = {
+        create[index + 1].split("=", 1)[0]: create[index + 1].split("=", 1)[1]
+        for index, value in enumerate(create[:-1])
+        if value == "--label"
+    }
+    assert labels["dev.hermes.fleet.plan"] == plan().fingerprint
+    assert labels["dev.hermes.fleet.role"] == "workshop"
+    assert labels["dev.hermes.fleet.deadline_ms"] == "20000"
+    assert labels["hermes-agent"] == "1"
+    assert labels["hermes-task-id"] == "fleet_exec-1"
+    assert "hermes-profile" not in labels
+    assert labels["hermes-egress"] == "off"
+    assert create[-3:] == [IMAGE, "sleep", "infinity"]
+
+
+def test_workshop_cleanup_is_idempotent_without_cleanup_realization() -> None:
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+
+    running = service.ensure(plan())
+    assert running.state == BackendExecutionState.RUNNING
+    service.cleanup_plan(plan(), handle=running)
+    assert fake.container is None
+
+    creates_before = sum(call[1] == "create" for call in fake.calls)
+    service.cleanup_plan(plan())
+    assert sum(call[1] == "create" for call in fake.calls) == creates_before
+    assert sum(call[1] == "start" for call in fake.calls) == 1
+    assert sum(call[1] == "stop" for call in fake.calls) == 1
+    assert sum(call[1] == "rm" for call in fake.calls) == 1
+
+
+def test_workshop_image_needs_digest_pin_but_not_agency_labels() -> None:
+    fake = FakeDocker()
+    original = fake.run
+
+    def no_agency_labels(argv: list[str]) -> str:
+        if argv[1] == "image":
+            return json.dumps([{"RepoDigests": [IMAGE], "Config": {"Labels": {}}}])
+        return original(argv)
+
+    service = DockerWorkshopBackend(
+        capabilities=capabilities(),
+        realization=OciRealizationSpec(
+            image=IMAGE,
+            argv=("sleep", "infinity"),
+            network="none",
+            cpu_millis=500,
+            memory_bytes=67_108_864,
+            pids_limit=32,
+        ),
+        deadline_ms=20_000,
+        now_ms=lambda: 10_000,
+        command=no_agency_labels,
+    )
+    assert service.prepare(plan()).state == BackendExecutionState.PREPARED
+
+
+def test_workshop_rejects_arbitrary_container_command() -> None:
+    fake = FakeDocker()
+    with pytest.raises(ExecutionBackendError):
+        DockerWorkshopBackend(
+            capabilities=capabilities(),
+            realization=OciRealizationSpec(
+                image=IMAGE,
+                argv=("/bin/sh", "-c", "sleep infinity"),
+                network="none",
+                cpu_millis=500,
+                memory_bytes=67_108_864,
+                pids_limit=32,
+            ),
+            deadline_ms=20_000,
+            now_ms=lambda: 10_000,
+            command=fake.run,
+        )
+
+
+def test_workshop_refuses_prepare_or_start_after_deadline() -> None:
+    fake = FakeDocker()
+    now = [10_000]
+    service = DockerWorkshopBackend(
+        capabilities=capabilities(),
+        realization=OciRealizationSpec(
+            image=IMAGE,
+            argv=("sleep", "infinity"),
+            network="none",
+            cpu_millis=500,
+            memory_bytes=67_108_864,
+            pids_limit=32,
+        ),
+        deadline_ms=20_000,
+        now_ms=lambda: now[0],
+        command=fake.run,
+    )
+    prepared = service.prepare(plan())
+    now[0] = 20_000
+
+    with pytest.raises(ExecutionBackendError) as start_error:
+        service.start(prepared)
+    assert start_error.value.code == ExecutionBackendErrorCode.INVALID_TRANSITION
+    assert not any(call[1] == "start" for call in fake.calls)
+
+    second = FakeDocker()
+    expired = DockerWorkshopBackend(
+        capabilities=capabilities(),
+        realization=service._realization,
+        deadline_ms=20_000,
+        now_ms=lambda: 20_000,
+        command=second.run,
+    )
+    with pytest.raises(ExecutionBackendError) as prepare_error:
+        expired.prepare(plan())
+    assert prepare_error.value.code == ExecutionBackendErrorCode.INVALID_TRANSITION
+    assert second.calls == []
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "unsafe"),
+    [
+        ("Config", "User", "0:0"),
+        ("HostConfig", "NetworkMode", "bridge"),
+        ("HostConfig", "ReadonlyRootfs", False),
+        ("HostConfig", "Privileged", True),
+        ("HostConfig", "CapDrop", []),
+        ("HostConfig", "CapAdd", ["SYS_ADMIN"]),
+        ("HostConfig", "SecurityOpt", []),
+        ("HostConfig", "PidsLimit", 0),
+        ("HostConfig", "Memory", 0),
+        ("HostConfig", "MemorySwap", 0),
+        ("HostConfig", "NanoCpus", 0),
+        ("HostConfig", "Binds", ["/home:/workspace"]),
+        ("HostConfig", "Tmpfs", {"/tmp": "rw", "/home/fleet": "rw"}),
+    ],
+)
+def test_workshop_rejects_observed_security_drift(section, key, unsafe) -> None:
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    document = fake.container[section]
+    assert isinstance(document, dict)
+    document[key] = unsafe
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        service.inspect(prepared)
+    assert raised.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+
+def test_workshop_rejects_persistent_mount_or_identity_label_drift() -> None:
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    fake.container["Mounts"] = [
+        {"Type": "bind", "Source": "/var/run/docker.sock", "Destination": "/sock"}
+    ]
+    with pytest.raises(ExecutionBackendError) as mount_error:
+        service.inspect(prepared)
+    assert mount_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    labels = fake.container["Config"]["Labels"]  # type: ignore[index]
+    labels["dev.hermes.fleet.plan"] = "sha256:" + "9" * 64
+    with pytest.raises(ExecutionBackendError) as plan_error:
+        service.inspect(prepared)
+    assert plan_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+    labels["dev.hermes.fleet.plan"] = plan().fingerprint
+    labels["dev.hermes.fleet.deadline_ms"] = "99999"
+    with pytest.raises(ExecutionBackendError) as deadline_error:
+        service.inspect(prepared)
+    assert deadline_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
 
 
 def test_prepare_uses_digest_pinned_hardened_create_argv() -> None:
@@ -241,6 +528,7 @@ def test_existing_realization_recovers_plan_fingerprint_from_fx4_labels() -> Non
     prepared = service.prepare(plan())
     assert fake.container is not None
     labels = fake.container["Config"]["Labels"]  # type: ignore[index]
+    labels.pop("dev.hermes.fleet.plan", None)
     assert "dev.hermes.fleet.plan" not in labels
 
     recovered = service.inspect(prepared)

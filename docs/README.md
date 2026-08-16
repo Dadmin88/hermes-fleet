@@ -18,6 +18,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 - [vNext foundation](vnext-foundation.md) - frozen planned ownership boundaries, hard invariants, machine-boundary rule, canonical lifecycle, and terminology.
 - [vNext progress](vnext-progress.md) - canonical phase ledger and current entry point.
 - [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md) - requirement-by-requirement preservation and cross-repository evidence for the proven reliability baseline.
+- [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md) - Fleet-owned hardened workshop, generic tooling image boundary, deadline binding, independent Hermes verification, and real-Docker evidence.
 - [Ecosystem map](ecosystem.md) - repository responsibilities, trust chain, cross-component flows, operator mental model, and current-versus-planned capability map.
 - [Architecture](architecture.md) - component authorities, exact-node request flow, local authorization, durable Fleet state, deadlines, and execution correlation.
 - [Profile identity and placement](profile-placement.md) - installed profile observations, exact Agency V1 package identity, ready-carrier lookup, pinned Agency snapshots, placement candidates, and the current locate-or-place boundary.

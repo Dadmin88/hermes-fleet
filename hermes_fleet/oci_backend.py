@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -207,7 +208,26 @@ class DockerExecutionBackend(ExecutionBackend):
             )
         return _cleaned_handle(handle)
 
-    def _verify_image(self, plan: ExecutionPlan) -> None:
+    def _required_image_labels(self, plan: ExecutionPlan) -> dict[str, str]:
+        """Return image labels that must match before this backend may execute."""
+        agent = plan.resolved_recipe.agent
+        return {
+            "dev.hermes.agency.repository": agent.repository,
+            "dev.hermes.agency.revision": agent.revision,
+            "dev.hermes.agency.profile": agent.name,
+            "dev.hermes.agency.version": agent.version,
+            "dev.hermes.agency.content": agent.content_digest,
+        }
+
+    def _additional_labels(self, plan: ExecutionPlan) -> dict[str, str]:
+        """Return provider-specific container labels in addition to Fleet ownership."""
+        return {}
+
+    def _additional_create_args(self, plan: ExecutionPlan) -> list[str]:
+        """Return provider-specific docker-create arguments before labels/image."""
+        return []
+
+    def _verify_image_reference(self, expected: dict[str, str]) -> None:
         try:
             document = _one_document(
                 self._command(["docker", "image", "inspect", self._realization.image])
@@ -230,24 +250,36 @@ class DockerExecutionBackend(ExecutionBackend):
             )
         config = document.get("Config")
         labels = config.get("Labels") if type(config) is dict else None
-        agent = plan.resolved_recipe.agent
-        expected = {
-            "dev.hermes.agency.repository": agent.repository,
-            "dev.hermes.agency.revision": agent.revision,
-            "dev.hermes.agency.profile": agent.name,
-            "dev.hermes.agency.version": agent.version,
-            "dev.hermes.agency.content": agent.content_digest,
-        }
-        if type(labels) is not dict or any(
-            labels.get(key) != value for key, value in expected.items()
+        if expected and (
+            type(labels) is not dict
+            or any(labels.get(key) != value for key, value in expected.items())
         ):
             raise ExecutionBackendError(
                 ExecutionBackendErrorCode.CAPABILITY_MISMATCH,
                 "OCI image does not contain the exact resolved Agency identity",
             )
 
+    def _verify_image(self, plan: ExecutionPlan) -> None:
+        self._verify_image_reference(self._required_image_labels(plan))
+
     def _create_argv(self, plan: ExecutionPlan, name: str) -> list[str]:
         labels = self._expected_labels(plan)
+        additional_labels = self._additional_labels(plan)
+        if type(additional_labels) is not dict or any(
+            type(key) is not str
+            or not key
+            or type(value) is not str
+            or not value
+            or (key in labels and labels[key] != value)
+            for key, value in additional_labels.items()
+        ):
+            _invalid("Docker realization labels are invalid")
+        labels.update(additional_labels)
+        additional_args = self._additional_create_args(plan)
+        if type(additional_args) is not list or any(
+            type(value) is not str or not value for value in additional_args
+        ):
+            _invalid("Docker realization arguments are invalid")
         argv = [
             "docker",
             "create",
@@ -271,6 +303,7 @@ class DockerExecutionBackend(ExecutionBackend):
             "--log-driver",
             "none",
         ]
+        argv.extend(additional_args)
         for key in sorted(labels):
             argv.extend(["--label", f"{key}={labels[key]}"])
         argv.append(self._realization.image)
@@ -372,6 +405,11 @@ class DockerExecutionBackend(ExecutionBackend):
             _ownership_error()
         if config.get("Image") != self._realization.image:
             _ownership_error()
+        self._validate_realization_security(document)
+
+    def _validate_realization_security(self, document: dict[str, object]) -> None:
+        """Provider hook for observed runtime security invariants."""
+        del document
 
     def _handle_from_document(
         self, execution_id: str, document: dict[str, object]
@@ -419,6 +457,234 @@ class DockerExecutionBackend(ExecutionBackend):
             plan_fingerprint=plan_fingerprint,
             state=mapped,
         )
+
+
+class DockerWorkshopBackend(DockerExecutionBackend):
+    """Fleet-owned disposable workshop for a persistent host-side Hermes Agent.
+
+    The image is a generic, digest-pinned tooling runtime. Agency/profile
+    identity remains outside the container in the persistent Hermes profile.
+    Fleet binds each workshop to an absolute deadline and refuses to create or
+    start the execution body after that deadline has elapsed.
+    """
+
+    _RUN_UID = 65532
+    _RUN_GID = 65532
+    _WORKSPACE_BYTES = 256 * 1024 * 1024
+    _TMP_BYTES = 64 * 1024 * 1024
+    _HOME_BYTES = 64 * 1024 * 1024
+    _SHM_BYTES = 64 * 1024 * 1024
+
+    def __init__(
+        self,
+        *,
+        deadline_ms: int,
+        now_ms: Callable[[], int] | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        if self._realization.argv != ("sleep", "infinity"):
+            _invalid("Docker workshop command must be exactly sleep infinity")
+        if type(deadline_ms) is not int or deadline_ms <= 0:
+            _invalid("Docker workshop deadline is invalid")
+        if now_ms is not None and not callable(now_ms):
+            _invalid("Docker workshop clock is invalid")
+        self._deadline_ms = deadline_ms
+        self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
+
+    def _prepare(self, plan: ExecutionPlan) -> BackendExecutionHandle:
+        self._require_live_deadline()
+        return super()._prepare(plan)
+
+    def start(self, handle: BackendExecutionHandle) -> BackendExecutionHandle:
+        self._require_live_deadline()
+        return super().start(handle)
+
+    def _require_live_deadline(self) -> None:
+        now = self._now_ms()
+        if type(now) is not int or now < 0:
+            raise ExecutionBackendError(
+                ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE,
+                "Docker workshop clock is invalid",
+            )
+        if now >= self._deadline_ms:
+            raise ExecutionBackendError(
+                ExecutionBackendErrorCode.INVALID_TRANSITION,
+                "Docker workshop deadline has expired",
+            )
+
+    def verify_available(self) -> None:
+        """Prove Docker can inspect the exact local digest-pinned workshop image."""
+        self._verify_image_reference({})
+
+    def ensure(self, plan: ExecutionPlan) -> BackendExecutionHandle:
+        """Idempotently realize and start the exact workshop for one plan."""
+        prepared = self.prepare(plan)
+        try:
+            handle = self.start(prepared)
+            if handle.state != BackendExecutionState.RUNNING:
+                raise ExecutionBackendError(
+                    ExecutionBackendErrorCode.START_FAILED,
+                    "Docker workshop did not remain running",
+                )
+            return handle
+        except Exception:
+            try:
+                self.cleanup_plan(plan, handle=prepared)
+            except Exception:
+                pass
+            raise
+
+    def find(self, plan: ExecutionPlan) -> BackendExecutionHandle | None:
+        """Return the owned workshop if it exists, without creating anything."""
+        document = self._inspect_optional(_container_name(plan.execution_id))
+        if document is None:
+            return None
+        return self._owned_handle(plan, document)
+
+    def cleanup_plan(
+        self,
+        plan: ExecutionPlan,
+        *,
+        handle: BackendExecutionHandle | None = None,
+    ) -> None:
+        """Stop/remove an existing workshop without ever realizing a new one."""
+        current = handle or self.find(plan)
+        if current is None:
+            return
+        current = self.inspect(current)
+        if current.state == BackendExecutionState.RUNNING:
+            current = self.stop(current)
+        if current.state != BackendExecutionState.CLEANED:
+            self.cleanup(current)
+
+    def _required_image_labels(self, plan: ExecutionPlan) -> dict[str, str]:
+        del plan
+        return {}
+
+    def _additional_labels(self, plan: ExecutionPlan) -> dict[str, str]:
+        task_label = re.sub(r"[^A-Za-z0-9_.-]", "_", f"fleet:{plan.execution_id}")
+        task_label = task_label[:63] or "unknown"
+        return {
+            f"{_LABEL_PREFIX}role": "workshop",
+            f"{_LABEL_PREFIX}plan": plan.fingerprint,
+            f"{_LABEL_PREFIX}deadline_ms": str(self._deadline_ms),
+            "hermes-agent": "1",
+            "hermes-task-id": task_label,
+            "hermes-egress": "off",
+        }
+
+    def _additional_create_args(self, plan: ExecutionPlan) -> list[str]:
+        del plan
+        uid = self._RUN_UID
+        gid = self._RUN_GID
+        return [
+            "--init",
+            "--user",
+            f"{uid}:{gid}",
+            "--workdir",
+            "/workspace",
+            "--tmpfs",
+            (
+                "/workspace:rw,nosuid,nodev,exec,"
+                f"size={self._WORKSPACE_BYTES},uid={uid},gid={gid},mode=0700"
+            ),
+            "--tmpfs",
+            (
+                "/tmp:rw,nosuid,nodev,exec,"
+                f"size={self._TMP_BYTES},uid={uid},gid={gid},mode=0700"
+            ),
+            "--tmpfs",
+            (
+                "/home/fleet:rw,nosuid,nodev,exec,"
+                f"size={self._HOME_BYTES},uid={uid},gid={gid},mode=0700"
+            ),
+            "--shm-size",
+            str(self._SHM_BYTES),
+            "--env",
+            "HOME=/home/fleet",
+            "--env",
+            "TMPDIR=/tmp",
+        ]
+
+    def _validate_realization_security(self, document: dict[str, object]) -> None:
+        config = document.get("Config")
+        host = document.get("HostConfig")
+        if type(config) is not dict or type(host) is not dict:
+            raise ExecutionBackendError(
+                ExecutionBackendErrorCode.INSPECTION_UNAVAILABLE,
+                "Docker workshop security posture is unavailable",
+            )
+        labels = config.get("Labels")
+        observed_plan = _plan_fingerprint_from_document(document)
+        if (
+            type(labels) is not dict
+            or labels.get(f"{_LABEL_PREFIX}role") != "workshop"
+            or labels.get(f"{_LABEL_PREFIX}plan") != observed_plan
+            or labels.get(f"{_LABEL_PREFIX}deadline_ms") != str(self._deadline_ms)
+            or labels.get("hermes-agent") != "1"
+            or labels.get("hermes-egress") != "off"
+        ):
+            _security_mismatch("Docker workshop identity labels changed")
+        if config.get("User") != f"{self._RUN_UID}:{self._RUN_GID}":
+            _security_mismatch(
+                "Docker workshop must run as the dedicated non-root user"
+            )
+        if config.get("WorkingDir") != "/workspace":
+            _security_mismatch("Docker workshop working directory changed")
+        environment = config.get("Env")
+        if type(environment) is not list or not {
+            "HOME=/home/fleet",
+            "TMPDIR=/tmp",
+        }.issubset(set(environment)):
+            _security_mismatch("Docker workshop environment changed")
+        if host.get("NetworkMode") != "none":
+            _security_mismatch("Docker workshop network isolation changed")
+        if host.get("ReadonlyRootfs") is not True:
+            _security_mismatch("Docker workshop root filesystem is writable")
+        if host.get("Privileged") is True:
+            _security_mismatch("Docker workshop is privileged")
+        cap_drop = host.get("CapDrop")
+        if type(cap_drop) is not list or "ALL" not in {
+            str(item).upper() for item in cap_drop
+        }:
+            _security_mismatch("Docker workshop capabilities are not dropped")
+        cap_add = host.get("CapAdd")
+        if cap_add not in (None, []):
+            _security_mismatch("Docker workshop adds Linux capabilities")
+        security = host.get("SecurityOpt")
+        if type(security) is not list or not any(
+            str(item).lower().startswith("no-new-privileges") for item in security
+        ):
+            _security_mismatch("Docker workshop no-new-privileges is missing")
+        if any("unconfined" in str(item).lower() for item in security):
+            _security_mismatch("Docker workshop security confinement is disabled")
+        if host.get("PidsLimit") != self._realization.pids_limit:
+            _security_mismatch("Docker workshop PID limit changed")
+        if host.get("Memory") != self._realization.memory_bytes:
+            _security_mismatch("Docker workshop memory limit changed")
+        if host.get("MemorySwap") != self._realization.memory_bytes:
+            _security_mismatch("Docker workshop swap limit changed")
+        if host.get("NanoCpus") != self._realization.cpu_millis * 1_000_000:
+            _security_mismatch("Docker workshop CPU limit changed")
+        if host.get("Init") is not True:
+            _security_mismatch("Docker workshop init process is missing")
+        binds = host.get("Binds")
+        if binds not in (None, []):
+            _security_mismatch("Docker workshop bind mounts are not permitted")
+        tmpfs = host.get("Tmpfs")
+        required_tmpfs = {"/workspace", "/tmp", "/home/fleet"}
+        if type(tmpfs) is not dict or not required_tmpfs.issubset(set(tmpfs)):
+            _security_mismatch("Docker workshop tmpfs layout changed")
+        mounts = document.get("Mounts")
+        if type(mounts) is list and any(
+            type(item) is dict and item.get("Type") in {"bind", "volume"}
+            for item in mounts
+        ):
+            _security_mismatch("Docker workshop persistent mounts are not permitted")
+        log_config = host.get("LogConfig")
+        if type(log_config) is not dict or log_config.get("Type") != "none":
+            _security_mismatch("Docker workshop logging posture changed")
 
 
 def _run_docker(argv: list[str]) -> str:
@@ -541,4 +807,11 @@ def _ownership_error() -> None:
     raise ExecutionBackendError(
         ExecutionBackendErrorCode.CAPABILITY_MISMATCH,
         "Docker realization conflicts with Fleet ownership",
+    )
+
+
+def _security_mismatch(message: str) -> None:
+    raise ExecutionBackendError(
+        ExecutionBackendErrorCode.CAPABILITY_MISMATCH,
+        message,
     )
