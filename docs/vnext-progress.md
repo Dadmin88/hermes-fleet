@@ -27,8 +27,8 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 3 | COMPLETE | [Phase 3 workspace isolation](vnext-phase3-workspace-isolation.md); canonicalized project projection, verified authority scope, distinct immutable read staging, separately authorized writable copies, declared/scanned artifact export, and real-Docker N+1 zero-residue proof. |
 | 4 | COMPLETE | [Phase 4 network isolation](vnext-phase4-network-isolation.md); four explicit modes, offline provider traffic, authority/DNS pinning, internal-only workshop topology, hardened Fleet CONNECT gateway, proxy non-bypass, lateral/management/rebinding denial, audit, and independent Hermes verification. |
 | 5 | COMPLETE | [Phase 5 host-action broker](vnext-phase5-host-action-broker.md); structured fixed verbs/targets, exact authority/policy/Recipe/target/parameter validation, race-safe budgets, sticky indeterminate idempotency, structured evidence, narrowing-only advisory seam, and real atomic host-effect proof. |
-| 6 | NEXT | Persistent Hermes Agent Instances. Replace disposable-profile run lifecycle with durable Hermes-native profile-backed Agent identity without importing later run state into the profile. |
-| 7 | NOT STARTED | Run-scoped Hermes execution overrides. |
+| 6 | COMPLETE | [Phase 6 persistent Agent Instances](vnext-phase6-persistent-agent-instances.md); stable Agency-based Hermes-native profile identity, exact-base reuse/upgrade-required semantics, durable config integrity, memory/skill generation locking, immutable-base inventory, concurrent creation, and fresh-process persistence proof. |
+| 7 | NEXT | Run-scoped Hermes execution overrides. Add the narrow ContextVar-backed `fleet_runtime` `/v1/runs` seam without mutating persistent Agent profile state. |
 | 8 | NOT STARTED | Run Capsule lifecycle. |
 | 9 | NOT STARTED | Principal identity. |
 | 10 | NOT STARTED | Immutable RunAuthority. |
@@ -64,17 +64,17 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 6.**
+**Next work begins at Phase 7.**
 
-Before implementing Phase 6:
+Before implementing Phase 7:
 
-1. read the exact persistent Hermes Agent Instance requirements from the operator-supplied master plan;
-2. use Hermes native profile machinery as the durable substrate; do not invent a second Agent storage format;
-3. define stable AgentInstance identity from stable Agency identity rather than one pinned revision so later Agency upgrades can preserve the brain;
-4. replace materialize → run → delete/clear assumptions with ensure persistent Agent Instance → run elsewhere → leave Agent state intact;
-5. keep all per-run state, authority, credentials, network grants, approvals, container IDs, and temporary config out of persistent profile state;
-6. add durable-memory/skill concurrency/versioning guards and prove concurrent runs do not collide in profile config;
-7. for now, reuse the same Agency base and fail closed with `upgrade-required` when the base changes; Phase 24 owns base + overlay upgrades;
-8. prove Agent identity/state survives run completion and relevant Hermes/Fleet restart boundaries before marking Phase 7 active.
+1. read the exact run-scoped Hermes execution-override requirements from the operator-supplied master plan;
+2. use Hermes `/v1/runs` and add only the narrow Fleet-specific `fleet_runtime` payload: version, exact container ID, exact plan fingerprint, digest-pinned image, exact toolsets, and bounded max iterations;
+3. implement the temporary override with `ContextVar`, never global process environment or persistent profile config;
+4. prove one run automatically restores prior context and concurrent runs cannot clobber one another;
+5. reject arbitrary Docker flags, mounts, env injection, network enablement, and container-persistence power;
+6. make Hermes advertise `run_fleet_runtime` capability and make Fleet refuse the container path when that capability is absent;
+7. keep the persistent Agent profile `config.yaml` byte-for-byte unchanged by run submission/execution;
+8. close every Phase 7 requirement before marking Phase 8 active.
 
 Do not resume an old later-phase worktree simply because it exists.

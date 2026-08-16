@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 from pathlib import Path
 from typing import Final
@@ -79,7 +80,16 @@ def scan_profile_distributions(
         if identity is None:
             continue
         name, version = identity
-        content_digest = _profile_content_digest(entry, name, version)
+        persistent = _persistent_agent_base_identity(entry)
+        if persistent is not None:
+            base_name, base_version, content_digest = persistent
+            if (name, version) != (base_name, base_version):
+                raise ProfileInventoryError(
+                    "persistent Agent Instance manifest conflicts with base metadata"
+                )
+            name, version = base_name, base_version
+        else:
+            content_digest = _profile_content_digest(entry, name, version)
         candidate = (version, content_digest)
         current = discovered.get(name)
         if current is not None and current != candidate:
@@ -102,6 +112,47 @@ def scan_profile_distributions(
             item["content_digest"] = content_digest
         result.append(item)
     return result
+
+
+def _persistent_agent_base_identity(
+    profile: Path,
+) -> tuple[str, str, str] | None:
+    metadata = profile / ".fleet-agent-instance.json"
+    if not metadata.exists() and not metadata.is_symlink():
+        return None
+    try:
+        info = metadata.lstat()
+    except OSError as error:
+        raise ProfileInventoryError(
+            "persistent Agent Instance metadata cannot be inspected"
+        ) from error
+    if (
+        metadata.is_symlink()
+        or not metadata.is_file()
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_size > 32 * 1024
+    ):
+        raise ProfileInventoryError("persistent Agent Instance metadata is unsafe")
+    try:
+        value = json.loads(metadata.read_text(encoding="utf-8"))
+        from .agent_instance import AgentInstanceBinding
+
+        binding = AgentInstanceBinding.from_dict(value)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ProfileInventoryError(
+            "persistent Agent Instance metadata is invalid"
+        ) from error
+    if binding.profile != profile.name:
+        raise ProfileInventoryError(
+            "persistent Agent Instance profile identity conflicts with metadata"
+        )
+    return (
+        binding.agency_name,
+        binding.base_version,
+        binding.base_content_digest.removeprefix("sha256:"),
+    )
 
 
 def _read_distribution_identity(path: Path) -> tuple[str, str] | None:
