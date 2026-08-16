@@ -50,7 +50,8 @@ The workshop adds and verifies:
 - `no-new-privileges` and no unconfined security option;
 - positive CPU, RAM, swap, and PID limits;
 - no bind mounts, named volumes, host devices, Docker socket, host home, SSH state, or Fleet/Keryx/Nodescale sockets;
-- writable bounded tmpfs at `/workspace`, `/tmp`, and `/home/fleet`;
+- writable bounded tmpfs at `/workspace`, `/workspace/inputs`, `/tmp`, and `/home/fleet`;
+- Agent workspace ownership `65532:65532` and a distinct non-root input-staging identity `65533:65533`;
 - only `HOME=/home/fleet` and `TMPDIR=/tmp` injected by Fleet;
 - a future absolute deadline; prepare/start fail once the deadline is reached;
 - idempotent find/ensure/cleanup that never creates a replacement during cleanup or recovery.
@@ -58,6 +59,29 @@ The workshop adds and verifies:
 Fleet verifies the observed Docker document after realization, rather than trusting its create arguments. Hermes Agent has a separate attach-only verifier: it independently re-inspects the exact full container ID and exact plan fingerprint, requires the same hardening posture and a future deadline, and then may use only `docker exec`. Hermes has no create/start/stop/remove fallback in that path. Missing or weakened exact state fails closed.
 
 Active deadline supervision and guaranteed teardown are owned by the later Run Capsule lifecycle; Phase 2 already binds the execution body to the deadline and forbids creation or start after expiry.
+
+## vNext workspace isolation
+
+Phase 3 keeps project data out of the container by default. Fleet does not mount the host working directory, host home, or arbitrary host paths. Instead, a destination has an explicit map of trusted project IDs to canonical project roots, and filesystem requests contain only a project ID, relative path, `/workspace` target, byte bound, and immutable authority hashes.
+
+Before any filesystem authority becomes effective, Fleet canonicalizes the requested source and proves it remains inside the configured project root and outside forbidden host state. Symlink escapes, traversal, special files, sensitive credential/state components, broad host roots, Docker sockets, and Fleet/Keryx/Nodescale/Vault state are rejected.
+
+Filesystem projections are deliberately stricter than host bind mounts:
+
+- read authority targets only `/workspace/inputs/...`;
+- read input is copied into the per-run tmpfs by staging UID/GID `65533:65533`, mode-stripped, and therefore cannot be written or chmod-restored by the Agent running as `65532:65532`;
+- write authority targets only `/workspace/work/...` and requires a separate write-authority hash in addition to the RunAuthority hash;
+- the writable projection is still a disposable copy, not a writable host bind;
+- at most eight projections are accepted, each input is byte-bounded, and aggregate staged input bytes are bounded;
+- the raw host path never appears in a Recipe/runtime grant.
+
+`FilesystemAuthorityScope` is the Phase 3 enforcement adapter for the later immutable `RunAuthority`. It does not implement Phase 10 early: it requires one verified RunAuthority hash plus an explicit set of separately approved write-authority hashes. Phase 10 will become the producer of that verified scope.
+
+Artifacts use an explicit copy-out path rather than a mounted host output directory. Only declared `/workspace/out` paths can be exported. Fleet bounds export count and bytes, rejects links, traversal, special entries, and oversized archives, and can require an output scanner before an artifact is accepted. The export API returns validated bytes to higher layers; it does not silently write arbitrary host paths.
+
+The whole workspace remains tmpfs/container state. Fleet container cleanup destroys it. The real-Docker Phase 3 proof destroys run N and demonstrates that a fresh run N+1 cannot observe run N input copies, writable copies, declared outputs, or undeclared temporary files. Phase 8 owns the higher-level ordering guarantee that finalization/quiescence occurs before this destruction.
+
+Hermes independently checks the workshop's Agent UID and the distinct input-staging tmpfs ownership before attachment. It still has no lifecycle or staging-identity fallback.
 
 ## Lifecycle and recovery
 

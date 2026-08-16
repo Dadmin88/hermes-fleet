@@ -232,10 +232,18 @@ def test_workshop_prepare_is_non_root_read_only_and_ephemeral() -> None:
         for index, value in enumerate(create[:-1])
         if value == "--tmpfs"
     ]
-    assert any(
-        value.startswith("/workspace:rw,nosuid,nodev,exec,")
-        for value in tmpfs_values
+    workspace_tmpfs = next(
+        value for value in tmpfs_values if value.startswith("/workspace:rw,")
     )
+    assert "uid=65532" in workspace_tmpfs
+    assert "gid=65532" in workspace_tmpfs
+    assert "mode=0711" in workspace_tmpfs
+    input_tmpfs = next(
+        value for value in tmpfs_values if value.startswith("/workspace/inputs:rw,")
+    )
+    assert "uid=65533" in input_tmpfs
+    assert "gid=65533" in input_tmpfs
+    assert "mode=0755" in input_tmpfs
     assert any(value.startswith("/tmp:rw,nosuid,nodev,exec,") for value in tmpfs_values)
     assert any(
         value.startswith("/home/fleet:rw,nosuid,nodev,exec,")
@@ -408,6 +416,32 @@ def test_workshop_rejects_observed_security_drift(section, key, unsafe) -> None:
     with pytest.raises(ExecutionBackendError) as raised:
         service.inspect(prepared)
     assert raised.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+
+def test_workshop_rejects_workspace_tmpfs_identity_drift() -> None:
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    tmpfs = fake.container["HostConfig"]["Tmpfs"]  # type: ignore[index]
+    tmpfs["/workspace/inputs"] = (
+        "rw,nosuid,nodev,exec,size=134217728,uid=65532,gid=65532,mode=0755"
+    )
+    with pytest.raises(ExecutionBackendError) as input_error:
+        service.inspect(prepared)
+    assert input_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    tmpfs = fake.container["HostConfig"]["Tmpfs"]  # type: ignore[index]
+    tmpfs["/workspace"] = (
+        "rw,nosuid,nodev,exec,size=268435456,uid=65532,gid=65532,mode=0700"
+    )
+    with pytest.raises(ExecutionBackendError) as workspace_error:
+        service.inspect(prepared)
+    assert workspace_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
 
 
 def test_workshop_rejects_persistent_mount_or_identity_label_drift() -> None:

@@ -24,8 +24,8 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 0 | COMPLETE | [vNext foundation](vnext-foundation.md); ownership, invariants, machine-boundary rule, canonical lifecycle, terminology, and read-first docs frozen. |
 | 1 | COMPLETE | [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md); current Fleet + Agent reconciliation, upstream Nodescale socket fix, preserved 10-run soak. |
 | 2 | COMPLETE | [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md); Fleet-owned generic workshop, hardening/deadline binding, observed Docker verification, Hermes attach-only independent verification, real-Docker proofs. |
-| 3 | NEXT | Workspace/filesystem isolation. Audit the current tmpfs workshop slice against the exact Phase 3 contract before expanding filesystem authority. |
-| 4 | NOT STARTED | Network isolation. |
+| 3 | COMPLETE | [Phase 3 workspace isolation](vnext-phase3-workspace-isolation.md); canonicalized project projection, verified authority scope, distinct immutable read staging, separately authorized writable copies, declared/scanned artifact export, and real-Docker N+1 zero-residue proof. |
+| 4 | NEXT | Network isolation. Preserve `network=none` by default and audit the four exact network modes and enforcement tasks before granting any workshop egress. |
 | 5 | NOT STARTED | Controlled host-action broker. |
 | 6 | NOT STARTED | Persistent Hermes Agent Instances. |
 | 7 | NOT STARTED | Run-scoped Hermes execution overrides. |
@@ -64,14 +64,16 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 3.**
+**Next work begins at Phase 4.**
 
-Before implementing Phase 3:
+Before implementing Phase 4:
 
-1. read the exact Phase 3 workspace/filesystem requirements from the operator-supplied master plan;
-2. audit the Phase 2 workshop tmpfs layout as existing candidate material, not automatic Phase 3 completion;
-3. identify the filesystem authority model for read-only inputs, explicit project mounts, writable project grants, and artifact export without importing later RunAuthority work early;
-4. prove path canonicalization, traversal/symlink rejection, mount bounds, forbidden host paths, and cross-run temporary-file isolation;
-5. close every Phase 3 requirement before marking Phase 4 active.
+1. read the exact Phase 4 network modes and tasks from the operator-supplied master plan;
+2. keep the Phase 2/3 workshop at `network=none` until an explicit network mode can be proven enforceable;
+3. audit candidate work only for the four exact modes: `none`, `provider-only`, `project allowlist`, and `explicitly approved internet`;
+4. preserve model-provider traffic outside the workshop whenever possible and prove there is no implicit LAN, Tailscale-management, metadata, proxy, Docker-context, or DNS-rebinding escape;
+5. bind the granted network posture to the verified authority surface without implementing the full Phase 10 RunAuthority object early;
+6. audit every network decision and fail closed whenever enforcement cannot be proven;
+7. close every Phase 4 requirement before marking Phase 5 active.
 
 Do not resume an old later-phase worktree simply because it exists.

@@ -470,7 +470,10 @@ class DockerWorkshopBackend(DockerExecutionBackend):
 
     _RUN_UID = 65532
     _RUN_GID = 65532
+    _INPUT_UID = 65533
+    _INPUT_GID = 65533
     _WORKSPACE_BYTES = 256 * 1024 * 1024
+    _INPUT_BYTES = 128 * 1024 * 1024
     _TMP_BYTES = 64 * 1024 * 1024
     _HOME_BYTES = 64 * 1024 * 1024
     _SHM_BYTES = 64 * 1024 * 1024
@@ -587,7 +590,13 @@ class DockerWorkshopBackend(DockerExecutionBackend):
             "--tmpfs",
             (
                 "/workspace:rw,nosuid,nodev,exec,"
-                f"size={self._WORKSPACE_BYTES},uid={uid},gid={gid},mode=0700"
+                f"size={self._WORKSPACE_BYTES},uid={uid},gid={gid},mode=0711"
+            ),
+            "--tmpfs",
+            (
+                "/workspace/inputs:rw,nosuid,nodev,exec,"
+                f"size={self._INPUT_BYTES},uid={self._INPUT_UID},"
+                f"gid={self._INPUT_GID},mode=0755"
             ),
             "--tmpfs",
             (
@@ -673,9 +682,25 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         if binds not in (None, []):
             _security_mismatch("Docker workshop bind mounts are not permitted")
         tmpfs = host.get("Tmpfs")
-        required_tmpfs = {"/workspace", "/tmp", "/home/fleet"}
+        required_tmpfs = {"/workspace", "/workspace/inputs", "/tmp", "/home/fleet"}
         if type(tmpfs) is not dict or not required_tmpfs.issubset(set(tmpfs)):
             _security_mismatch("Docker workshop tmpfs layout changed")
+        workspace_options = str(tmpfs["/workspace"]).lower()
+        if not {
+            "rw",
+            f"uid={self._RUN_UID}",
+            f"gid={self._RUN_GID}",
+            "mode=0711",
+        }.issubset({item.strip() for item in workspace_options.split(",")}):
+            _security_mismatch("Docker workshop workspace ownership changed")
+        input_options = str(tmpfs["/workspace/inputs"]).lower()
+        if not {
+            "rw",
+            f"uid={self._INPUT_UID}",
+            f"gid={self._INPUT_GID}",
+            "mode=0755",
+        }.issubset({item.strip() for item in input_options.split(",")}):
+            _security_mismatch("Docker workshop input staging ownership changed")
         mounts = document.get("Mounts")
         if type(mounts) is list and any(
             type(item) is dict and item.get("Type") in {"bind", "volume"}
