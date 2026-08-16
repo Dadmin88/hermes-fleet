@@ -104,6 +104,38 @@ def test_node_config_requires_an_exact_node_policy() -> None:
         NodeConfig(name="alpha", peer_id="peer-alpha", policy=Policy())
 
 
+def test_keryx_inventory_models_do_not_expose_legacy_direct_a2a_concepts() -> None:
+    """The public domain surface remains peer-based and credential-free."""
+    import importlib.util
+    from dataclasses import fields
+
+    import hermes_fleet.models as models
+    from hermes_fleet.config import FleetConfig
+
+    assert tuple(field.name for field in fields(models.NodeConfig)) == (
+        "name",
+        "peer_id",
+        "tags",
+        "enabled",
+        "priority",
+        "policy",
+    )
+    assert tuple(field.name for field in fields(FleetConfig)) == (
+        "schema_version",
+        "defaults",
+        "nodes",
+        "managed_targets",
+    )
+    for legacy_name in (
+        "AgentCard",
+        "NodeSnapshot",
+        "NodeTaskResult",
+        "FleetTransport",
+    ):
+        assert not hasattr(models, legacy_name)
+    assert importlib.util.find_spec("hermes_fleet.transport") is None
+
+
 @pytest.mark.parametrize(
     "field",
     (

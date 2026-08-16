@@ -84,6 +84,16 @@ def test_plugin_registers_bounded_async_fleet_surfaces() -> None:
         set(tool["schema"]) == {"name", "description", "parameters"}
         for tool in context.tools
     )
+    assert all(
+        set(tool["schema"]["parameters"])
+        == {"type", "properties", "required", "additionalProperties"}
+        for tool in context.tools
+    )
+    assert all(
+        tool["schema"]["parameters"]["type"] == "object"
+        and tool["schema"]["parameters"]["additionalProperties"] is False
+        for tool in context.tools
+    )
 
     command = context.cli[0]
     assert command["name"] == "fleet"
