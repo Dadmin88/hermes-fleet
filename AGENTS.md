@@ -9,9 +9,10 @@ Coding agents should understand the ecosystem before modifying a contract.
 For architecture or product work, read these documents in order:
 
 1. [`docs/vnext-foundation.md`](docs/vnext-foundation.md) - the frozen vNext ownership boundaries, hard invariants, machine-boundary rule, canonical lifecycle, and terminology.
-2. [`docs/ecosystem.md`](docs/ecosystem.md) - the full repository and authority map.
-3. [`docs/architecture.md`](docs/architecture.md) - Fleet's current internal trust, request, state, and execution boundaries.
-4. The document for the subsystem being changed:
+2. [`docs/vnext-progress.md`](docs/vnext-progress.md) - the canonical phase ledger and the only phase that may be advanced next.
+3. [`docs/ecosystem.md`](docs/ecosystem.md) - the full repository and authority map.
+4. [`docs/architecture.md`](docs/architecture.md) - Fleet's current internal trust, request, state, and execution boundaries.
+5. The document for the subsystem being changed:
    - [`docs/profile-placement.md`](docs/profile-placement.md)
    - [`docs/node-readiness.md`](docs/node-readiness.md)
    - [`docs/managed-projection-v1.md`](docs/managed-projection-v1.md)
