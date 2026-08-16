@@ -93,7 +93,7 @@ Fleet current Phase 2 branch:
 - `git diff --check`: PASS;
 - public repository hygiene: PASS.
 
-Hermes Agent branch `vnext/phase2-disposable-oci-body`, based on the preserved Phase 1 reconciliation branch:
+Hermes Agent branch `vnext/phase2-disposable-oci-body`, commit `ef20e27ee`, based on the preserved Phase 1 reconciliation branch:
 
 - preserved Phase 1 API-run + Phase 2 Docker regression slice: **169 passed, 2 skipped**;
 - Phase 2 exact-workshop verifier + real Docker entry proof: **20 passed**;
