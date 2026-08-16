@@ -21,6 +21,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 ### Membership, state, and readiness
 
 - [Managed projection V1](managed-projection-v1.md) - authenticated local Nodescale-to-Fleet managed-state contract.
+- [Nodescale operator control V1](nodescale-operator-control.md) - strict read-only Fleet client for Nodescale-owned durable device authority.
 - [Node observations and scheduler readiness](node-readiness.md) - layered liveness, freshness, capacity, observed Hermes profiles, reason codes, and operator configuration.
 
 ### Operator experience

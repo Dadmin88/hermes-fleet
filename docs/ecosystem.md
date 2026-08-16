@@ -315,6 +315,7 @@ The ecosystem is being built in layers. Documentation must distinguish a merged 
 - default-deny Fleet authorization;
 - deliberate local Hermes Runs execution;
 - Nodescale managed projection;
+- strict read-only Nodescale operator-control consumption for durable device authority inspection;
 - current node observations and explainable scheduler readiness;
 - installed Hermes profile presence and exact Agency V1 content digests when safely provable;
 - general and exact ready-profile lookup;
@@ -359,6 +360,7 @@ Repository-specific instructions for coding agents live in [`../AGENTS.md`](../A
 - [Profile identity, presence, and execution locality](profile-placement.md): Agency integration, current native profile evidence, and the planned Recipe boundary.
 - [Node observations and scheduler readiness](node-readiness.md): how Fleet decides whether a node is currently ready.
 - [Managed projection V1](managed-projection-v1.md): the Nodescale-to-Fleet contract.
+- [Nodescale operator control V1](nodescale-operator-control.md): Fleet's strict read-only client for Nodescale-owned durable device authority.
 - [Deployment](deployment.md): controller, worker, Keryx, and Hermes service topology.
 - [Fleet Desktop](desktop.md): the current operator application surface.
 - [Fleet Canvas topology](canvas.md): graph presentation and workflow-editor authority boundaries.

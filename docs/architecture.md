@@ -120,6 +120,14 @@ Managed state is separate from:
 
 The projection contract provides generation-based application, replay detection, conflict detection, and authoritative read-back. See [Managed projection V1](managed-projection-v1.md).
 
+## Nodescale operator control
+
+Nodescale exposes durable device, membership, trust-lifecycle, provider-binding, and Keryx-binding evidence through the separate local read-only `nodescale.operator.v1` Unix-domain API. Fleet's strict client supports only `capabilities`, bounded `devices.list`, and exact `devices.inspect`; it never reads Nodescale SQLite.
+
+Nodescale authenticates the exact configured Fleet service UID through `SO_PEERCRED` before parsing a request. The read path does not reconcile provider trust, prove live Keryx health, admit a device into Fleet, derive readiness, or authorize an operation. Unsupported live facts remain explicitly unavailable. Trust/revoke and invitation mutations remain outside this first slice and require separately typed, revision-fenced contracts with authoritative read-back.
+
+See [Nodescale operator control V1](nodescale-operator-control.md).
+
 ## Operational observations and readiness
 
 Managed membership answers whether Fleet knows and admits a node. It does not prove that the node is alive or able to receive useful work.
