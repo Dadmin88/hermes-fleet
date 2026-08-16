@@ -329,7 +329,9 @@ class DestinationRecipeExecutor:
                         "realization_id": profile,
                         "keryx_task_id": package.execution_id,
                         "hermes_run_id": run_id,
-                        "reason": "failed Hermes run requires quiescent profile cleanup",
+                        "reason": (
+                            "failed Hermes run requires quiescent profile cleanup"
+                        ),
                     },
                 )
                 try:
@@ -361,7 +363,8 @@ class DestinationRecipeExecutor:
                         "keryx_task_id": package.execution_id,
                         "hermes_run_id": run_id,
                         "reason": (
-                            "Hermes execution completed but profile quiescence is unproven"
+                            "Hermes execution completed but profile "
+                            "quiescence is unproven"
                         ),
                     },
                 )
@@ -403,7 +406,9 @@ class DestinationRecipeExecutor:
                         "realization_id": profile,
                         "keryx_task_id": package.execution_id,
                         "hermes_run_id": run_id,
-                        "reason": "verified terminal Hermes run requires profile cleanup",
+                        "reason": (
+                            "verified terminal Hermes run requires profile cleanup"
+                        ),
                     },
                 )
                 self._runtime.cleanup(profile, expected_owner=package.execution_id)

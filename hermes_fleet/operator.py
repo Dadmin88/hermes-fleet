@@ -140,7 +140,10 @@ async def _inventory_probe_with_retry(
     deadline_seconds: int,
     sleep=asyncio.sleep,
 ):
-    """Retry only the read-only inventory probe; execution submission stays single-shot."""
+    """Retry only the read-only inventory probe.
+
+    Execution submission stays single-shot.
+    """
     last_error: Exception | None = None
     for attempt in range(_INVENTORY_PROBE_ATTEMPTS):
         delay = _INVENTORY_RETRY_DELAYS[attempt]
@@ -605,7 +608,9 @@ class OperatorService:
         execution_status: str | None = None
         if execution_evidence:
             if status == "completed":
-                execution_status = "succeeded" if result is not None else "indeterminate"
+                execution_status = (
+                    "succeeded" if result is not None else "indeterminate"
+                )
             elif status not in known_nonterminal:
                 execution_status = "indeterminate"
         return OperatorCompletionResult(

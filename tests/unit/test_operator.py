@@ -617,7 +617,7 @@ def test_task_inspection_preserves_nonterminal_state(status: str) -> None:
     assert result.error_category is None
 
 
-def test_typed_execution_outcome_keeps_transport_and_execution_status_separate() -> None:
+def test_typed_outcome_separates_transport_and_execution_status() -> None:
     artifact = SimpleNamespace(
         name="fleet-execution-outcome.v1.json",
         parts=[

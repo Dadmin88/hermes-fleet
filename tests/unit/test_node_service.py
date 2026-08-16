@@ -418,7 +418,13 @@ def test_execution_toolsets_are_destination_scoped() -> None:
 
 @pytest.mark.parametrize(
     "toolsets",
-    ["", " fleet-terminal", "fleet-terminal,", "fleet-terminal,fleet-terminal", "Fleet-terminal"],
+    [
+        "",
+        " fleet-terminal",
+        "fleet-terminal,",
+        "fleet-terminal,fleet-terminal",
+        "Fleet-terminal",
+    ],
 )
 def test_execution_toolsets_reject_invalid_values(toolsets: str) -> None:
     from hermes_fleet.node_service import _execution_toolsets
