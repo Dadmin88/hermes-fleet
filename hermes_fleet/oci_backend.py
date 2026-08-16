@@ -227,6 +227,10 @@ class DockerExecutionBackend(ExecutionBackend):
         """Return provider-specific docker-create arguments before labels/image."""
         return []
 
+    def _docker_network_name(self) -> str:
+        """Return the concrete Docker network for this realization."""
+        return self._realization.network
+
     def _verify_image_reference(self, expected: dict[str, str]) -> None:
         try:
             document = _one_document(
@@ -291,7 +295,7 @@ class DockerExecutionBackend(ExecutionBackend):
             "--security-opt",
             "no-new-privileges:true",
             "--network",
-            self._realization.network,
+            self._docker_network_name(),
             "--pids-limit",
             str(self._realization.pids_limit),
             "--memory",
@@ -565,17 +569,28 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         del plan
         return {}
 
+    def _egress_label(self) -> str:
+        return "off"
+
+    def _network_labels(self) -> dict[str, str]:
+        return {}
+
+    def _required_environment(self) -> set[str]:
+        return {"HOME=/home/fleet", "TMPDIR=/tmp"}
+
     def _additional_labels(self, plan: ExecutionPlan) -> dict[str, str]:
         task_label = re.sub(r"[^A-Za-z0-9_.-]", "_", f"fleet:{plan.execution_id}")
         task_label = task_label[:63] or "unknown"
-        return {
+        labels = {
             f"{_LABEL_PREFIX}role": "workshop",
             f"{_LABEL_PREFIX}plan": plan.fingerprint,
             f"{_LABEL_PREFIX}deadline_ms": str(self._deadline_ms),
             "hermes-agent": "1",
             "hermes-task-id": task_label,
-            "hermes-egress": "off",
+            "hermes-egress": self._egress_label(),
         }
+        labels.update(self._network_labels())
+        return labels
 
     def _additional_create_args(self, plan: ExecutionPlan) -> list[str]:
         del plan
@@ -632,7 +647,11 @@ class DockerWorkshopBackend(DockerExecutionBackend):
             or labels.get(f"{_LABEL_PREFIX}plan") != observed_plan
             or labels.get(f"{_LABEL_PREFIX}deadline_ms") != str(self._deadline_ms)
             or labels.get("hermes-agent") != "1"
-            or labels.get("hermes-egress") != "off"
+            or labels.get("hermes-egress") != self._egress_label()
+            or any(
+                labels.get(key) != value
+                for key, value in self._network_labels().items()
+            )
         ):
             _security_mismatch("Docker workshop identity labels changed")
         if config.get("User") != f"{self._RUN_UID}:{self._RUN_GID}":
@@ -642,12 +661,12 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         if config.get("WorkingDir") != "/workspace":
             _security_mismatch("Docker workshop working directory changed")
         environment = config.get("Env")
-        if type(environment) is not list or not {
-            "HOME=/home/fleet",
-            "TMPDIR=/tmp",
-        }.issubset(set(environment)):
+        if (
+            type(environment) is not list
+            or not self._required_environment().issubset(set(environment))
+        ):
             _security_mismatch("Docker workshop environment changed")
-        if host.get("NetworkMode") != "none":
+        if host.get("NetworkMode") != self._docker_network_name():
             _security_mismatch("Docker workshop network isolation changed")
         if host.get("ReadonlyRootfs") is not True:
             _security_mismatch("Docker workshop root filesystem is writable")

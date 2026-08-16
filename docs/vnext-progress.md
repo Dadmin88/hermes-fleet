@@ -25,8 +25,8 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 1 | COMPLETE | [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md); current Fleet + Agent reconciliation, upstream Nodescale socket fix, preserved 10-run soak. |
 | 2 | COMPLETE | [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md); Fleet-owned generic workshop, hardening/deadline binding, observed Docker verification, Hermes attach-only independent verification, real-Docker proofs. |
 | 3 | COMPLETE | [Phase 3 workspace isolation](vnext-phase3-workspace-isolation.md); canonicalized project projection, verified authority scope, distinct immutable read staging, separately authorized writable copies, declared/scanned artifact export, and real-Docker N+1 zero-residue proof. |
-| 4 | NEXT | Network isolation. Preserve `network=none` by default and audit the four exact network modes and enforcement tasks before granting any workshop egress. |
-| 5 | NOT STARTED | Controlled host-action broker. |
+| 4 | COMPLETE | [Phase 4 network isolation](vnext-phase4-network-isolation.md); four explicit modes, offline provider traffic, authority/DNS pinning, internal-only workshop topology, hardened Fleet CONNECT gateway, proxy non-bypass, lateral/management/rebinding denial, audit, and independent Hermes verification. |
+| 5 | NEXT | Controlled host-action broker. Build only structured, authority-checked host effects; never expose generic host power to a workshop. |
 | 6 | NOT STARTED | Persistent Hermes Agent Instances. |
 | 7 | NOT STARTED | Run-scoped Hermes execution overrides. |
 | 8 | NOT STARTED | Run Capsule lifecycle. |
@@ -64,16 +64,16 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 4.**
+**Next work begins at Phase 5.**
 
-Before implementing Phase 4:
+Before implementing Phase 5:
 
-1. read the exact Phase 4 network modes and tasks from the operator-supplied master plan;
-2. keep the Phase 2/3 workshop at `network=none` until an explicit network mode can be proven enforceable;
-3. audit candidate work only for the four exact modes: `none`, `provider-only`, `project allowlist`, and `explicitly approved internet`;
-4. preserve model-provider traffic outside the workshop whenever possible and prove there is no implicit LAN, Tailscale-management, metadata, proxy, Docker-context, or DNS-rebinding escape;
-5. bind the granted network posture to the verified authority surface without implementing the full Phase 10 RunAuthority object early;
-6. audit every network decision and fail closed whenever enforcement cannot be proven;
-7. close every Phase 4 requirement before marking Phase 5 active.
+1. read the exact controlled host-action broker requirements from the operator-supplied master plan;
+2. audit historical broker experiments only as candidate material, never as automatic completion;
+3. keep containers free of generic host power: no arbitrary shell, Docker socket, unrestricted systemd, unrestricted SSH, or arbitrary host paths;
+4. define only structured verbs such as approved artifact deployment, approved service restart, approved publish/replace, and approved health queries;
+5. require every invocation to validate the principal/authority slice, Recipe, destination node policy, exact target, parameters, idempotency key, deadline, and rate limit;
+6. return structured effect evidence and preserve the invariant that Templar may later recommend deny/review but can never grant broker authority;
+7. close every Phase 5 requirement before marking Phase 6 active.
 
 Do not resume an old later-phase worktree simply because it exists.

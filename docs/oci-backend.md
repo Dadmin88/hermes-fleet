@@ -83,6 +83,20 @@ The whole workspace remains tmpfs/container state. Fleet container cleanup destr
 
 Hermes independently checks the workshop's Agent UID and the distinct input-staging tmpfs ownership before attachment. It still has no lifecycle or staging-identity fallback.
 
+## vNext network isolation
+
+Phase 4 keeps `network=none` as the default and preserves `provider-only` as an offline workshop posture: model-provider traffic stays outside the container. Direct workshop egress is possible only for an exact `project-allowlist` or `explicitly-approved-internet` grant bound to the verified RunAuthority hash; the latter additionally requires a separate approval hash and still carries exact pinned destinations.
+
+Direct modes place the workshop on a per-execution Docker `--internal` network, not the ordinary bridge. Direct DNS is disabled and the workshop has no normal external route, so ignoring proxy environment variables cannot create raw internet/LAN access. A disposable, hardened Fleet egress gateway is the only component attached to both the internal network and an outbound bridge.
+
+The gateway resolves destinations itself and requires every runtime public-IPv4 answer set to equal the authorization-time pinned set before opening a CONNECT tunnel. Special/private/LAN/shared-management/metadata destinations and direct DNS or Docker-management ports fail closed. Fleet continuously verifies exact internal-network membership, so an unexpected lateral peer invalidates the enforcement state.
+
+The gateway starts with only the internal network attached, binds its listener to Docker's assigned internal IPv4 address, and is independently inspected before Fleet attaches its outbound bridge. Fleet re-verifies the listener afterward to prove it did not widen to another address or IPv6. The exact gateway image, startup command, generated policy/script hashes, non-root hardening, resource bounds, mount posture, bounded audit-log configuration, and network attachments are all checked from the observed Docker document.
+
+Hermes Agent independently verifies the expected Phase 4 binding before attachment and before each command. Offline/provider-only runs must still be `network=none`. Mediated runs must match the exact Fleet network, policy hash, authority hash, gateway ID/IP, loopback-only DNS posture, proxy environment, and single-network membership. Hermes still enters only the exact Fleet-owned container via `docker exec` and receives no network-lifecycle authority.
+
+See [Phase 4 network isolation](vnext-phase4-network-isolation.md) for the full requirement-by-requirement acceptance evidence.
+
 ## Lifecycle and recovery
 
 Container names are deterministic digests of Fleet execution identity. `prepare` inspects before create and after any uncertain create response. It adopts an existing realization only when all exact ownership labels and the image identity match; otherwise it rejects the collision without mutation.
