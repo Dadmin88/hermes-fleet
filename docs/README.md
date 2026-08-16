@@ -4,9 +4,10 @@ This directory contains the durable public documentation for Hermes Fleet. It de
 
 ## New to Hermes Fleet? Start here
 
-1. [**Ecosystem map**](ecosystem.md) - the complete Hermes stack: Fleet, Nodescale, Keryx, Hermes Agent, Hermes Agency, Desktop, and the private-network substrate. Start here to understand what each repository owns and how work moves through the system.
-2. [**Architecture**](architecture.md) - Fleet's authority model, request flow, state ownership, execution boundary, and implementation strategy.
-3. [**Deployment**](deployment.md) - the concrete controller/worker/Keryx/Hermes service topology and rollout guidance.
+1. [**vNext foundation**](vnext-foundation.md) - the frozen planned ownership boundaries, hard invariants, machine-boundary rule, canonical Agent Instance/RunAuthority/Run Capsule lifecycle, and terminology.
+2. [**Ecosystem map**](ecosystem.md) - the complete Hermes stack: Fleet, Nodescale, Keryx, Hermes Agent, Hermes Agency, Desktop, and the private-network substrate. Start here to understand what each repository owns and how work moves through the system today.
+3. [**Architecture**](architecture.md) - Fleet's current authority model, request flow, state ownership, execution boundary, and implementation strategy.
+4. [**Deployment**](deployment.md) - the concrete controller/worker/Keryx/Hermes service topology and rollout guidance.
 
 If your main question is **"where does Hermes Agency fit, and how will Fleet find or place profiles?"**, read [Profile identity and placement](profile-placement.md).
 
@@ -14,6 +15,7 @@ If your main question is **"where does Hermes Agency fit, and how will Fleet fin
 
 ### Ecosystem and architecture
 
+- [vNext foundation](vnext-foundation.md) - frozen planned ownership boundaries, hard invariants, machine-boundary rule, canonical lifecycle, and terminology.
 - [Ecosystem map](ecosystem.md) - repository responsibilities, trust chain, cross-component flows, operator mental model, and current-versus-planned capability map.
 - [Architecture](architecture.md) - component authorities, exact-node request flow, local authorization, durable Fleet state, deadlines, and execution correlation.
 - [Profile identity and placement](profile-placement.md) - installed profile observations, exact Agency V1 package identity, ready-carrier lookup, pinned Agency snapshots, placement candidates, and the current locate-or-place boundary.

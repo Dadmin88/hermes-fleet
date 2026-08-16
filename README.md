@@ -36,7 +36,7 @@ If you are new to the project, the quickest path is:
 
 > **Fleet coordinates these systems through their contracts. It does not reimplement them.**
 
-Keryx remains the transport. Nodescale remains the device-trust authority. Hermes remains the local execution runtime. Agency remains the professional profile source.
+Keryx remains the **inter-machine** transport. Nodescale remains the remote device-trust authority. Hermes remains the local execution runtime. Agency remains the professional capability source. Same-machine Fleet execution stays local to Fleet + Hermes rather than taking a Keryx round trip.
 
 ---
 
@@ -107,17 +107,23 @@ Fleet currently provides:
 
 Fleet does **not** currently claim:
 
+- the complete persistent Hermes-backed Agent Instance lifecycle;
+- immutable RunAuthority as the sole source of temporary execution power;
+- temporary Run Capsule lifecycle and recovery;
 - runtime-neutral Fleet Recipe execution;
 - automatic placement winner selection;
-- disposable per-task worker environments;
-- Docker, PRoot/OCI, or other execution backends as current Fleet runtime contracts;
+- Fleet-owned hardened disposable per-run execution bodies;
+- scoped memory/skill promotion and context-firewall guarantees;
+- Templar pre-execution and learning gates;
+- Vault-backed temporary secret handling;
+- a structured host-action broker;
 - a general CPU/GPU workload scheduler;
 - executable distributed workflow graphs;
 - persistent automatic remote Agency profile installation;
 - a second mailbox, relay, or transport system;
 - proven end-to-end cancellation of an already-running remote Hermes run.
 
-The planned execution-fabric direction is to make agent/environment requirements portable through validated Fleet Recipes and materialize them on compatible trusted nodes using mature backend runtimes rather than turning Fleet into a homegrown runtime.
+The frozen vNext direction is **durable brain, disposable body**: a persistent Hermes Agent Instance keeps its Agency base and authorized learning, while each execution receives immutable RunAuthority, a temporary Fleet Run Capsule, and a Fleet-owned disposable runtime that drives Hermes through native `/v1/runs`. Same-machine work stays local; Nodescale/Keryx enter only for actual cross-machine identity, trust, transport, reconciliation, or distributed coordination. See **[vNext foundation](docs/vnext-foundation.md)**.
 
 ---
 
@@ -198,7 +204,7 @@ profile name
 
 That lets Fleet distinguish the exact approved package from a same-name package with different content, a legacy or generic installation without a provable exact digest, or no current installation at all.
 
-### Current native locality vs planned Recipe execution
+### Current native locality vs planned vNext execution
 
 Current Fleet can:
 
@@ -212,21 +218,29 @@ find exact ready native carriers
 inspect other eligible ready candidates
 ```
 
-The planned execution fabric moves environment requirements into:
+The frozen vNext direction keeps Recipe/ResolvedRecipe/ExecutionPlan as runtime-neutral planning inputs, then binds execution to a persistent Hermes brain and a disposable Fleet-owned body:
 
 ```text
-Fleet Recipe
-    ↓
-ResolvedRecipe
-    ↓
-ExecutionPlan
-    ↓
-capability-aware node selection
-    ↓
-worker environment materialization
+Fleet Recipe / ResolvedRecipe / ExecutionPlan
+        ↓
+placement + local admission
+        ↓
+Persistent Hermes Agent Instance
+        ↓
+Immutable RunAuthority
+        ↓
+Temporary Run Capsule
+        ↓
+Fleet-owned disposable execution body
+        ↓
+Hermes native /v1/runs
+        ↓
+finalization / quiescence
+        ↓
+destroy body; preserve Agent Instance
 ```
 
-That planned model does not require every professional profile to be permanently installed on every candidate host. Recipe execution, heterogeneous execution backends, automatic scheduling, and environment materialization remain **planned architecture, not shipped Fleet behavior**.
+That planned model does not require every professional profile to be permanently installed on every candidate host and does not turn Agency identity into per-run authority. Recipe execution, persistent Agent Instance semantics, hardened disposable execution bodies, automatic scheduling, and the broader vNext security/learning layers remain **planned architecture, not shipped Fleet behavior**.
 
 See **[Profile identity, presence, and execution locality](docs/profile-placement.md)**.
 

@@ -3,7 +3,7 @@
 //! Compatibility types preserve proven Python behavior while the Rust domain
 //! also owns typed node observations and scheduler-readiness derivation. This
 //! crate does not own Keryx transport, Nodescale state, persistence, scheduling,
-//! profiles, Sentinel, or UI.
+//! profiles, Templar, or UI.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -3,7 +3,7 @@
 //! This crate persists accepted managed projection, one current scheduling
 //! observation per managed node, and duplicate-safe Hermes run-binding truth.
 //! It deliberately contains no transport, scheduler, telemetry history, profile
-//! installation, Sentinel, or UI responsibilities.
+//! installation, Templar, or UI responsibilities.
 
 use std::{
     collections::BTreeSet,

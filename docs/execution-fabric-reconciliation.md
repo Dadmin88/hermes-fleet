@@ -1,6 +1,6 @@
 # Execution Fabric current-state reconciliation
 
-This document reconciles the planned execution-fabric direction with the shipped Fleet tree after exact-target Desktop execution. It is an implementation boundary, not a claim that Recipe execution, automatic placement, or environment backends are available.
+This document records the shipped execution-fabric foundation and the historical FX1 boundary after exact-target Desktop execution. It is not a claim that Recipe execution, automatic placement, or environment backends are available. For planned work beyond that foundation, the frozen authority/lifecycle direction is now [vNext foundation](vnext-foundation.md); any older planned sequence in this document is subordinate to that contract.
 
 ## Current shipped layers
 
@@ -33,21 +33,33 @@ No Recipe state currently exists, and FX1 does not require a new database.
 
 ## Reconciled implementation sequence
 
+The FX1 Recipe/ResolvedRecipe/ExecutionPlan layers remain valid planning inputs, but vNext wraps them in the persistent-brain / temporary-authority lifecycle:
+
 ```text
 FleetRecipe
     logical runtime-neutral requirements
         ↓ explicit resolution
 ResolvedRecipe
     exact immutable ingredient identities
-        ↓ later backend planning
+        ↓ backend planning / placement / local admission
 ExecutionPlan
-    backend/platform-specific validated realization
-        ↓ later eligibility and local admission
-ExecutionBackend
-    fresh task environment through mature runtime primitives
         ↓
-Hermes task → Keryx result/artifacts → cleanup
+Persistent Hermes Agent Instance
+        ↓
+Immutable RunAuthority
+        ↓
+Temporary Run Capsule
+        ↓
+Fleet-owned disposable execution body
+        ↓
+Hermes native /v1/runs
+        ↓
+finalization / quiescence
+        ↓
+destroy body; preserve Agent Instance
 ```
+
+Keryx is inserted only when the request/result actually crosses a machine boundary. It is not part of the same-machine lifecycle by default.
 
 ## FX1 boundary
 

@@ -4,17 +4,21 @@ Hermes Fleet is the **control plane for a distributed Hermes installation**. It 
 
 This page is the best starting point when the repository names are familiar but the full map is not.
 
+For the frozen **vNext planned architecture**, read [vNext foundation](vnext-foundation.md) first. In particular, vNext makes the machine boundary explicit: same-machine execution stays local to Fleet + Hermes, while Nodescale/Keryx enter only for real cross-machine identity, trust, transport, reconciliation, or distributed coordination.
+
 ## The short version
 
 Think of the ecosystem as a stack of deliberately separate responsibilities:
 
 - **Headscale / Tailscale** provides private network reachability.
 - **Nodescale** decides which physical or virtual device has joined, whether it is trusted, and which Keryx identity belongs to it.
-- **Hermes Keryx** authenticates application peers and moves durable work, results, and artifacts between machines.
-- **Hermes Fleet** decides which Fleet operation is allowed, which exact machine is being addressed, whether a node is ready, and how distributed Hermes work is coordinated.
-- **Hermes Agent** performs the actual local agent work on each machine.
-- **Hermes Agency** supplies versioned professional Hermes profile distributions and their skills. Fleet can observe exact native profile presence today, while planned Recipe execution can use exact Agency package identity as a portable environment requirement rather than requiring persistent host installation.
-- **Hermes Desktop + the Fleet plugin** gives operators a visual control surface over Fleet state.
+- **Hermes Keryx** authenticates application peers and moves durable work, results, and artifacts **between machines**. It is not the same-machine execution path.
+- **Hermes Fleet** owns authorization, admission, placement/scheduling, immutable RunAuthority, temporary Run Capsules, disposable runtime lifecycle, grants, host-action authority, learning-promotion policy, Templar orchestration, and audit/provenance as those vNext contracts land.
+- **Hermes Agent** performs the actual local agent work and owns persistent Agent Instances, native profiles, `/v1/runs`, models, tools, approvals, sessions, memory/skill primitives, process evidence, and finalization/quiescence.
+- **Hermes Agency** supplies immutable professional capability bases, profile definitions, bundled skills, and exact pinned source material.
+- **Templar** is a low-authority evaluator that may return `ALLOW`, `DENY`, or `REVIEW`; it never grants or widens authority.
+- **Vault** owns secret bodies, versions/rotation, scoped references, and temporary run handles.
+- **Hermes Desktop + the Fleet plugin** gives operators a visual control surface over authoritative Fleet state.
 
 No layer is allowed to quietly impersonate another layer's authority.
 
@@ -60,11 +64,13 @@ Agency is therefore part of the ecosystem, but it is **not another trust or tran
 | Layer | Repository / project | Owns | Does not own |
 | --- | --- | --- | --- |
 | Private connectivity | Headscale / Tailscale | Private network membership, addresses, reachability | Fleet authorization, Keryx peer identity, Hermes execution |
-| Device trust | [Hermes Nodescale](https://github.com/Dadmin88/hermes-nodescale) | Provider-device correlation, stable device identity, explicit trust, Keryx binding, managed Fleet projection | Task transport, scheduling, Hermes execution |
-| Transport | [Hermes Keryx](https://github.com/Dadmin88/hermes-keryx) | Authenticated peer identity, routing, durable tasks/results, claims, leases, relay delivery, artifacts | Application-level permission to perform a Fleet operation |
-| Control plane | **Hermes Fleet** | Friendly node identity, authorization, exact-node dispatch, managed reconciliation, observations, readiness, execution correlation, operator surfaces | A second transport, a second mesh, arbitrary implicit trust |
-| Execution | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Local models, tools, skills, profiles, permissions, memory, sessions, Runs execution | Cross-machine Fleet policy or device trust |
-| Professional capabilities | [Hermes Agency](https://github.com/Dadmin88/hermes-agency) | Versioned professional profile distributions, role definitions, bundled skills, routing metadata | Live node state, device trust, transport, node selection |
+| Device trust | [Hermes Nodescale](https://github.com/Dadmin88/hermes-nodescale) | Provider-device correlation, stable device identity, membership, explicit trust, principal/device trust relationships, Keryx binding, cross-machine identity projection | Task transport, local execution, Fleet RunAuthority |
+| Inter-machine transport | [Hermes Keryx](https://github.com/Dadmin88/hermes-keryx) | Authenticated peer identity, routing, durable remote tasks/results, claims, leases, bounded redelivery, relay delivery, artifacts | Same-machine execution or application-level execution authority |
+| Control plane | **Hermes Fleet** | Authorization, admission, placement/scheduling, reservations, RunAuthority, Run Capsules, disposable runtime lifecycle, grants, host-action authority, learning-promotion policy, Templar orchestration, audit/provenance | Agent brain storage, secret bodies, device trust, inter-machine transport, a homegrown container runtime |
+| Execution | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Persistent Agent Instances, native profiles, local Runs, models/providers, tools, approvals, sessions, memory/skill primitives, interruption, process evidence, finalization/quiescence | Cross-machine Fleet policy, transport, or device trust |
+| Professional capabilities | [Hermes Agency](https://github.com/Dadmin88/hermes-agency) | Immutable professional capability bases, profile definitions, bundled skills, exact pinned source material | Live node state, temporary run authority, transport, node selection |
+| Security evaluator | Templar | Low-authority `ALLOW` / `DENY` / `REVIEW` evaluation bound to exact requests/candidates | Granting authority, operating nodes, arbitrary tools, Fleet/Keryx/Docker control |
+| Secret custody | Vault | Secret bodies, versioning, rotation, scoped references, temporary run handles | Agent identity, execution policy, or model-visible authority |
 | Operator UX | Fleet Desktop plugin in this repository | Presentation of authoritative Fleet state and bounded operator actions | New authority invented by the UI |
 
 ### The key architectural sentence
@@ -133,7 +139,7 @@ Fleet keeps only the state that belongs to its own authority:
 - exact observed Hermes profile presence as part of that observation;
 - narrow Keryx-task-to-Hermes-run bindings needed for restart-safe execution correlation.
 
-Keryx remains the durable transport/task ledger. Hermes remains the local execution system.
+For cross-machine work, Keryx remains the durable transport/task ledger. Hermes remains the local execution system, and same-machine Fleet work does not require a Keryx task merely to reach Hermes.
 
 ## How Nodescale enters Fleet
 
@@ -215,7 +221,7 @@ Fleet's merged profile-awareness foundation currently provides:
 
 These are current observation and lookup contracts. They do not create a persistent remote profile installer, choose a scheduling winner, or authorize execution.
 
-The planned execution-fabric direction uses exact Agency package identity as a possible Fleet Recipe input. A future scheduler can select a trusted compatible node and a validated execution backend can materialize the required environment without requiring the profile to be permanently installed on that host first.
+The frozen vNext direction uses exact Agency package identity as an immutable capability-base input to a persistent Hermes Agent Instance. Fleet Recipes and ExecutionPlans can inform placement/materialization, but temporary execution power comes only from exact RunAuthority and a temporary Run Capsule. A compatible node can materialize the disposable execution body without requiring the professional profile to be permanently installed on that host first.
 
 Persistent automatic host profile installation is not the default planned completion path for distributed profile availability.
 

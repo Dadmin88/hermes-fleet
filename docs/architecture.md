@@ -4,6 +4,8 @@ Hermes Fleet is an application-level coordination layer built on Hermes Keryx. K
 
 Fleet does not implement a parallel relay, task ledger, workflow engine, mailbox, or container runtime.
 
+For the frozen **vNext planned architecture**, including persistent Agent Instances, immutable RunAuthority, temporary Run Capsules, disposable execution bodies, Templar, Vault, and the local-vs-remote machine-boundary invariant, read [vNext foundation](vnext-foundation.md) first. Current merged behavior described in this document remains current truth until each vNext phase is implemented and proven.
+
 For the cross-repository view before reading Fleet internals, see [Ecosystem map](ecosystem.md).
 
 ## Authority model
@@ -182,52 +184,59 @@ Existing native profile observation, exact package identity, and candidate disco
 
 See [Profile identity, presence, and execution locality](profile-placement.md).
 
-## Planned execution fabric
+## Planned vNext execution architecture
 
-The following is **planned architecture, not a current Fleet runtime contract**.
+The following is **planned architecture, not a current Fleet runtime contract**. The frozen direction is defined by [vNext foundation](vnext-foundation.md).
 
-The execution-fabric direction introduces a runtime-neutral layer above any specific environment backend:
+Runtime-neutral Recipe/ResolvedRecipe/ExecutionPlan contracts remain useful inputs to placement and materialization, but the execution lifecycle is now explicitly centered on a persistent Hermes-backed Agent Instance with temporary Fleet authority and a disposable body:
 
 ```text
-Fleet Recipe
-    declared agent/profile/environment/resource/security requirements
-        ↓
-ResolvedRecipe
-    immutable references resolved
-        ↓
-ExecutionPlan
-    validated backend/platform-specific materialization plan
-        ↓
-Fleet scheduler
-    hard eligibility + explainable scoring
-        ↓
-destination local admission
-    authoritative current capacity/policy check
-        ↓
-ExecutionBackend
-    materialize a fresh worker using mature runtime primitives
-        ↓
-Hermes task
-        ↓
-Keryx result/artifacts
-        ↓
-cleanup
+Principal
+    ↓
+Persistent Hermes Agent Instance
+    ├── immutable Agency base
+    ├── durable scoped memory
+    ├── approved scoped skills
+    └── durable Agent metadata
+    ↓
+Immutable RunAuthority
+    ↓
+Temporary Run Capsule
+    ↓
+Fleet-owned disposable execution body
+    ↓
+Hermes native /v1/runs execution
+    ↓
+Hermes finalization / quiescence
+    ├── persist authorized learning
+    ├── revoke run grants
+    └── produce evidence
+    ↓
+destroy disposable body
+    ↓
+finalize Run Capsule
+
+Persistent Agent Instance remains.
 ```
 
 Important planned invariants:
 
-- a Fleet node is defined by trusted identity plus advertised execution capabilities, not by Docker availability;
-- Docker/OCI is a preferred initial backend on suitable Linux hosts, not Fleet's domain model;
-- heterogeneous nodes such as Android/ARM64 workers may use a different backend with explicitly weaker guarantees;
-- backends must advertise actual isolation/resource guarantees and must never pretend weaker mechanisms are equivalent to stronger ones;
-- the same logical Recipe can resolve to different platform/backend ExecutionPlans;
-- exact Agency package identity can be a Recipe input rather than a prerequisite persistent host installation;
-- the destination performs authoritative local admission after controller-side scheduling;
-- disposable workers are subordinate environments, not new Nodescale devices or permanent Keryx peers;
-- Keryx continues to own durable work/result/artifact transport;
-- Fleet orchestrates mature runtime primitives instead of implementing its own container runtime, OCI format, VPN, artifact transport, registry, package manager, or task queue;
-- scheduler decisions remain deterministic/explainable where possible;
-- time-to-useful-work is a product requirement, with immutable environment/cache reuse preferred over reusing dirty task state.
+- no temporary Hermes profiles and no deleting Agent Instances after jobs;
+- no per-run authority, credentials, container IDs, network grants, approval budgets, or host permissions in durable profile configuration;
+- Fleet owns disposable runtime lifecycle through mature backends rather than implementing a container runtime or OCI format;
+- Docker/OCI is the initial strong backend on suitable Linux hosts, not the definition of a Fleet node;
+- backends must advertise their actual isolation/resource guarantees and weaker mechanisms must never claim stronger guarantees;
+- Agency package identity is a durable capability-base input, not temporary authority;
+- the destination performs authoritative local admission;
+- authority can only remain equal or narrow;
+- memories, skills, Templar, and model output cannot widen authority;
+- security uncertainty fails closed;
+- exact-request hashes bind security judgments;
+- same-machine execution uses local Fleet + Hermes primitives and does not traverse Keryx;
+- Nodescale/Keryx enter only when crossing a machine boundary, establishing remote identity/trust, transporting remote work/results, reconciling remote state, or coordinating distributed execution;
+- after a remote hop reaches the destination, destination-local execution stays local;
+- scheduler decisions remain deterministic and explainable;
+- dirty task state must never be reused as an optimization.
 
 These statements guide future implementation but must not be exposed as shipped capability until the corresponding contracts and proofs are merged.
 

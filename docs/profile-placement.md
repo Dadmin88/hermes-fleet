@@ -8,7 +8,7 @@ The important split is:
 
 > **Agency owns profile content. Fleet owns live distributed evidence and placement policy.**
 
-This document distinguishes the current merged profile-awareness contracts from the planned execution-fabric direction. The planned direction does not turn persistent host profile installation into a prerequisite for distributed work.
+This document distinguishes the current merged profile-awareness contracts from planned vNext execution. The frozen planned direction is [vNext foundation](vnext-foundation.md): Agency content becomes the immutable capability base of a persistent Hermes Agent Instance, while temporary execution authority lives in RunAuthority/Run Capsules rather than in profile installation. Persistent host profile installation is not a prerequisite for distributed work.
 
 ## Current product contract
 
@@ -293,21 +293,29 @@ Fleet durable current state
 readiness / exact-profile lookup
 ```
 
-For planned execution-fabric work, preserve this higher-level direction:
+For planned vNext work, preserve this higher-level direction:
 
 ```text
-approved immutable Agency package requirement
+approved immutable Agency capability base
         ↓
-Fleet Recipe / ResolvedRecipe
+Fleet Recipe / ResolvedRecipe / ExecutionPlan
         ↓
-validated ExecutionPlan
+capability-aware placement + local admission
         ↓
-capability-aware node selection + local admission
+Persistent Hermes Agent Instance
         ↓
-backend environment materialization
+Immutable RunAuthority
         ↓
-Hermes task execution
+Temporary Run Capsule
+        ↓
+Fleet-owned disposable execution body
+        ↓
+Hermes native /v1/runs
+        ↓
+finalize + destroy body; preserve Agent Instance
 ```
+
+If execution remains on one machine, this path stays local. Nodescale/Keryx are introduced only for a real inter-machine identity/trust/transport boundary.
 
 Do not:
 

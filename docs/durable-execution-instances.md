@@ -1,6 +1,8 @@
 # Durable execution instances
 
-FX6 adds Fleet-owned durable correlation for one exact Recipe realization on one exact managed destination. It does not execute work and it does not replace Keryx task/result/artifact ownership.
+> **vNext terminology note:** the historical `ExecutionInstance` described here is a shipped Fleet correlation/recovery record for the earlier exact-destination execution foundation. It is **not** a persistent Hermes **Agent Instance** and it is **not** the vNext temporary **Run Capsule**. The migration/reconciliation of this legacy state belongs to the vNext lifecycle work defined in [vNext foundation](vnext-foundation.md).
+
+FX6 adds Fleet-owned durable correlation for one exact Recipe realization on one exact managed destination. It does not execute work and, for cross-machine execution, it does not replace Keryx task/result/artifact ownership.
 
 ## Bound identity
 
@@ -39,6 +41,6 @@ Fleet persists correlation and recovery intent only:
 - lifecycle state and generation;
 - exact immutable ingredient and authority references.
 
-Keryx remains authoritative for durable task payloads, terminal results, and artifacts. Backend implementations remain authoritative for runtime realization state. This table is not a second task ledger.
+For executions that cross a machine boundary, Keryx remains authoritative for durable remote task payloads, terminal results, and artifacts. Backend implementations remain authoritative for runtime realization state. This table is not a second task ledger and must not be generalized into a requirement that same-machine runs traverse Keryx.
 
 FX6 deliberately does **not** implement destination admission, Recipe execution orchestration, placement, reservations, or scheduling. FX7 must validate current destination authority before FX8 is allowed to drive this lifecycle.
