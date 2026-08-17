@@ -754,22 +754,70 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         required_tmpfs = {"/workspace", "/workspace/inputs", "/tmp", "/home/fleet"}
         if type(tmpfs) is not dict or not required_tmpfs.issubset(set(tmpfs)):
             _security_mismatch("Docker workshop tmpfs layout changed")
-        workspace_options = str(tmpfs["/workspace"]).lower()
-        if not {
-            "rw",
-            f"uid={self._RUN_UID}",
-            f"gid={self._RUN_GID}",
-            "mode=0711",
-        }.issubset({item.strip() for item in workspace_options.split(",")}):
-            _security_mismatch("Docker workshop workspace ownership changed")
-        input_options = str(tmpfs["/workspace/inputs"]).lower()
-        if not {
-            "rw",
-            f"uid={self._INPUT_UID}",
-            f"gid={self._INPUT_GID}",
-            "mode=0755",
-        }.issubset({item.strip() for item in input_options.split(",")}):
-            _security_mismatch("Docker workshop input staging ownership changed")
+        def require_tmpfs(path: str, required: set[str], label: str) -> None:
+            options = tmpfs.get(path)
+            if type(options) is not str:
+                _security_mismatch(f"Docker workshop {label} tmpfs is unavailable")
+            flags = {item.strip().lower() for item in options.split(",")}
+            if not required.issubset(flags) or "ro" in flags:
+                _security_mismatch(f"Docker workshop {label} tmpfs changed")
+
+        require_tmpfs(
+            "/workspace",
+            {
+                "rw",
+                "nosuid",
+                "nodev",
+                "exec",
+                f"size={self._WORKSPACE_BYTES}",
+                f"uid={self._RUN_UID}",
+                f"gid={self._RUN_GID}",
+                "mode=0711",
+            },
+            "workspace",
+        )
+        require_tmpfs(
+            "/workspace/inputs",
+            {
+                "rw",
+                "nosuid",
+                "nodev",
+                "exec",
+                f"size={self._INPUT_BYTES}",
+                f"uid={self._INPUT_UID}",
+                f"gid={self._INPUT_GID}",
+                "mode=0755",
+            },
+            "input staging",
+        )
+        require_tmpfs(
+            "/tmp",
+            {
+                "rw",
+                "nosuid",
+                "nodev",
+                "exec",
+                f"size={self._TMP_BYTES}",
+                f"uid={self._RUN_UID}",
+                f"gid={self._RUN_GID}",
+                "mode=0700",
+            },
+            "temporary directory",
+        )
+        require_tmpfs(
+            "/home/fleet",
+            {
+                "rw",
+                "nosuid",
+                "nodev",
+                "exec",
+                f"size={self._HOME_BYTES}",
+                f"uid={self._RUN_UID}",
+                f"gid={self._RUN_GID}",
+                "mode=0700",
+            },
+            "disposable home",
+        )
         mounts = document.get("Mounts")
         if type(mounts) is not list:
             _security_mismatch("Docker workshop mount inspection is unavailable")

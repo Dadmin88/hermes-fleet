@@ -14,6 +14,7 @@ from hermes_fleet.workspace_isolation import (
     FilesystemGrant,
     ProjectWorkspaceResolver,
     WorkspaceIsolationError,
+    WorkspaceQuiescenceProof,
     build_projection_archive,
     validate_export_archive,
 )
@@ -50,6 +51,32 @@ def grant(
         authority_ref=AUTHORITY,
         write_authority_ref=write_authority_ref,
     )
+
+
+def test_quiescence_proof_binds_exact_terminal_hermes_run() -> None:
+    proof = WorkspaceQuiescenceProof.from_document(
+        {"run_id": "run-1", "status": "completed", "quiescent": True},
+        expected_run_id="run-1",
+    )
+    assert proof.run_id == "run-1"
+    assert proof.status == "completed"
+    assert proof.quiescent is True
+
+    with pytest.raises(WorkspaceIsolationError, match="run identity changed"):
+        WorkspaceQuiescenceProof.from_document(
+            {"run_id": "run-other", "status": "completed", "quiescent": True},
+            expected_run_id="run-1",
+        )
+    with pytest.raises(WorkspaceIsolationError, match="not terminal"):
+        WorkspaceQuiescenceProof.from_document(
+            {"run_id": "run-1", "status": "running", "quiescent": True},
+            expected_run_id="run-1",
+        )
+    with pytest.raises(WorkspaceIsolationError, match="did not prove quiescence"):
+        WorkspaceQuiescenceProof.from_document(
+            {"run_id": "run-1", "status": "failed", "quiescent": False},
+            expected_run_id="run-1",
+        )
 
 
 def test_filesystem_grants_default_read_and_require_separate_write_authority() -> None:
@@ -175,6 +202,33 @@ def test_project_resolver_rejects_sensitive_state_and_symlinks_inside_tree(
     with pytest.raises(WorkspaceIsolationError, match="symlink or special"):
         resolver.resolve((grant(),), authority=scope())
 
+    nested = project / "nested"
+    nested.mkdir()
+    hidden = nested / ".aws"
+    hidden.mkdir()
+    (hidden / "credentials").write_text("nope", encoding="utf-8")
+    with pytest.raises(WorkspaceIsolationError, match="sensitive state"):
+        resolver.resolve(
+            (grant(relative_path="nested", target="/workspace/inputs/nested"),),
+            authority=scope(),
+        )
+
+    hardlinks = project / "hardlinks"
+    hardlinks.mkdir()
+    original = hardlinks / "original.txt"
+    original.write_text("same inode", encoding="utf-8")
+    (hardlinks / "alias.txt").hardlink_to(original)
+    with pytest.raises(WorkspaceIsolationError, match="hard-linked"):
+        resolver.resolve(
+            (grant(relative_path="hardlinks", target="/workspace/inputs/hardlinks"),),
+            authority=scope(),
+        )
+
+    sensitive_root = tmp_path / ".ssh"
+    sensitive_root.mkdir()
+    with pytest.raises(WorkspaceIsolationError, match="sensitive state"):
+        ProjectWorkspaceResolver({"project-1": sensitive_root})
+
 
 def test_project_resolver_rejects_forbidden_state_intersection(tmp_path: Path) -> None:
     project = tmp_path / "project"
@@ -209,11 +263,20 @@ def test_project_resolver_bounds_grant_count_targets_and_bytes(tmp_path: Path) -
             authority=scope(),
         )
 
-    with pytest.raises(WorkspaceIsolationError, match="targets must be unique"):
+    with pytest.raises(WorkspaceIsolationError, match="targets must not overlap"):
         resolver.resolve(
             (
                 grant(relative_path="p0", target="/workspace/inputs/same"),
                 grant(relative_path="p1", target="/workspace/inputs/same"),
+            ),
+            authority=scope(),
+        )
+
+    with pytest.raises(WorkspaceIsolationError, match="targets must not overlap"):
+        resolver.resolve(
+            (
+                grant(relative_path="p0", target="/workspace/inputs/nested"),
+                grant(relative_path="p1", target="/workspace/inputs/nested/child"),
             ),
             authority=scope(),
         )
@@ -264,6 +327,9 @@ def test_projection_archive_is_deterministic_owned_and_renames_single_file(
 def _tar_with_member(member: tarfile.TarInfo, payload: bytes = b"") -> bytes:
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w") as archive:
+        root = tarfile.TarInfo("out")
+        root.type = tarfile.DIRTYPE
+        archive.addfile(root)
         archive.addfile(member, io.BytesIO(payload) if member.isfile() else None)
     return stream.getvalue()
 
@@ -290,6 +356,25 @@ def test_artifact_validation_rejects_links_traversal_special_and_overflow() -> N
     too_large.size = 5
     with pytest.raises(WorkspaceIsolationError, match="byte limit"):
         validate_export_archive(_tar_with_member(too_large, b"12345"), export)
+
+    wrong_root = tarfile.TarInfo("other/result.txt")
+    wrong_root.size = 1
+    with pytest.raises(WorkspaceIsolationError, match="declared output root"):
+        validate_export_archive(_tar_with_member(wrong_root, b"x"), export)
+
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        root = tarfile.TarInfo("out")
+        root.type = tarfile.DIRTYPE
+        archive.addfile(root)
+        first = tarfile.TarInfo("out/result.txt")
+        first.size = 1
+        archive.addfile(first, io.BytesIO(b"a"))
+        duplicate = tarfile.TarInfo("out/result.txt")
+        duplicate.size = 1
+        archive.addfile(duplicate, io.BytesIO(b"b"))
+    with pytest.raises(WorkspaceIsolationError, match="duplicate member"):
+        validate_export_archive(stream.getvalue(), export)
 
 
 def test_artifact_export_only_declared_outputs_and_scanner_policy() -> None:
@@ -327,6 +412,18 @@ def test_artifact_export_only_declared_outputs_and_scanner_policy() -> None:
     assert exported == {"result.tar": payload}
     assert scanned == ["result.tar"]
     assert all("/workspace/out" not in " ".join(call[:-1]) for call in calls)
+
+    optional = ArtifactExportGrant(
+        name="optional.tar",
+        path="/workspace/out",
+        max_bytes=10,
+    )
+    with pytest.raises(WorkspaceIsolationError, match="explicitly allow"):
+        io_layer.export_declared(
+            CONTAINER_ID,
+            (optional,),
+            scanner=lambda _payload, _grant: None,  # type: ignore[return-value]
+        )
 
 
 def test_stage_uses_copy_projection_and_read_grant_becomes_immutable(

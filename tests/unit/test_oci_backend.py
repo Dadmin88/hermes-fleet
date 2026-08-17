@@ -492,6 +492,30 @@ def test_workshop_rejects_workspace_tmpfs_identity_drift() -> None:
         service.inspect(prepared)
     assert workspace_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
 
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    tmpfs = fake.container["HostConfig"]["Tmpfs"]  # type: ignore[index]
+    tmpfs["/tmp"] = (
+        "rw,nosuid,nodev,exec,size=134217728,uid=65532,gid=65532,mode=0700"
+    )
+    with pytest.raises(ExecutionBackendError) as tmp_error:
+        service.inspect(prepared)
+    assert tmp_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    tmpfs = fake.container["HostConfig"]["Tmpfs"]  # type: ignore[index]
+    tmpfs["/home/fleet"] = (
+        "rw,nosuid,nodev,exec,size=67108864,uid=0,gid=0,mode=0700"
+    )
+    with pytest.raises(ExecutionBackendError) as home_error:
+        service.inspect(prepared)
+    assert home_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
 
 def test_workshop_rejects_persistent_mount_or_identity_label_drift() -> None:
     fake = FakeDocker()
