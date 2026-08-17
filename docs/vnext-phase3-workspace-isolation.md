@@ -2,170 +2,168 @@
 
 Status: **COMPLETE**
 
-Phase 3 makes filesystem access an explicit, bounded authority surface while preserving the Phase 2 rule that the OCI workshop is disposable execution body only. Project data is not exposed by default. Fleet projects already-authorized content into per-run tmpfs and exports only declared outputs.
+Phase 3 makes project filesystem access an explicit, bounded authority surface while preserving the Phase 2 rule that the OCI workshop is a disposable execution body only. Host project trees are never mounted into the workshop by default. Fleet copies only already-authorized inputs into per-run tmpfs, exports only declared outputs, and destroys the disposable filesystem only after exact Hermes finalization evidence proves quiescence.
 
-This phase deliberately does not implement the full Phase 10 `RunAuthority` object early. `FilesystemAuthorityScope` is the Phase 3 enforcement adapter that consumes a verified RunAuthority hash and an explicit set of separately approved write-authority hashes. Phase 10 will become the producer of that verified scope.
+The master plan introduces the full immutable `RunAuthority` object later in Phase 10. Phase 3 therefore implements only the filesystem enforcement seam: `FilesystemAuthorityScope` consumes one already-verified RunAuthority hash plus explicitly approved, separate write-authority hashes. It does not mint, widen, or infer authority.
 
-## Default filesystem posture
+## Canonical integration
 
-| Requirement | Evidence | Result |
+Fleet Phase 3 merged through PR #135 after required CI passed. Canonical Fleet merge commit: `9e4cb3ce67cdb8f5702c6fc14a00806d6e87bcfd`.
+
+Hermes Agent Phase 3 merged through PR #3 after required CI passed. Canonical Agent merge commit: `2a6ff3404c256ba1bfc8af5c9d3e09fef063fb40`.
+
+The exact source trees exercised by the cross-repository Docker proof match the merged trees:
+
+- Fleet tested tree and merge tree: `007efa07ea80ed8436f015fac4dde3ed67d0194e`;
+- Agent tested tree and merge tree: `71dc31faa28c022a41ac3d9fff0165a572896e63`.
+
+Historical Phase 3 branches and older acceptance notes are evidence only. Canonical owner-repository `main` plus green CI are the closure authority.
+
+## Default disposable filesystem posture
+
+| Requirement | Canonical behavior | Result |
 | --- | --- | --- |
-| Per-run writable workspace | Phase 2 workshop provides bounded tmpfs `/workspace`; Phase 3 divides it into explicit input/work/output zones. | PASS |
-| Initial `/workspace` on tmpfs | `DockerWorkshopBackend` creates and verifies `/workspace` tmpfs. | PASS |
-| `/tmp` on tmpfs | Workshop creates and verifies bounded `/tmp` tmpfs. | PASS |
-| Bounded disposable home | Workshop uses bounded `/home/fleet` tmpfs and injects only `HOME=/home/fleet`. | PASS |
-| No host `$HOME` | No bind/volume projection is used; broad user home is forbidden as a configured project root. | PASS |
-| No automatic host cwd mount | No host cwd is inferred or mounted. Project access requires configured project ID plus explicit grant. | PASS |
-| No bind mounts by default | Workspace realization uses copy-in/copy-out over `docker exec`; no host bind/volume mount is introduced. | PASS |
+| Per-run writable workspace | Fleet workshop provides bounded writable tmpfs `/workspace`. | PASS |
+| tmpfs `/workspace` | Fleet creates and verifies bounded `/workspace`; Hermes independently verifies it is bounded, writable, `nosuid`, `nodev`, and owned by the Agent UID/GID. | PASS |
+| tmpfs `/tmp` | Fleet creates and verifies bounded `/tmp`; Hermes independently verifies positive bounded size, Agent ownership, mode `0700`, and required tmpfs flags. | PASS |
+| Bounded disposable home | Fleet creates `/home/fleet` as bounded tmpfs and injects `HOME=/home/fleet`; Hermes independently verifies the same bounded ownership/mode posture. | PASS |
+| No host `$HOME` | No bind/volume projection is used; broad host home roots are rejected. | PASS |
+| No automatic host cwd mount | Host cwd is never inferred or mounted. Project access begins from configured project identity plus an explicit filesystem grant. | PASS |
+| No bind mounts by default | Project data uses bounded copy-in/copy-out through the existing Fleet-owned container; observed bind/volume mounts fail closed. | PASS |
 
-## Project authority model
+Fleet verifies exact configured tmpfs limits for all four zones. Hermes verifies the security property independently without duplicating Fleet's allocation policy: each zone must have exactly one positive `size=` value no larger than its Phase 3 maximum, plus the expected UID/GID, mode, and `rw,nosuid,nodev,exec` posture.
 
-A filesystem grant contains only:
+## Filesystem authority model
+
+A `FilesystemGrant` contains only:
 
 - trusted destination `project_id`;
 - relative project path;
-- in-container `/workspace` target;
-- read/write mode;
+- in-container target beneath `/workspace`;
+- `read` or `write` mode;
 - byte limit;
-- exact verified RunAuthority hash;
+- exact verified RunAuthority hash reference;
 - for write mode only, a separate write-authority hash.
 
-Raw host absolute paths are never accepted as runtime filesystem grants.
+Raw host absolute paths are not runtime grants.
 
-`FilesystemAuthorityScope` binds grants to one exact `sha256:` RunAuthority hash. Writable grants are permitted only when their separate write-authority hash appears in the scope's explicit write-authority set. A write-authority hash may not equal the RunAuthority hash.
+`FilesystemAuthorityScope` binds every grant to one exact `sha256:` RunAuthority hash. Read access is the default. A writable grant is accepted only when its distinct write-authority hash is explicitly present in the verified scope; the write-authority hash may not equal the RunAuthority hash.
 
-| Requirement | Evidence | Result |
-| --- | --- | --- |
-| Read-only inputs by default | `FilesystemGrant.mode` defaults to `read`; read grants may not carry write authority. | PASS |
-| Explicit project access only through authority | Resolver requires `FilesystemAuthorityScope`; grants outside the verified RunAuthority hash fail closed. | PASS |
-| Writable project access requires separate authority | `mode=write` requires a distinct write-authority hash explicitly permitted by the scope. | PASS |
-| Bound grant count | Resolver permits at most eight filesystem projections. | PASS |
-| Bound input size | Per-grant and aggregate input byte limits are enforced before staging. | PASS |
-| Unique in-container targets | Duplicate targets fail closed. | PASS |
+Fleet bounds the number of grants, per-grant bytes, aggregate staged bytes, and in-container targets. Exact duplicate **and nested/overlapping** targets fail closed so one projection cannot shadow or overwrite another authorized projection.
 
-## Canonicalization and host-path defense
+## Canonicalization and host-state defense
 
-Fleet resolves a grant using trusted destination project configuration, not prompt-supplied host paths.
+Authorization order is intentionally fixed:
 
-The order is deliberate:
+1. resolve the configured project root;
+2. form the candidate beneath that root;
+3. canonicalize the candidate strictly;
+4. prove it remains within the configured root;
+5. reject forbidden host state, sensitive components, symlinks, special files, and hard-linked files;
+6. evaluate the verified filesystem authority scope;
+7. measure the bounded tree;
+8. build and stage a deterministic no-link archive.
 
-1. form the candidate beneath the configured project root;
-2. resolve/canonicalize the candidate strictly;
-3. prove the canonical source remains inside the configured root;
-4. reject forbidden/sensitive host state and symlink/special-file trees;
-5. only then evaluate the verified authority scope;
-6. measure and stage the bounded source.
+The resolver rejects traversal, absolute runtime source paths, symlink project roots, symlink escapes, special entries, hard-linked files, and sensitive-state components anywhere in the selected tree. A broad project selection cannot smuggle a nested sensitive directory into the workshop.
 
-A regression test combines an unauthorized authority hash with a symlink escape and proves the canonical path escape is rejected first. This locks the master-plan invariant that paths are canonicalized before authorization.
+Forbidden host-state policy covers the master-plan bans, including system roots/home roots, Docker control state, SSH state, Fleet state, Keryx state, Nodescale state, and configured Vault backing state. Additional destination-specific forbidden paths may be supplied by the trusted Fleet configuration.
 
-Fleet rejects:
+The staging pass revalidates file type, hard-link count, and sensitive components while reading, and regular files are opened with no-follow semantics where supported. This prevents the earlier authorization result from becoming a license to follow a path that changed before archive creation.
 
-- `..` traversal and absolute source paths;
-- symlinked project roots;
-- symlink escapes from the project root;
-- symlinks or special entries inside projected trees;
-- broad roots `/`, `/home`, the current whole user home, `/root`, `/etc`, `/proc`, `/sys`, `/dev`, `/run`, and Docker backing state;
-- Docker sockets;
-- Fleet, Keryx, Nodescale, and Vault backing/state roots, including common per-user state locations;
-- credential/state components such as `.ssh`, `.docker`, `.gnupg`, `.aws`, `.kube`, `.hermes`, `.keryx`, `.nodescale`, and `.vault`.
+## Read-only and writable projections
 
-An exact configured project directory nested below a user's home remains valid. The protection is against broad home exposure and sensitive state, not against legitimate narrowly configured projects.
+Read projections are staged beneath `/workspace/inputs` using a distinct non-root staging identity (`65533:65533`). Their archive modes are stripped of write bits. Hermes runs as `65532:65532`, so it cannot write the staged files or chmod them writable again.
 
-## Read-only versus writable projections
+Writable project grants are staged beneath `/workspace/work` as Agent-owned disposable copies and require separate write authority. They are **not** writable host bind mounts. A real-Docker proof mutates the writable copy and confirms the original host project file remains unchanged.
 
-Phase 3 uses disposable copy projection rather than a live host mount.
-
-### Read projection
-
-Read grants target only `/workspace/inputs/...`.
-
-The workshop has a dedicated `/workspace/inputs` tmpfs owned by non-root staging UID/GID `65533:65533`. Fleet stages the archive using `docker exec --user 65533:65533`, with directories/files mode-stripped to read/execute only. Hermes runs as separate non-root UID/GID `65532:65532`.
-
-This is stronger than merely `chmod a-w` on Agent-owned files. The real-Docker proof verifies an input file is `65533:65533:444`, then proves Agent UID 65532 can neither append to it nor `chmod u+w` to restore write access.
-
-### Writable projection
-
-Write grants target only `/workspace/work/...` and are staged as Agent UID/GID `65532:65532`. They require the separately authorized write hash. The Agent can edit the disposable copy, but the host project is not a writable bind mount, so those edits do not mutate host project state directly.
-
-This keeps host mutation out of the filesystem projection path. Later host-action/export policy remains the explicit boundary for effects that leave the disposable body.
+This is deliberately stricter than exposing an authorized host project through a writable bind mount. Host mutation belongs to explicit artifact/export or later broker-controlled effects, not ordinary workspace access.
 
 ## Artifact export
 
-Artifacts are copy-out, not host-mounted output directories.
+`ArtifactExportGrant` permits only declared outputs beneath `/workspace/out` and bounds each export plus the aggregate export size.
 
-`ArtifactExportGrant` permits only `/workspace/out` or descendants, with a bounded name and byte ceiling. `DockerWorkspaceIO.export_declared` exports exactly the declared path as a tar stream and validates it before returning bytes to a higher layer.
+Fleet exports each declared path as a tar stream and validates it before returning bytes:
 
-Validation rejects:
+- no absolute or traversal member paths;
+- no links or special entries;
+- no duplicate normalized member paths;
+- every member must remain under the exact declared export root;
+- the declared root must be present;
+- file bytes remain within the grant limit.
 
-- absolute or traversal paths;
-- symlinks, hardlinks, and special entries;
-- excessive archive member counts;
-- per-export byte overflow;
-- aggregate export byte overflow;
-- duplicate export names.
+Output scanning is optional unless the grant requires it. Whenever a scanner is invoked, it must return exactly `True`; `False`, `None`, exceptions, or any other indeterminate response fail closed. A required scan with no scanner also fails closed.
 
-An output scanner can be supplied for every export and is mandatory when `scan_required=true`. Scanner errors or rejection fail the export closed. No Phase 3 API silently writes an arbitrary host destination.
+Undeclared workspace files are not exported.
 
-## Cross-run residue proof
+## Quiescence-gated destruction
 
-The real-Docker Phase 3 integration proof runs two separate Fleet workshops.
+Phase 3 now closes the master-plan requirement that the run filesystem is destroyed **after quiescence** rather than deferring that requirement to Phase 8.
 
-Run N:
+`WorkspaceQuiescenceProof` consumes exact Phase 1 Hermes finalization evidence and requires:
 
-- receives a read projection;
-- receives a separately authorized writable projection;
-- proves the read projection cannot be written or chmod-restored by the Agent;
-- modifies its writable copy;
-- creates one declared result plus an undeclared temporary file;
-- exports only the declared `/workspace/out` content through a required scanner;
-- destroys the Fleet-owned workshop.
+- exact expected Hermes run ID;
+- terminal status `completed`, `failed`, or `cancelled`;
+- `quiescent=true`.
 
-Run N+1 is created fresh and proves that Run N's input projection, writable projection, output tree, and undeclared temporary file are all absent.
+`destroy_workspace_after_quiescence(...)` additionally requires the exact Fleet `ExecutionPlan` and `BackendExecutionHandle` to agree on execution ID and plan fingerprint. Only after those checks pass may it invoke the existing Phase 2 Fleet cleanup lifecycle. Invalid or non-quiescent evidence leaves the workshop intact.
 
-Phase 3 therefore proves the filesystem body is destroyable and does not leak temporary files between runs. Phase 8 owns the higher-level lifecycle ordering that Hermes finalization/quiescence must complete before Fleet performs this destruction.
+Phase 8 may later orchestrate this seam as part of the full Run Capsule lifecycle, but Phase 3 itself no longer relies on a later phase to establish the filesystem-destruction ordering guarantee.
 
-## Independent Hermes verification
+## N → N+1 and cross-repository Docker proof
 
-Hermes Agent branch `vnext/phase3-workspace-isolation`, commit `5e8da6a40`, extends the Phase 2 independent workshop verifier.
+The real-Docker Phase 3 proof establishes the full temporary-filesystem boundary:
 
-Before attachment and command execution Hermes now additionally requires:
+1. Fleet creates an exact hardened workshop.
+2. Fleet resolves and stages an authorized read projection.
+3. Hermes independently verifies the Phase 2+3 Docker posture and attaches to that exact container.
+4. Hermes reads the projected input but cannot append to it or chmod it writable.
+5. Hermes releases its environment without stopping or deleting the Fleet-owned container.
+6. Non-quiescent finalization evidence is rejected and the container remains running.
+7. Exact terminal `quiescent=true` evidence permits Fleet cleanup.
+8. Hermes cannot reattach to the destroyed exact container.
+9. Fleet creates run N+1 with a different container.
+10. Run N+1 cannot see run N input, writable-copy, output, or other temporary workspace state.
+11. The writable projection used during run N did not mutate the original host project file.
+12. The proof leaves zero Fleet workshop container residue.
 
-- exact Agent container user `65532:65532`;
-- `/workspace` tmpfs owned by `65532:65532` with mode `0711`;
-- `/workspace/inputs` tmpfs owned by distinct non-root staging identity `65533:65533` with mode `0755`.
+Cross-repository proof marker: `PHASE3_CROSS_REPO_DOCKER_PROOF_OK`.
 
-Hermes still has no create/start/stop/remove or alternate-container fallback in this path.
+## Validation record
 
-## Tests and current proof
+### Fleet
 
-Fleet Phase 3 branch current proof:
-
-- full Python suite: **782 passed**;
-- focused workspace unit + real-Docker proof: **14 passed** after authority-scope/canonicalization refinements;
-- combined Phase 2 + Phase 3 OCI/workspace proof: **50 passed** before the final authority-only refinement, with the later workspace slice green afterward;
-- Ruff: PASS on Phase 3 code/tests; full Ruff is re-run at closure;
-- real Docker proves immutable read projection, writable disposable copy, declared-only scanned export, cleanup, and N+1 zero residue.
-
-Hermes Agent Phase 3 proof:
-
-- Docker/workshop verifier suite: **72 passed**;
-- preserved Phase 1 API-run + Phase 2/3 Docker regression slice: **170 passed, 2 skipped**;
+- complete local Fleet suite: **864 passed**;
+- focused Phase 2+3 OCI/workspace suite: **65 passed**;
 - Ruff: PASS;
 - `git diff --check`: PASS;
-- branch pushed to `Dadmin88/hermes-agent` as `vnext/phase3-workspace-isolation`.
+- public repository hygiene: PASS;
+- Fleet PR #135 required CI: PASS;
+- resulting Fleet `main` CI run `32043893178`: PASS across Python 3.11, Python 3.13, Rust workspace compatibility, real Nodescale/readiness proofs, and Hermes clean-install smoke.
 
-The two skipped Agent tests are pre-existing conditional API-run tests and are not Phase 3 filesystem failures.
+The first PR #135 CI run exposed only Ruff formatting differences in two files. A normal follow-up commit corrected those mechanical differences; the subsequent required CI and post-merge `main` CI passed.
 
-## Explicit non-goals retained for later phases
+### Hermes Agent
 
-Phase 3 does not implement:
+- Phase 3 exact-workshop verifier + real Docker: **33 passed**;
+- preserved Phase 1–3 regression slice: **135 passed, 2 platform-specific skips**;
+- Ruff on affected files: PASS;
+- `git diff --check`: PASS;
+- Agent PR #3 CI: PASS after infrastructure-only reruns;
+- resulting Agent `main` CI run `32043471391`: PASS;
+- resulting Agent Docker build/test workflow `32043470744`: PASS.
 
-- controlled network egress: Phase 4;
-- host-action broker: Phase 5;
-- persistent Agent Instance orchestration: Phase 6;
-- run-scoped Hermes `fleet_runtime`: Phase 7;
-- finalization/quiescence → destruction orchestration: Phase 8;
-- full principal identity and immutable RunAuthority issuance/verification: Phases 9–10;
-- Templar output/security gates: later numbered phases.
+The first Agent CI attempt was disrupted by GitHub-hosted action/runner failures, including HTTP rate-limit/download failures before tests ran. After the required `ci-reviewed` maintainer gate was satisfied and failed infrastructure jobs were rerun, all required code/test/security lanes passed without a Phase 3 code workaround.
 
-The filesystem enforcement surface is ready for those later authorities without granting them early.
+## Phase 3 closure
+
+Phase 3 is closed only because all of the following are simultaneously true:
+
+1. Phase 2 remains canonical and green.
+2. Fleet filesystem authority/canonicalization/staging/export code is on canonical Fleet `main`.
+3. Hermes Phase 3 independent workspace verification is on canonical Agent `main`.
+4. Both code changes merged through green PR gates and both resulting `main` CI runs are green.
+5. The tested source trees exactly match the merged trees.
+6. Real Docker proves immutable read staging, separately authorized disposable write copies, declared/scanned export, quiescence-gated destruction, and N+1 zero residue.
+7. No Phase 4+ network implementation was used to satisfy Phase 3.
+
+Phase 4 network-isolation work already present in the repository remains evidence only until Phase 4 is separately re-audited and canonically closed.
