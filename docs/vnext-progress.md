@@ -23,14 +23,14 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | ---: | --- | --- |
 | 0 | COMPLETE | [vNext foundation](vnext-foundation.md); ownership, invariants, machine-boundary rule, canonical lifecycle, terminology, and read-first docs frozen. |
 | 1 | COMPLETE | [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md); current Fleet + Agent reconciliation, upstream Nodescale socket fix, preserved 10-run soak. |
-| 2 | COMPLETE | [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md); Fleet-owned generic workshop, hardening/deadline binding, observed Docker verification, Hermes attach-only independent verification, real-Docker proofs. |
-| 3 | COMPLETE | [Phase 3 workspace isolation](vnext-phase3-workspace-isolation.md); canonicalized project projection, verified authority scope, distinct immutable read staging, separately authorized writable copies, declared/scanned artifact export, and real-Docker N+1 zero-residue proof. |
-| 4 | COMPLETE | [Phase 4 network isolation](vnext-phase4-network-isolation.md); four explicit modes, offline provider traffic, authority/DNS pinning, internal-only workshop topology, hardened Fleet CONNECT gateway, proxy non-bypass, lateral/management/rebinding denial, audit, and independent Hermes verification. |
-| 5 | COMPLETE | [Phase 5 host-action broker](vnext-phase5-host-action-broker.md); structured fixed verbs/targets, exact authority/policy/Recipe/target/parameter validation, race-safe budgets, sticky indeterminate idempotency, structured evidence, narrowing-only advisory seam, and real atomic host-effect proof. |
-| 6 | COMPLETE | [Phase 6 persistent Agent Instances](vnext-phase6-persistent-agent-instances.md); stable Agency-based Hermes-native profile identity, exact-base reuse/upgrade-required semantics, durable config integrity, memory/skill generation locking, immutable-base inventory, concurrent creation, and fresh-process persistence proof. |
-| 7 | COMPLETE | [Phase 7 run-scoped Hermes overrides](vnext-phase7-run-scoped-overrides.md); exact six-field `fleet_runtime`, ContextVar task/executor isolation, run-scoped toolset/iteration narrowing, attach-only exact image/container selection, live Docker proof, Hermes capability advertisement, and Fleet fail-closed capability gate. |
-| 8 | COMPLETE | [Phase 8 Run Capsule lifecycle](vnext-phase8-run-capsule-lifecycle.md); immutable Capsule spec/store, generation-CAS recovery, exact plan/container discovery, `run_submitting` duplicate-work fence, quiescence/evidence/artifact/learning/revocation ordering, idempotent cleanup, persistent-Agent survival, and real-Docker proof. |
-| 9 | NEXT | Principal identity. Bind local authenticated sessions directly and remote identity through Nodescale/Keryx only when crossing a machine boundary. |
+| 2 | COMPLETE | [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md); canonical Fleet + Agent PRs/main CI, generic Fleet-owned workshop, fail-closed observed-state hardening, attach-only independent Hermes verification, and same-container cross-repo Docker proof. |
+| 3 | NEXT | Workspace/filesystem isolation. Existing Phase 3 code/docs are evidence candidates only until the phase is re-audited from the master plan under the canonical PR + green-CI closure rule. |
+| 4 | NOT YET RE-AUDITED | Existing network-isolation work remains in the repository as evidence only; Phase 4 cannot be credited before Phase 3 closes. |
+| 5 | NOT YET RE-AUDITED | Existing host-broker work remains evidence only; Phase 5 cannot be credited before Phases 3–4 close. |
+| 6 | NOT YET RE-AUDITED | Existing persistent-Agent work remains evidence only; restart and lifecycle acceptance must be re-proven when Phase 6 is reached. |
+| 7 | NOT YET RE-AUDITED | Existing run-scoped override work remains evidence only and must be canonically reconciled when Phase 7 is reached. |
+| 8 | NOT YET RE-AUDITED | Existing Run Capsule work remains evidence only and must be re-audited after Phases 3–7 close. |
+| 9 | LOCKED | Principal identity is blocked until Phases 3–8 are re-audited and canonically closed in order. |
 | 10 | NOT STARTED | Immutable RunAuthority. |
 | 11 | NOT STARTED | Scoped persistent memory. |
 | 12 | NOT STARTED | Context firewall. |
