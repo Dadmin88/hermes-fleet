@@ -331,9 +331,7 @@ def test_real_gateway_blocks_proxy_bypass_management_and_lateral_peers() -> None
                 grant=grant,
             )
 
-    reject_gateway_drift(
-        lambda value: value["State"].__setitem__("Status", "exited")
-    )
+    reject_gateway_drift(lambda value: value["State"].__setitem__("Status", "exited"))
     reject_gateway_drift(
         lambda value: value["Config"]["Env"].append("HTTP_PROXY=http://127.0.0.1:9")
     )

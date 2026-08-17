@@ -1218,10 +1218,10 @@ class DockerEgressController:
         if host.get("NanoCpus") != _GATEWAY_CPU_MILLIS * 1_000_000:
             raise NetworkIsolationError("Fleet egress gateway CPU limit changed")
         restart_policy = host.get("RestartPolicy")
-        if (
-            not isinstance(restart_policy, dict)
-            or restart_policy.get("Name") not in {"", "no"}
-        ):
+        if not isinstance(restart_policy, dict) or restart_policy.get("Name") not in {
+            "",
+            "no",
+        }:
             raise NetworkIsolationError("Fleet egress gateway restart policy changed")
         if host.get("Binds") not in (None, []):
             raise NetworkIsolationError("Fleet egress gateway has host bind mounts")
@@ -1302,12 +1302,8 @@ class DockerEgressController:
                     "Fleet egress gateway environment is invalid"
                 )
             observed_environment[name] = value
-        expected_policy_b64 = base64.b64encode(
-            _gateway_policy(grant).encode()
-        ).decode()
-        expected_script_b64 = base64.b64encode(
-            _PERL_GATEWAY_SCRIPT.encode()
-        ).decode()
+        expected_policy_b64 = base64.b64encode(_gateway_policy(grant).encode()).decode()
+        expected_script_b64 = base64.b64encode(_PERL_GATEWAY_SCRIPT.encode()).decode()
         required_env = {
             "FLEET_GATEWAY_POLICY_HASH": grant.policy_hash,
             "FLEET_GATEWAY_SCRIPT_B64": expected_script_b64,
