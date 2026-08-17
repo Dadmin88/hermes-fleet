@@ -27,6 +27,30 @@ _SAFE_ARGUMENT_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,4096}$")
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)^(?:[^=]*(?:token|secret|password|api[_-]?key)[^=]*)="
 )
+_WORKSHOP_SECRET_ENV_NAME_RE = re.compile(
+    r"(?i)(?:token|secret|password|credential|api[_-]?key|private[_-]?key|"
+    r"access[_-]?key|cookie|jwt)"
+)
+_WORKSHOP_FORBIDDEN_ENV_NAMES = frozenset(
+    {
+        "DOCKER_CONTEXT",
+        "DOCKER_HOST",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "HERMES_HOME",
+        "HERMES_PROFILE",
+        "SSH_AGENT_PID",
+        "SSH_AUTH_SOCK",
+    }
+)
+_WORKSHOP_FORBIDDEN_ENV_PREFIXES = (
+    "DOCKER_",
+    "FLEET_",
+    "HERMES_",
+    "KERYX_",
+    "NODESCALE_",
+    "SSH_",
+)
 _LABEL_PREFIX = "dev.hermes.fleet."
 _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_OUTPUT_BYTES = 1024 * 1024
@@ -661,16 +685,40 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         if config.get("WorkingDir") != "/workspace":
             _security_mismatch("Docker workshop working directory changed")
         environment = config.get("Env")
-        if type(environment) is not list or not self._required_environment().issubset(
-            set(environment)
+        if type(environment) is not list:
+            _security_mismatch("Docker workshop environment changed")
+        observed_environment: dict[str, str] = {}
+        for item in environment:
+            if type(item) is not str or "=" not in item:
+                _security_mismatch("Docker workshop environment changed")
+            name, value = item.split("=", 1)
+            if not name or name in observed_environment:
+                _security_mismatch("Docker workshop environment changed")
+            observed_environment[name] = value
+        required_environment = {
+            item.split("=", 1)[0]: item.split("=", 1)[1]
+            for item in self._required_environment()
+        }
+        if any(
+            observed_environment.get(name) != value
+            for name, value in required_environment.items()
         ):
             _security_mismatch("Docker workshop environment changed")
+        for name in observed_environment:
+            if (
+                name in _WORKSHOP_FORBIDDEN_ENV_NAMES
+                or name.startswith(_WORKSHOP_FORBIDDEN_ENV_PREFIXES)
+                or _WORKSHOP_SECRET_ENV_NAME_RE.search(name) is not None
+            ):
+                _security_mismatch(
+                    "Docker workshop contains forbidden environment authority"
+                )
         if host.get("NetworkMode") != self._docker_network_name():
             _security_mismatch("Docker workshop network isolation changed")
         if host.get("ReadonlyRootfs") is not True:
             _security_mismatch("Docker workshop root filesystem is writable")
-        if host.get("Privileged") is True:
-            _security_mismatch("Docker workshop is privileged")
+        if host.get("Privileged") is not False:
+            _security_mismatch("Docker workshop privilege state is invalid")
         cap_drop = host.get("CapDrop")
         if type(cap_drop) is not list or "ALL" not in {
             str(item).upper() for item in cap_drop
@@ -699,6 +747,9 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         binds = host.get("Binds")
         if binds not in (None, []):
             _security_mismatch("Docker workshop bind mounts are not permitted")
+        for key in ("Devices", "DeviceRequests"):
+            if host.get(key) not in (None, []):
+                _security_mismatch("Docker workshop host devices are not permitted")
         tmpfs = host.get("Tmpfs")
         required_tmpfs = {"/workspace", "/workspace/inputs", "/tmp", "/home/fleet"}
         if type(tmpfs) is not dict or not required_tmpfs.issubset(set(tmpfs)):
@@ -720,7 +771,9 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         }.issubset({item.strip() for item in input_options.split(",")}):
             _security_mismatch("Docker workshop input staging ownership changed")
         mounts = document.get("Mounts")
-        if type(mounts) is list and any(
+        if type(mounts) is not list:
+            _security_mismatch("Docker workshop mount inspection is unavailable")
+        if any(
             type(item) is dict and item.get("Type") in {"bind", "volume"}
             for item in mounts
         ):

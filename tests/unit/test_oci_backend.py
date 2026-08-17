@@ -390,6 +390,7 @@ def test_workshop_refuses_prepare_or_start_after_deadline() -> None:
         ("HostConfig", "NetworkMode", "bridge"),
         ("HostConfig", "ReadonlyRootfs", False),
         ("HostConfig", "Privileged", True),
+        ("HostConfig", "Privileged", None),
         ("HostConfig", "CapDrop", []),
         ("HostConfig", "CapAdd", ["SYS_ADMIN"]),
         ("HostConfig", "SecurityOpt", []),
@@ -398,6 +399,8 @@ def test_workshop_refuses_prepare_or_start_after_deadline() -> None:
         ("HostConfig", "MemorySwap", 0),
         ("HostConfig", "NanoCpus", 0),
         ("HostConfig", "Binds", ["/home:/workspace"]),
+        ("HostConfig", "Devices", [{"PathOnHost": "/dev/kvm"}]),
+        ("HostConfig", "DeviceRequests", [{"Capabilities": [["gpu"]]}]),
         ("HostConfig", "Tmpfs", {"/tmp": "rw", "/home/fleet": "rw"}),
     ],
 )
@@ -413,6 +416,55 @@ def test_workshop_rejects_observed_security_drift(section, key, unsafe) -> None:
     with pytest.raises(ExecutionBackendError) as raised:
         service.inspect(prepared)
     assert raised.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "extra_environment",
+    [
+        "SSH_AUTH_SOCK=/tmp/agent.sock",
+        "KERYX_NODE_TOKEN=opaque",
+        "FLEET_CONTROL_SOCKET=/run/fleet.sock",
+        "NODESCALE_SOCKET=/run/nodescale.sock",
+        "DOCKER_HOST=unix:///var/run/docker.sock",
+        "DOCKER_CONTEXT=host-control",
+        "HERMES_HOME=/host/hermes",
+        "OPENAI_API_KEY=opaque",
+        "AWS_ACCESS_KEY_ID=opaque",
+    ],
+)
+def test_workshop_rejects_forbidden_environment_authority(extra_environment) -> None:
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    environment = fake.container["Config"]["Env"]  # type: ignore[index]
+    environment.append(extra_environment)
+
+    with pytest.raises(ExecutionBackendError) as raised:
+        service.inspect(prepared)
+    assert raised.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+
+def test_workshop_rejects_missing_or_duplicate_required_environment() -> None:
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    environment = fake.container["Config"]["Env"]  # type: ignore[index]
+    environment.remove("HOME=/home/fleet")
+    with pytest.raises(ExecutionBackendError) as missing:
+        service.inspect(prepared)
+    assert missing.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    environment = fake.container["Config"]["Env"]  # type: ignore[index]
+    environment.append("HOME=/different")
+    with pytest.raises(ExecutionBackendError) as duplicate:
+        service.inspect(prepared)
+    assert duplicate.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
 
 
 def test_workshop_rejects_workspace_tmpfs_identity_drift() -> None:
@@ -442,6 +494,15 @@ def test_workshop_rejects_workspace_tmpfs_identity_drift() -> None:
 
 
 def test_workshop_rejects_persistent_mount_or_identity_label_drift() -> None:
+    fake = FakeDocker()
+    service = workshop_backend(fake)
+    prepared = service.prepare(plan())
+    assert fake.container is not None
+    fake.container["Mounts"] = None
+    with pytest.raises(ExecutionBackendError) as missing_mounts:
+        service.inspect(prepared)
+    assert missing_mounts.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
+
     fake = FakeDocker()
     service = workshop_backend(fake)
     prepared = service.prepare(plan())
