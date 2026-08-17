@@ -216,7 +216,7 @@ The script emits `PHASE6_MACHINE_RESTART_PROOF_OK` only after validating all fou
 
 Original implementation PR **#139** merged as `8061b4f6cf11b6b99187727a5a73cb56bd68fee1`. Re-audit PR **#140** merged as `6f247310a539d12e20535f6d999b3348e1402a37` after all PR checks passed, but its resulting `main` CI run `32074172598` exposed a real concurrency bug in the Hermes clean-install smoke: a second same-generation mutation could validate the state file before acquiring the Agent mutation lock and observe the state file during atomic replacement.
 
-The forward lock-order repair moves all state-bearing validation under the Agent state lock for mutation, state reads, Agent reopen, and existing-Agent reuse. Deterministic regressions prove the second mutation and reopen/reuse paths cannot read mutable Agent state until the first mutation releases its lock.
+Forward repair PR **#141** moves all state-bearing validation under the Agent state lock for mutation, state reads, Agent reopen, and existing-Agent reuse. Deterministic regressions prove the second mutation and reopen/reuse paths cannot read mutable Agent state until the first mutation releases its lock.
 
 Current lock-order follow-up proof:
 
