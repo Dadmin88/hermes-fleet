@@ -102,7 +102,7 @@ CREATE TABLE run_capsules (
     capsule_hash TEXT NOT NULL,
     spec_json TEXT NOT NULL CHECK(json_valid(spec_json)),
     generation INTEGER NOT NULL CHECK(generation >= 1),
-    state TEXT NOT NULL CHECK(state IN ({','.join(repr(item) for item in _STATES)})),
+    state TEXT NOT NULL CHECK(state IN ({",".join(repr(item) for item in _STATES)})),
     container_id TEXT,
     hermes_run_id TEXT,
     evidence_json TEXT CHECK(evidence_json IS NULL OR json_valid(evidence_json)),
