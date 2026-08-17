@@ -37,6 +37,7 @@ _HOST_RE = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 )
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_EXECUTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _NETWORK_NAME_RE = re.compile(r"^hermes-fleet-egress-[0-9a-f]{24}$")
 _MODE_RE = re.compile(
     r"^(?:none|provider-only|project-allowlist|explicitly-approved-internet)$"
@@ -65,6 +66,29 @@ _MAX_CLI_OUTPUT = 2 * 1024 * 1024
 # HTTPS on 443 still requires an exact destination allowlist and, for the broad
 # internet mode, a separate explicit approval hash.
 _FORBIDDEN_EGRESS_PORTS = frozenset({53, 853, 2375, 2376, 2377})
+_GATEWAY_SECRET_ENV_NAME_RE = re.compile(
+    r"(?i)(?:token|secret|password|credential|api[_-]?key|private[_-]?key|"
+    r"access[_-]?key|cookie|jwt)"
+)
+_GATEWAY_FORBIDDEN_ENV_PREFIXES = (
+    "DOCKER_",
+    "HERMES_",
+    "KERYX_",
+    "NODESCALE_",
+    "SSH_",
+)
+_WORKSHOP_PROXY_ENV_NAMES = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "NO_PROXY",
+        "no_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    }
+)
 
 
 class NetworkIsolationError(RuntimeError):
@@ -520,7 +544,10 @@ class DockerEgressController:
             raise NetworkIsolationError(
                 "network grant is outside verified RunAuthority"
             )
-        if type(execution_id) is not str or not execution_id or len(execution_id) > 512:
+        if (
+            type(execution_id) is not str
+            or _EXECUTION_ID_RE.fullmatch(execution_id) is None
+        ):
             raise NetworkIsolationError("network execution identity is invalid")
         if not grant.direct_egress:
             return EgressBinding(
@@ -536,10 +563,23 @@ class DockerEgressController:
         self._verify_pinned_destinations(grant)
         self._verify_gateway_image()
         network_name, gateway_name = _egress_names(execution_id, grant.policy_hash)
+        recovered_gateway = self._container_inspect_optional(gateway_name)
+        recovered_gateway_id: str | None = None
+        if recovered_gateway is not None:
+            candidate_id = recovered_gateway.get("Id")
+            if (
+                type(candidate_id) is not str
+                or _CONTAINER_ID_RE.fullmatch(candidate_id) is None
+            ):
+                raise NetworkIsolationError(
+                    "recovered egress gateway identity is invalid"
+                )
+            recovered_gateway_id = candidate_id
         self._ensure_network(
             network_name,
             execution_id=execution_id,
             grant=grant,
+            gateway_container_id=recovered_gateway_id,
         )
         gateway = self._ensure_gateway(
             gateway_name,
@@ -732,6 +772,7 @@ class DockerEgressController:
         *,
         execution_id: str,
         grant: NetworkGrant,
+        gateway_container_id: str | None,
     ) -> dict[str, object]:
         existing = self._network_inspect_optional(network_name)
         if existing is None:
@@ -762,7 +803,7 @@ class DockerEgressController:
             network_name=network_name,
             execution_id=execution_id,
             grant=grant,
-            gateway_container_id=None,
+            gateway_container_id=gateway_container_id,
             expected_workshop_id=None,
         )
         return existing
@@ -1060,7 +1101,11 @@ class DockerEgressController:
     ) -> None:
         if (
             document.get("Name") != network_name
+            or document.get("Driver") != "bridge"
+            or document.get("Scope") != "local"
             or document.get("Internal") is not True
+            or document.get("Attachable") is not False
+            or document.get("Ingress") is not False
             or document.get("EnableIPv6") is not False
         ):
             raise NetworkIsolationError("Fleet egress network isolation changed")
@@ -1080,7 +1125,7 @@ class DockerEgressController:
             for value in (gateway_container_id, expected_workshop_id)
             if value is not None
         }
-        if allowed and not set(containers).issubset(allowed):
+        if not set(containers).issubset(allowed):
             raise NetworkIsolationError(
                 "unexpected lateral peer joined Fleet egress network"
             )
@@ -1110,6 +1155,12 @@ class DockerEgressController:
             or not isinstance(state, dict)
         ):
             raise NetworkIsolationError("Fleet egress gateway inspection is incomplete")
+        status = state.get("Status")
+        expected_status = (
+            "running" if external_required or gateway_ip is not None else "created"
+        )
+        if status != expected_status:
+            raise NetworkIsolationError("Fleet egress gateway lifecycle state changed")
         script_hash = (
             "sha256:" + hashlib.sha256(_PERL_GATEWAY_SCRIPT.encode("utf-8")).hexdigest()
         )
@@ -1129,6 +1180,10 @@ class DockerEgressController:
             raise NetworkIsolationError("Fleet egress gateway startup command changed")
         if config.get("User") != f"{_GATEWAY_UID}:{_GATEWAY_GID}":
             raise NetworkIsolationError("Fleet egress gateway user changed")
+        if config.get("WorkingDir") != "/run/fleet-gateway":
+            raise NetworkIsolationError(
+                "Fleet egress gateway working directory changed"
+            )
         if host.get("NetworkMode") != network_name:
             raise NetworkIsolationError(
                 "Fleet egress gateway internal attachment changed"
@@ -1152,6 +1207,8 @@ class DockerEgressController:
             str(item).lower().startswith("no-new-privileges") for item in security
         ):
             raise NetworkIsolationError("Fleet egress gateway security option changed")
+        if any("unconfined" in str(item).lower() for item in security):
+            raise NetworkIsolationError("Fleet egress gateway confinement is disabled")
         if host.get("PidsLimit") != _GATEWAY_PIDS:
             raise NetworkIsolationError("Fleet egress gateway PID limit changed")
         if host.get("Memory") != _GATEWAY_MEMORY_BYTES:
@@ -1160,13 +1217,27 @@ class DockerEgressController:
             raise NetworkIsolationError("Fleet egress gateway swap limit changed")
         if host.get("NanoCpus") != _GATEWAY_CPU_MILLIS * 1_000_000:
             raise NetworkIsolationError("Fleet egress gateway CPU limit changed")
+        restart_policy = host.get("RestartPolicy")
+        if not isinstance(restart_policy, dict) or restart_policy.get("Name") not in {
+            "",
+            "no",
+        }:
+            raise NetworkIsolationError("Fleet egress gateway restart policy changed")
         if host.get("Binds") not in (None, []):
             raise NetworkIsolationError("Fleet egress gateway has host bind mounts")
+        for key in ("Devices", "DeviceRequests"):
+            if host.get(key) not in (None, []):
+                raise NetworkIsolationError("Fleet egress gateway has host devices")
+        if host.get("PortBindings") not in (None, {}):
+            raise NetworkIsolationError("Fleet egress gateway publishes host ports")
+        if host.get("PublishAllPorts") is not False:
+            raise NetworkIsolationError("Fleet egress gateway publishes host ports")
         mounts = document.get("Mounts")
-        if isinstance(mounts, list) and any(
-            isinstance(item, dict) and item.get("Type") in {"bind", "volume"}
-            for item in mounts
-        ):
+        if not isinstance(mounts, list):
+            raise NetworkIsolationError(
+                "Fleet egress gateway mount inspection is unavailable"
+            )
+        if mounts:
             raise NetworkIsolationError("Fleet egress gateway has persistent mounts")
         tmpfs = host.get("Tmpfs")
         runtime_options = (
@@ -1174,16 +1245,23 @@ class DockerEgressController:
         )
         if not isinstance(runtime_options, str):
             raise NetworkIsolationError("Fleet egress gateway tmpfs is missing")
+        runtime_flags = {item.strip().lower() for item in runtime_options.split(",")}
         required_runtime = {
             "rw",
+            "nosuid",
+            "nodev",
+            "noexec",
+            f"size={_GATEWAY_RUNTIME_BYTES}",
             f"uid={_GATEWAY_UID}",
             f"gid={_GATEWAY_GID}",
             "mode=0700",
         }
-        if not required_runtime.issubset(
-            {item.strip().lower() for item in runtime_options.split(",")}
+        if (
+            not required_runtime.issubset(runtime_flags)
+            or "ro" in runtime_flags
+            or "exec" in runtime_flags
         ):
-            raise NetworkIsolationError("Fleet egress gateway tmpfs ownership changed")
+            raise NetworkIsolationError("Fleet egress gateway tmpfs posture changed")
         log_config = host.get("LogConfig")
         if (
             not isinstance(log_config, dict)
@@ -1212,15 +1290,41 @@ class DockerEgressController:
         environment = config.get("Env")
         if not isinstance(environment, list):
             raise NetworkIsolationError("Fleet egress gateway environment is invalid")
+        observed_environment: dict[str, str] = {}
+        for item in environment:
+            if not isinstance(item, str) or "=" not in item:
+                raise NetworkIsolationError(
+                    "Fleet egress gateway environment is invalid"
+                )
+            name, value = item.split("=", 1)
+            if not name or name in observed_environment:
+                raise NetworkIsolationError(
+                    "Fleet egress gateway environment is invalid"
+                )
+            observed_environment[name] = value
         expected_policy_b64 = base64.b64encode(_gateway_policy(grant).encode()).decode()
         expected_script_b64 = base64.b64encode(_PERL_GATEWAY_SCRIPT.encode()).decode()
         required_env = {
-            f"FLEET_GATEWAY_POLICY_HASH={grant.policy_hash}",
-            f"FLEET_GATEWAY_SCRIPT_B64={expected_script_b64}",
-            f"FLEET_GATEWAY_POLICY_B64={expected_policy_b64}",
+            "FLEET_GATEWAY_POLICY_HASH": grant.policy_hash,
+            "FLEET_GATEWAY_SCRIPT_B64": expected_script_b64,
+            "FLEET_GATEWAY_POLICY_B64": expected_policy_b64,
         }
-        if not required_env.issubset(set(environment)):
+        if any(
+            observed_environment.get(key) != value
+            for key, value in required_env.items()
+        ):
             raise NetworkIsolationError("Fleet egress gateway policy material changed")
+        for name in observed_environment:
+            if name in required_env:
+                continue
+            if (
+                name.startswith(_GATEWAY_FORBIDDEN_ENV_PREFIXES)
+                or _GATEWAY_SECRET_ENV_NAME_RE.search(name) is not None
+                or name in _WORKSHOP_PROXY_ENV_NAMES
+            ):
+                raise NetworkIsolationError(
+                    "Fleet egress gateway environment contains forbidden authority"
+                )
 
 
 class NetworkIsolatedWorkshopBackend(DockerWorkshopBackend):
@@ -1257,6 +1361,14 @@ class NetworkIsolatedWorkshopBackend(DockerWorkshopBackend):
             raise NetworkIsolationError(
                 "Phase 4 overlays mediated egress onto an otherwise offline workshop"
             )
+
+    def _prepare(self, plan: ExecutionPlan):
+        if plan.execution_id != self._network_binding.execution_id:
+            raise ExecutionBackendError(
+                ExecutionBackendErrorCode.PLAN_CONFLICT,
+                "workshop execution does not match its network binding",
+            )
+        return super()._prepare(plan)
 
     def _docker_network_name(self) -> str:
         return self._network_binding.docker_network
@@ -1316,13 +1428,46 @@ class NetworkIsolatedWorkshopBackend(DockerWorkshopBackend):
     def _validate_realization_security(self, document: dict[str, object]) -> None:
         super()._validate_realization_security(document)
         try:
+            config = document.get("Config")
             host = document.get("HostConfig")
-            if not isinstance(host, dict):
+            if not isinstance(config, dict) or not isinstance(host, dict):
                 raise NetworkIsolationError("workshop network inspection is incomplete")
+            environment = config.get("Env")
+            if not isinstance(environment, list):
+                raise NetworkIsolationError(
+                    "workshop network environment is unavailable"
+                )
+            observed_proxy: dict[str, str] = {}
+            for item in environment:
+                if not isinstance(item, str) or "=" not in item:
+                    raise NetworkIsolationError(
+                        "workshop network environment is invalid"
+                    )
+                name, value = item.split("=", 1)
+                if name in _WORKSHOP_PROXY_ENV_NAMES:
+                    if name in observed_proxy:
+                        raise NetworkIsolationError(
+                            "workshop proxy binding is ambiguous"
+                        )
+                    observed_proxy[name] = value
             if self._network_binding.direct_egress:
                 dns = host.get("Dns")
                 if dns != ["127.0.0.1"]:
                     raise NetworkIsolationError("workshop direct DNS is not disabled")
+                proxy = (
+                    f"http://{self._network_binding.gateway_ip}:"
+                    f"{self._network_binding.gateway_port}"
+                )
+                expected_proxy = {
+                    "HTTP_PROXY": proxy,
+                    "HTTPS_PROXY": proxy,
+                    "http_proxy": proxy,
+                    "https_proxy": proxy,
+                    "NO_PROXY": "",
+                    "no_proxy": "",
+                }
+                if observed_proxy != expected_proxy:
+                    raise NetworkIsolationError("workshop proxy binding changed")
                 networks = _container_networks(document)
                 if set(networks) != {self._network_binding.docker_network}:
                     raise NetworkIsolationError("workshop gained an unexpected network")
@@ -1344,8 +1489,15 @@ class NetworkIsolatedWorkshopBackend(DockerWorkshopBackend):
                     grant=self._network_grant,
                     expected_workshop_id=expected_endpoint,
                 )
-            elif host.get("NetworkMode") != "none":
-                raise NetworkIsolationError("offline workshop gained direct networking")
+            else:
+                if observed_proxy:
+                    raise NetworkIsolationError(
+                        "offline workshop gained proxy configuration"
+                    )
+                if host.get("NetworkMode") != "none":
+                    raise NetworkIsolationError(
+                        "offline workshop gained direct networking"
+                    )
         except NetworkIsolationError as error:
             raise ExecutionBackendError(
                 ExecutionBackendErrorCode.CAPABILITY_MISMATCH,

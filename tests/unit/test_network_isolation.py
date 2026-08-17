@@ -5,6 +5,7 @@ import subprocess
 
 import pytest
 
+from hermes_fleet import network_isolation as network_mod
 from hermes_fleet.network_isolation import (
     NETWORK_EXPLICIT_INTERNET,
     NETWORK_NONE,
@@ -336,5 +337,78 @@ def test_direct_controller_fails_before_docker_when_authority_is_not_proven() ->
             execution_id="execution-1",
             grant=grant(),
             authority=NetworkAuthorityScope(run_authority_hash="sha256:" + "3" * 64),
+        )
+    assert calls == []
+
+
+def test_egress_network_recovery_rejects_wrong_driver_and_preexisting_peer() -> None:
+    execution_id = "execution-network-recovery"
+    network_grant = grant()
+    network_name, _gateway_name = network_mod._egress_names(
+        execution_id,
+        network_grant.policy_hash,
+    )
+    document = {
+        "Name": network_name,
+        "Driver": "bridge",
+        "Scope": "local",
+        "Internal": True,
+        "Attachable": False,
+        "Ingress": False,
+        "EnableIPv6": False,
+        "Labels": network_mod._network_labels(
+            execution_id=execution_id,
+            grant=network_grant,
+        ),
+        "Containers": {},
+    }
+    controller = DockerEgressController(gateway_image=IMAGE)
+    controller._verify_network_document(
+        document,
+        network_name=network_name,
+        execution_id=execution_id,
+        grant=network_grant,
+        gateway_container_id=None,
+        expected_workshop_id=None,
+    )
+
+    wrong_driver = dict(document)
+    wrong_driver["Driver"] = "macvlan"
+    with pytest.raises(NetworkIsolationError, match="network isolation changed"):
+        controller._verify_network_document(
+            wrong_driver,
+            network_name=network_name,
+            execution_id=execution_id,
+            grant=network_grant,
+            gateway_container_id=None,
+            expected_workshop_id=None,
+        )
+
+    with_peer = dict(document)
+    with_peer["Containers"] = {"a" * 64: {"Name": "untrusted-peer"}}
+    with pytest.raises(NetworkIsolationError, match="lateral peer"):
+        controller._verify_network_document(
+            with_peer,
+            network_name=network_name,
+            execution_id=execution_id,
+            grant=network_grant,
+            gateway_container_id=None,
+            expected_workshop_id=None,
+        )
+
+
+def test_network_execution_identity_is_bounded_before_docker() -> None:
+    calls: list[list[str]] = []
+
+    def command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "", "unexpected")
+
+    controller = DockerEgressController(gateway_image=IMAGE, command=command)
+    with pytest.raises(NetworkIsolationError, match="execution identity"):
+        controller.prepare(
+            execution_id="bad\nidentity",
+            grant=grant(),
+            authority=NetworkAuthorityScope(run_authority_hash=AUTHORITY),
         )
     assert calls == []

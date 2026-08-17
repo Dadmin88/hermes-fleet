@@ -97,18 +97,17 @@ The gateway is hardened with:
 
 The generated proxy script and non-secret policy are passed as bounded base64 environment material, decoded only into the gateway's disposable tmpfs, and then used by an exact verified startup command.
 
-Fleet verifies the gateway's observed Docker document, including:
+Fleet verifies the gateway's observed Docker document rather than trusting the create argv, including:
 
-- exact image;
-- exact startup command;
-- exact generated script hash;
-- exact policy hash and authority labels;
-- exact non-root user and hardening;
-- exact CPU/RAM/PID limits;
-- no host mounts;
-- exact bounded log-driver configuration;
-- exact internal-network membership;
-- exact internal IP once running.
+- exact image, startup command, working directory, generated script hash, policy hash, authority labels, and lifecycle state;
+- exact numeric non-root identity, read-only root, `CapDrop=ALL`, no added capabilities, `no-new-privileges`, and no `unconfined` security posture;
+- exact CPU/RAM/PID limits and a non-restarting container policy;
+- no host binds, named volumes, devices/device requests, or published host ports;
+- an empty Docker `Mounts` set that must be observable rather than omitted;
+- exact private tmpfs posture: `rw,nosuid,nodev,noexec`, fixed byte bound, exact UID/GID, and mode `0700`;
+- exact bounded Docker `local` audit-log configuration;
+- exact policy/script environment material, with duplicate environment names and extra proxy/control/credential authority rejected;
+- exact internal-network membership and exact internal IP once running.
 
 ## Safe gateway startup ordering
 
@@ -124,6 +123,10 @@ Docker assigns the gateway's internal IP only once the container starts. Phase 4
 8. re-inspect the container and prove the internal IP and listener did not change or widen.
 
 A recovered gateway that already has the outbound bridge while not running is rejected rather than restarted in an ambiguous network posture.
+
+Recovery also fails closed before mutation when the pre-existing egress network is not the exact local internal Docker bridge or already contains an unexpected peer. If the deterministic gateway already exists, Fleet permits only that exact recovered gateway ID during network re-verification; arbitrary pre-existing members are rejected.
+
+The resulting `EgressBinding.execution_id` is inseparable from the workshop execution plan: a workshop cannot reuse another execution's otherwise-valid network binding.
 
 ## Gateway enforcement
 
@@ -180,11 +183,11 @@ Topology-level raw bypass attempts are blocked before reaching the gateway and a
 
 ## Independent Hermes verification
 
-Hermes Agent branch `vnext/phase4-network-isolation`, commit `e069391d0`, extends the existing attach-only Fleet workshop verifier.
+Hermes Agent Phase 4 is canonical on `Dadmin88/hermes-agent` `main` through PR #4 (`Phase 4: verify Fleet network isolation`), merge commit `a9f3fde16b11319d5ad08888176a55ad32ea5467`.
 
-Hermes now accepts an expected Phase 4 binding as trusted run input without gaining policy ownership. It independently checks the observed Docker container against that binding.
+Hermes accepts the expected Phase 4 binding as trusted run input without gaining policy ownership. It independently inspects both the exact workshop container and, for mediated modes, the exact Docker network before attachment and before every command.
 
-For `none`, Hermes retains the original exact `network=none` contract.
+For `none`, Hermes retains the exact `network=none` contract.
 
 For `provider-only`, Hermes requires:
 
@@ -192,9 +195,9 @@ For `provider-only`, Hermes requires:
 - exact provider-only mode label;
 - exact network-policy hash;
 - exact RunAuthority hash;
-- no gateway or direct workshop route.
+- no gateway, proxy binding, or direct workshop route.
 
-For mediated direct modes, Hermes requires:
+For mediated direct modes, Hermes requires the workshop to carry:
 
 - exact Fleet internal network name;
 - exact network mode;
@@ -210,31 +213,49 @@ For mediated direct modes, Hermes requires:
 - no `ALL_PROXY`/alternate proxy binding;
 - all existing Phase 2/3 non-root, capability, filesystem, mount, resource, and deadline guarantees.
 
-Hermes still uses only `docker exec` against the exact Fleet container. It does not create, start, stop, restart, replace, or delete the workshop.
+Hermes additionally performs `docker network inspect` and independently requires:
 
-A real-Docker Agent test creates a mediated-network workshop, enters it through `FleetWorkshopEnvironment`, executes a command, then proves Hermes cleanup leaves the container running for the lifecycle owner to remove.
+- exact network name;
+- Docker `bridge` driver with local scope;
+- `Internal=true`, `Attachable=false`, `Ingress=false`, and IPv6 disabled;
+- exact Fleet execution, role, mode, policy, and authority labels;
+- membership consisting of exactly the expected workshop and gateway IDs;
+- the gateway attachment carrying the exact expected private IPv4 address.
+
+An injected lateral peer therefore invalidates Hermes' next pre-command verification even if the workshop container itself has not changed.
+
+Hermes still uses only `docker exec` against the exact Fleet container. It does not create, connect, start, stop, restart, replace, or delete Fleet containers or networks.
+
+The real-Docker Agent proof now creates a real labeled internal network plus a real gateway peer, enters the exact mediated workshop through `FleetWorkshopEnvironment`, verifies the topology from Docker state, executes a command, and proves Hermes cleanup leaves lifecycle resources for Fleet to remove.
 
 ## Tests and current proof
 
-Fleet Phase 4 current proof:
+Fleet implementation, tests, this acceptance record, and the Phase 4 ledger transition ship together through PR #137 (`Phase 4: harden network isolation`).
 
-- full Python suite: **798 passed**;
-- focused Phase 4 policy + live-Docker suite: **16 passed**;
-- combined Phase 2–4 OCI/workspace/network slice: **66 passed** before the final explicit-internet and verifier tightening, with the later Phase 4 slice green afterward;
+Fleet Phase 4 current proof on the implementation branch:
+
+- full Python suite: **867 passed**;
+- focused Phase 4 policy + live-Docker suite: **19 passed**;
 - full Ruff: PASS;
-- `git diff --check`: PASS at the pre-document closure gate;
+- `git diff --check`: PASS;
 - public-hygiene scan: PASS;
-- real Docker gateway and internal-network residue after the suite: zero.
+- real Docker workshop/gateway/network residue after the cross-repository proof: zero.
+
+The focused suite covers all four modes, authority non-widening, exact DNS/IP/port policy, provider-only offline behavior, explicit-internet approval, DNS rebinding, topology-enforced proxy bypass prevention, management/Tailscale/metadata denial, exact execution-to-network binding, gateway adoption hardening, and lateral-peer detection.
 
 Hermes Agent Phase 4 proof:
 
-- Docker/workshop verifier suite including real mediated-network attachment: **81 passed**;
-- preserved Phase 1 API-run + Phase 2/3/4 Docker regression slice: **179 passed, 2 skipped**;
-- Ruff: PASS;
-- `git diff --check`: PASS;
-- branch pushed to `Dadmin88/hermes-agent` as `vnext/phase4-network-isolation`, commit `e069391d0`.
+- focused exact-workshop + independent-network verifier suite: **47 passed**;
+- preserved Phase 1–4 regression slice: **149 passed, 2 platform skips**;
+- Ruff and `git diff --check`: PASS;
+- PR #4 required CI: PASS after rerunning one unrelated PTY surrogateescape flake;
+- PR #4 merge commit: `a9f3fde16b11319d5ad08888176a55ad32ea5467`;
+- resulting Agent `main` CI run `32049338859`: PASS;
+- resulting Agent Docker build/test workflow `32049338033`: PASS.
 
-The two skipped Agent tests are pre-existing conditional API-run tests and are not Phase 4 networking failures.
+The cross-repository real-Docker proof returned `PHASE4_CROSS_REPO_DOCKER_PROOF_OK`. Fleet created the exact internal network, hardened gateway, and workshop; Hermes independently verified the same Docker workshop and network; an injected lateral peer caused Hermes' next verification to fail; removal of that peer restored the exact topology; Hermes released without lifecycle authority; and Fleet alone removed the execution resources.
+
+The two skipped Agent tests are platform-conditional cases in the preserved regression slice and are not Phase 4 networking failures.
 
 ## Explicit non-goals retained for later phases
 
