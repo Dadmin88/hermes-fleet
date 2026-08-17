@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import stat
 from pathlib import Path
 from typing import Final
@@ -121,25 +120,20 @@ def _persistent_agent_base_identity(
     if not metadata.exists() and not metadata.is_symlink():
         return None
     try:
-        info = metadata.lstat()
-    except OSError as error:
-        raise ProfileInventoryError(
-            "persistent Agent Instance metadata cannot be inspected"
-        ) from error
-    if (
-        metadata.is_symlink()
-        or not metadata.is_file()
-        or stat.S_IMODE(info.st_mode) != 0o600
-        or info.st_uid != os.geteuid()
-        or info.st_nlink != 1
-        or info.st_size > 32 * 1024
-    ):
-        raise ProfileInventoryError("persistent Agent Instance metadata is unsafe")
-    try:
-        value = json.loads(metadata.read_text(encoding="utf-8"))
-        from .agent_instance import AgentInstanceBinding
+        from .agent_instance import AgentInstanceBinding, AgentInstanceManager
 
+        payload = AgentInstanceManager._read_regular_file(
+            metadata,
+            maximum=32 * 1024,
+            label="persistent Agent Instance metadata",
+        )
+        value = json.loads(payload)
         binding = AgentInstanceBinding.from_dict(value)
+        if (
+            AgentInstanceManager._verify_base_manifest(profile)
+            != binding.base_manifest_digest
+        ):
+            raise ValueError("persistent Agent Instance base manifest digest changed")
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         raise ProfileInventoryError(
             "persistent Agent Instance metadata is invalid"

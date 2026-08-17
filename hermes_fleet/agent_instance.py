@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -31,15 +31,22 @@ from .profile_runtime import _load_model_config, _stage_model_config
 from .recipes import ResolvedAgencyProfile
 
 _METADATA_FILE = ".fleet-agent-instance.json"
+_BASE_MANIFEST_FILE = ".fleet-agent-base-manifest.json"
 _STATE_FILE = ".fleet-agent-state.json"
 _LOCK_FILE = ".fleet-agent-state.lock"
 _METADATA_SCHEMA = "fleet.agent-instance.v1"
+_BASE_MANIFEST_SCHEMA = "fleet.agent-base-manifest.v1"
 _STATE_SCHEMA = "fleet.agent-state.v1"
 _PROFILE_RE = re.compile(r"^fleet-agent-[0-9a-f]{24}$")
 _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_METADATA_BYTES = 32 * 1024
+_MAX_BASE_MANIFEST_BYTES = 256 * 1024
+_MAX_BASE_FILES = 2_048
+_MAX_BASE_FILE_BYTES = 4 * 1024 * 1024
+_MAX_BASE_BYTES = 16 * 1024 * 1024
 _MAX_STATE_BYTES = 16 * 1024
 _MAX_CONFIG_BYTES = 64 * 1024
+_MAX_GENERATION = (1 << 63) - 1
 _STATE_COMPONENTS = frozenset({"memory", "skills"})
 _RESERVED_PROFILE_NAMES = frozenset(
     {
@@ -47,20 +54,36 @@ _RESERVED_PROFILE_NAMES = frozenset(
         ".fleet-execution-owner",
         ".fleet-execution-slot",
         ".fleet-run-authority",
+        ".fleet-run-authority.json",
+        ".fleet-run-capsule",
         ".fleet-run-capsule.json",
+        ".fleet-runtime",
+        ".fleet-runtime.json",
+        ".fleet-approval-budget",
+        ".fleet-approval-budget.json",
     }
 )
 _RESERVED_CONFIG_KEYS = frozenset(
     {
         "approvalbudget",
+        "approvalbudgets",
         "containerid",
+        "containerids",
+        "filesystemgrant",
         "filesystemgrants",
         "fleetruntime",
+        "fleetruntimes",
+        "hostbrokergrant",
         "hostbrokergrants",
+        "networkgrant",
         "networkgrants",
         "runauthority",
+        "runauthorityhash",
         "runcapsule",
+        "runcapsules",
+        "secrethandle",
         "secrethandles",
+        "secretref",
         "secretrefs",
     }
 )
@@ -137,6 +160,7 @@ class AgentInstanceBinding:
     base_revision: str
     base_version: str
     base_content_digest: str
+    base_manifest_digest: str
     model_baseline_digest: str
     profile_config_digest: str
 
@@ -152,6 +176,7 @@ class AgentInstanceBinding:
         ):
             _bounded_text(value, label, maximum)
         _hash(self.base_content_digest, "Agency base content digest")
+        _hash(self.base_manifest_digest, "Agent Instance base manifest digest")
         _hash(self.model_baseline_digest, "Agent Instance model baseline digest")
         _hash(self.profile_config_digest, "Agent Instance profile config digest")
         expected_id, expected_profile = _stable_identity(
@@ -176,6 +201,7 @@ class AgentInstanceBinding:
             "base_revision": self.base_revision,
             "base_version": self.base_version,
             "base_content_digest": self.base_content_digest,
+            "base_manifest_digest": self.base_manifest_digest,
             "model_baseline_digest": self.model_baseline_digest,
             "profile_config_digest": self.profile_config_digest,
         }
@@ -191,6 +217,7 @@ class AgentInstanceBinding:
             "base_revision",
             "base_version",
             "base_content_digest",
+            "base_manifest_digest",
             "model_baseline_digest",
             "profile_config_digest",
         }:
@@ -205,6 +232,7 @@ class AgentInstanceBinding:
             base_revision=value["base_revision"],
             base_version=value["base_version"],
             base_content_digest=value["base_content_digest"],
+            base_manifest_digest=value["base_manifest_digest"],
             model_baseline_digest=value["model_baseline_digest"],
             profile_config_digest=value["profile_config_digest"],
         )
@@ -220,7 +248,11 @@ class AgentInstanceState:
             (self.memory_generation, "memory generation"),
             (self.skills_generation, "skills generation"),
         ):
-            if isinstance(value, bool) or type(value) is not int or value < 0:
+            if (
+                isinstance(value, bool)
+                or type(value) is not int
+                or not 0 <= value <= _MAX_GENERATION
+            ):
                 raise AgentInstanceError(f"Agent Instance {label} is invalid")
 
     def to_dict(self) -> dict[str, object]:
@@ -253,6 +285,10 @@ class AgentInstanceState:
         raise AgentInstanceError("Agent Instance state component is unsupported")
 
     def bump(self, component: str) -> AgentInstanceState:
+        if self.generation(component) >= _MAX_GENERATION:
+            raise AgentInstanceConflict(
+                f"Agent Instance {component} generation is exhausted"
+            )
         if component == "memory":
             return AgentInstanceState(
                 memory_generation=self.memory_generation + 1,
@@ -316,6 +352,8 @@ class AgentInstanceManager:
         try:
             materialize_agency_bundle(bundle, destination=staging)
             self._reject_reserved_profile_state(staging)
+            base_manifest = self._build_base_manifest(staging)
+            base_manifest_digest = _canonical_digest(base_manifest)
             _stage_model_config(staging, model_config)
             self._assert_config_has_no_run_state(staging / "config.yaml")
             config_digest = self._config_digest(staging / "config.yaml")
@@ -327,18 +365,22 @@ class AgentInstanceManager:
                 base_revision=bundle.resolved.revision,
                 base_version=bundle.resolved.version,
                 base_content_digest=bundle.resolved.content_digest,
+                base_manifest_digest=base_manifest_digest,
                 model_baseline_digest=model_digest,
                 profile_config_digest=config_digest,
             )
             self._write_json_file(staging / _METADATA_FILE, binding.to_dict())
+            self._write_json_file(staging / _BASE_MANIFEST_FILE, base_manifest)
             self._write_json_file(
                 staging / _STATE_FILE,
                 AgentInstanceState().to_dict(),
             )
             self._touch_lock_file(staging / _LOCK_FILE)
             staging.chmod(0o700)
+            self._sync_profile_tree(staging)
             try:
                 staging.replace(destination)
+                self._fsync_directory(self._profiles_root)
             except OSError as error:
                 if error.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
                     raise
@@ -361,6 +403,7 @@ class AgentInstanceManager:
 
     def open(self, agent: ResolvedAgencyProfile) -> AgentInstanceBinding:
         instance_id, profile = _stable_identity(agent)
+        self._validate_profiles_root()
         model_config = _load_model_config(self._model_config_path)
         model_digest = _canonical_digest(model_config)
         destination = self._profiles_root / profile
@@ -376,6 +419,7 @@ class AgentInstanceManager:
         return binding
 
     def profile_path(self, binding: AgentInstanceBinding) -> Path:
+        self._validate_profiles_root()
         self._validate_binding_path(binding)
         return self._profiles_root / binding.profile
 
@@ -416,6 +460,10 @@ class AgentInstanceManager:
                 raise AgentInstanceConflict(
                     f"Agent Instance {component} generation changed"
                 )
+            if current.generation(component) >= _MAX_GENERATION:
+                raise AgentInstanceConflict(
+                    f"Agent Instance {component} generation is exhausted"
+                )
             yield current
             self._write_json_file(
                 destination / _STATE_FILE,
@@ -423,8 +471,21 @@ class AgentInstanceManager:
             )
 
     def _ensure_profiles_root(self) -> None:
-        self._profiles_root.mkdir(parents=True, exist_ok=True)
-        if self._profiles_root.is_symlink() or not self._profiles_root.is_dir():
+        self._profiles_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        self._validate_profiles_root()
+
+    def _validate_profiles_root(self) -> None:
+        try:
+            info = self._profiles_root.lstat()
+        except OSError as error:
+            raise AgentInstanceError("profiles root is unavailable") from error
+        mode = stat.S_IMODE(info.st_mode)
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or mode & 0o002
+        ):
             raise AgentInstanceError("profiles root is unsafe")
 
     def _validate_binding_path(self, binding: AgentInstanceBinding) -> None:
@@ -490,9 +551,20 @@ class AgentInstanceManager:
         destination: Path,
         binding: AgentInstanceBinding,
     ) -> None:
-        if destination.is_symlink() or not destination.is_dir():
+        try:
+            info = destination.lstat()
+        except OSError as error:
+            raise AgentInstanceError("Agent Instance profile is unavailable") from error
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or stat.S_IMODE(info.st_mode) != 0o700
+            or info.st_uid != os.geteuid()
+        ):
             raise AgentInstanceError("Agent Instance profile is invalid")
         self._reject_reserved_profile_state(destination, allow_agent_metadata=True)
+        if self._verify_base_manifest(destination) != binding.base_manifest_digest:
+            raise AgentInstanceError("Agent Instance base manifest digest changed")
         config_path = destination / "config.yaml"
         self._assert_config_has_no_run_state(config_path)
         if self._config_digest(config_path) != binding.profile_config_digest:
@@ -508,19 +580,247 @@ class AgentInstanceManager:
         *,
         allow_agent_metadata: bool = False,
     ) -> None:
-        for name in _RESERVED_PROFILE_NAMES:
-            candidate = destination / name
-            if candidate.exists() or candidate.is_symlink():
-                raise AgentInstanceError(
-                    "persistent Agent Instance contains reserved run/credential state"
-                )
-        if not allow_agent_metadata:
-            for name in (_METADATA_FILE, _STATE_FILE, _LOCK_FILE):
-                candidate = destination / name
-                if candidate.exists() or candidate.is_symlink():
+        reserved_agent = {
+            _METADATA_FILE,
+            _BASE_MANIFEST_FILE,
+            _STATE_FILE,
+            _LOCK_FILE,
+        }
+        try:
+            for root, directories, files in os.walk(destination, followlinks=False):
+                names = set(directories) | set(files)
+                if names & _RESERVED_PROFILE_NAMES:
+                    raise AgentInstanceError(
+                        "persistent Agent Instance contains reserved "
+                        "run/credential state"
+                    )
+                if not allow_agent_metadata and names & reserved_agent:
                     raise AgentInstanceError(
                         "Agency bundle contains reserved Agent Instance metadata"
                     )
+        except OSError as error:
+            raise AgentInstanceError(
+                "Agent Instance profile cannot be inspected"
+            ) from error
+
+    @staticmethod
+    def _build_base_manifest(destination: Path) -> dict[str, object]:
+        records: list[dict[str, object]] = []
+        total_bytes = 0
+        for path in sorted(destination.rglob("*"), key=lambda item: item.as_posix()):
+            if path == destination / "config.yaml":
+                continue
+            try:
+                info = path.lstat()
+            except OSError as error:
+                raise AgentInstanceError(
+                    "Agency base file cannot be inspected"
+                ) from error
+            if stat.S_ISDIR(info.st_mode):
+                if stat.S_ISLNK(info.st_mode):
+                    raise AgentInstanceError("Agency base contains a symlink")
+                continue
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise AgentInstanceError("Agency base contains a non-regular file")
+            if len(records) >= _MAX_BASE_FILES:
+                raise AgentInstanceError("Agency base file count exceeds its bound")
+            relative = path.relative_to(destination).as_posix()
+            AgentInstanceManager._validate_base_relative_path(relative)
+            payload, observed = AgentInstanceManager._read_regular_file_with_stat(
+                path,
+                maximum=_MAX_BASE_FILE_BYTES,
+                label="Agency base file",
+                required_mode=None,
+            )
+            total_bytes += len(payload)
+            if total_bytes > _MAX_BASE_BYTES:
+                raise AgentInstanceError("Agency base bytes exceed their bound")
+            records.append(
+                {
+                    "path": relative,
+                    "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    "mode": stat.S_IMODE(observed.st_mode),
+                    "size": len(payload),
+                }
+            )
+        return {
+            "schema": _BASE_MANIFEST_SCHEMA,
+            "files": records,
+        }
+
+    @staticmethod
+    def _verify_base_manifest(destination: Path) -> str:
+        payload = AgentInstanceManager._read_regular_file(
+            destination / _BASE_MANIFEST_FILE,
+            maximum=_MAX_BASE_MANIFEST_BYTES,
+            label="Agent Instance base manifest",
+        )
+        try:
+            value = json.loads(payload)
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise AgentInstanceError(
+                "Agent Instance base manifest is unreadable"
+            ) from error
+        if type(value) is not dict or set(value) != {"schema", "files"}:
+            raise AgentInstanceError("Agent Instance base manifest is invalid")
+        if value.get("schema") != _BASE_MANIFEST_SCHEMA:
+            raise AgentInstanceError(
+                "Agent Instance base manifest schema is unsupported"
+            )
+        files = value.get("files")
+        if type(files) is not list or len(files) > _MAX_BASE_FILES:
+            raise AgentInstanceError("Agent Instance base manifest is invalid")
+        seen: set[str] = set()
+        total_bytes = 0
+        for record in files:
+            if type(record) is not dict or set(record) != {
+                "path",
+                "sha256",
+                "mode",
+                "size",
+            }:
+                raise AgentInstanceError("Agent Instance base manifest is invalid")
+            relative = AgentInstanceManager._validate_base_relative_path(record["path"])
+            if relative in seen:
+                raise AgentInstanceError(
+                    "Agent Instance base manifest has duplicate paths"
+                )
+            seen.add(relative)
+            digest = _hash(record["sha256"], "Agent Instance base file digest")
+            mode = record["mode"]
+            size = record["size"]
+            if (
+                isinstance(mode, bool)
+                or type(mode) is not int
+                or not 0 <= mode <= 0o777
+                or isinstance(size, bool)
+                or type(size) is not int
+                or not 0 <= size <= _MAX_BASE_FILE_BYTES
+            ):
+                raise AgentInstanceError("Agent Instance base manifest is invalid")
+            payload, observed = AgentInstanceManager._read_base_file(
+                destination,
+                relative,
+                maximum=_MAX_BASE_FILE_BYTES,
+            )
+            total_bytes += len(payload)
+            if total_bytes > _MAX_BASE_BYTES or len(payload) != size:
+                raise AgentInstanceError("Agent Instance immutable Agency base changed")
+            if stat.S_IMODE(observed.st_mode) != mode:
+                raise AgentInstanceError(
+                    "Agent Instance immutable Agency base mode changed"
+                )
+            if "sha256:" + hashlib.sha256(payload).hexdigest() != digest:
+                raise AgentInstanceError("Agent Instance immutable Agency base changed")
+        return _canonical_digest(value)
+
+    @staticmethod
+    def _validate_base_relative_path(value: object) -> str:
+        if type(value) is not str or not value or len(value.encode()) > 1024:
+            raise AgentInstanceError("Agent Instance base manifest path is invalid")
+        path = PurePosixPath(value)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            raise AgentInstanceError("Agent Instance base manifest path is invalid")
+        if path.as_posix() != value or value == "config.yaml":
+            raise AgentInstanceError("Agent Instance base manifest path is invalid")
+        if path.name in _RESERVED_PROFILE_NAMES or path.name in {
+            _METADATA_FILE,
+            _BASE_MANIFEST_FILE,
+            _STATE_FILE,
+            _LOCK_FILE,
+        }:
+            raise AgentInstanceError("Agent Instance base manifest path is reserved")
+        return value
+
+    @staticmethod
+    def _read_base_file(
+        destination: Path,
+        relative: str,
+        *,
+        maximum: int,
+    ) -> tuple[bytes, os.stat_result]:
+        relative = AgentInstanceManager._validate_base_relative_path(relative)
+        parts = PurePosixPath(relative).parts
+        directory_fd = -1
+        file_fd = -1
+        try:
+            directory_fd = os.open(
+                destination,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            root_info = os.fstat(directory_fd)
+            if (
+                not stat.S_ISDIR(root_info.st_mode)
+                or stat.S_IMODE(root_info.st_mode) != 0o700
+                or root_info.st_uid != os.geteuid()
+            ):
+                raise AgentInstanceError("Agent Instance profile is invalid")
+            for part in parts[:-1]:
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                info = os.fstat(next_fd)
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                    os.close(next_fd)
+                    raise AgentInstanceError(
+                        "Agent Instance immutable Agency base directory is unsafe"
+                    )
+                os.close(directory_fd)
+                directory_fd = next_fd
+            file_fd = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            before = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or before.st_nlink != 1
+                or before.st_size > maximum
+            ):
+                raise AgentInstanceError(
+                    "Agent Instance immutable Agency base file is unsafe"
+                )
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(file_fd, min(64 * 1024, maximum + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > maximum:
+                    raise AgentInstanceError(
+                        "Agent Instance immutable Agency base file is unsafe"
+                    )
+            payload = b"".join(chunks)
+            after = os.fstat(file_fd)
+            if (
+                before.st_dev != after.st_dev
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or after.st_size != len(payload)
+            ):
+                raise AgentInstanceError(
+                    "Agent Instance immutable Agency base changed while being read"
+                )
+            return payload, after
+        except AgentInstanceError:
+            raise
+        except OSError as error:
+            raise AgentInstanceError(
+                "Agent Instance immutable Agency base is unavailable"
+            ) from error
+        finally:
+            if file_fd >= 0:
+                os.close(file_fd)
+            if directory_fd >= 0:
+                os.close(directory_fd)
 
     @staticmethod
     def _assert_config_has_no_run_state(path: Path) -> None:
@@ -592,23 +892,66 @@ class AgentInstanceManager:
 
     @staticmethod
     def _read_regular_file(path: Path, *, maximum: int, label: str) -> bytes:
+        payload, _ = AgentInstanceManager._read_regular_file_with_stat(
+            path,
+            maximum=maximum,
+            label=label,
+            required_mode=0o600,
+        )
+        return payload
+
+    @staticmethod
+    def _read_regular_file_with_stat(
+        path: Path,
+        *,
+        maximum: int,
+        label: str,
+        required_mode: int | None,
+    ) -> tuple[bytes, os.stat_result]:
+        descriptor = -1
         try:
-            info = path.lstat()
-        except OSError as error:
-            raise AgentInstanceError(f"{label} is unavailable") from error
-        if (
-            stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISREG(info.st_mode)
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_uid != os.geteuid()
-            or info.st_nlink != 1
-            or info.st_size > maximum
-        ):
-            raise AgentInstanceError(f"{label} is unsafe")
-        try:
-            return path.read_bytes()
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or before.st_nlink != 1
+                or before.st_size > maximum
+                or (
+                    required_mode is not None
+                    and stat.S_IMODE(before.st_mode) != required_mode
+                )
+            ):
+                raise AgentInstanceError(f"{label} is unsafe")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > maximum:
+                    raise AgentInstanceError(f"{label} is unsafe")
+            payload = b"".join(chunks)
+            after = os.fstat(descriptor)
+            if (
+                before.st_dev != after.st_dev
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or after.st_size != len(payload)
+            ):
+                raise AgentInstanceError(f"{label} changed while being read")
+            return payload, after
+        except AgentInstanceError:
+            raise
         except OSError as error:
             raise AgentInstanceError(f"{label} is unreadable") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
     @staticmethod
     def _write_json_file(path: Path, value: object) -> None:
@@ -629,12 +972,78 @@ class AgentInstanceManager:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
+            AgentInstanceManager._fsync_directory(path.parent)
         except OSError as error:
             raise AgentInstanceError("Agent Instance metadata write failed") from error
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
             temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            info = os.fstat(descriptor)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                raise AgentInstanceError("Agent Instance directory is unsafe")
+            os.fsync(descriptor)
+        except AgentInstanceError:
+            raise
+        except OSError as error:
+            raise AgentInstanceError("Agent Instance directory sync failed") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    @staticmethod
+    def _sync_profile_tree(root: Path) -> None:
+        paths = sorted(root.rglob("*"), key=lambda item: item.as_posix())
+        for path in paths:
+            try:
+                info = path.lstat()
+            except OSError as error:
+                raise AgentInstanceError(
+                    "Agent Instance staging tree is unreadable"
+                ) from error
+            if stat.S_ISLNK(info.st_mode):
+                raise AgentInstanceError(
+                    "Agent Instance staging tree contains a symlink"
+                )
+            if stat.S_ISREG(info.st_mode):
+                descriptor = -1
+                try:
+                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                    opened = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or opened.st_uid != os.geteuid()
+                    ):
+                        raise AgentInstanceError(
+                            "Agent Instance staging file is unsafe"
+                        )
+                    os.fsync(descriptor)
+                except AgentInstanceError:
+                    raise
+                except OSError as error:
+                    raise AgentInstanceError(
+                        "Agent Instance staging file sync failed"
+                    ) from error
+                finally:
+                    if descriptor >= 0:
+                        os.close(descriptor)
+            elif not stat.S_ISDIR(info.st_mode):
+                raise AgentInstanceError("Agent Instance staging tree is unsafe")
+        for directory in sorted(
+            [path for path in paths if path.is_dir()] + [root],
+            key=lambda item: len(item.parts),
+            reverse=True,
+        ):
+            AgentInstanceManager._fsync_directory(directory)
 
     @staticmethod
     def _touch_lock_file(path: Path) -> None:
@@ -657,20 +1066,26 @@ class AgentInstanceManager:
 
     @staticmethod
     def _validate_lock_file(path: Path) -> None:
+        descriptor = -1
         try:
-            info = path.lstat()
+            descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+            ):
+                raise AgentInstanceError("Agent Instance lock file is unsafe")
+        except AgentInstanceError:
+            raise
         except OSError as error:
             raise AgentInstanceError(
                 "Agent Instance lock file is unavailable"
             ) from error
-        if (
-            stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISREG(info.st_mode)
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_uid != os.geteuid()
-            or info.st_nlink != 1
-        ):
-            raise AgentInstanceError("Agent Instance lock file is unsafe")
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
     def _local_lock(self, profile: str) -> threading.RLock:
         with self._local_locks_guard:
