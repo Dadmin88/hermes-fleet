@@ -241,9 +241,7 @@ class HermesRunsClient:
                 raise ValueError("Hermes Fleet runtime binding is invalid")
             features = self.health(timeout_seconds=timeout_seconds)
             if features.get("run_fleet_runtime") is not True:
-                raise HermesRunError(
-                    "Hermes does not advertise run_fleet_runtime"
-                )
+                raise HermesRunError("Hermes does not advertise run_fleet_runtime")
         request = {"input": prompt}
         if session_id is not None:
             request["session_id"] = session_id

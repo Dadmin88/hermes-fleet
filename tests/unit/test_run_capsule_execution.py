@@ -44,13 +44,14 @@ HASH_1 = "sha256:" + "1" * 64
 HASH_2 = "sha256:" + "2" * 64
 HASH_3 = "sha256:" + "3" * 64
 HASH_5 = "sha256:" + "5" * 64
-IMAGE = (
-    "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
-)
+IMAGE = "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
 TARGET = {"source": "local", "node_id": "node-test", "generation": 1}
-TARGET_DIGEST = "sha256:" + hashlib.sha256(
-    json.dumps(TARGET, sort_keys=True, separators=(",", ":")).encode()
-).hexdigest()
+TARGET_DIGEST = (
+    "sha256:"
+    + hashlib.sha256(
+        json.dumps(TARGET, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+)
 
 
 def agency_package(tmp_path: Path) -> AgencyProfilePackage:
@@ -355,9 +356,7 @@ def harness(
         body_factory=lambda _spec: body,
         now_ms=lambda: 1000,
         learning_persister=learning,
-        artifact_persister=(
-            persist_artifacts if include_artifact_persister else None
-        ),
+        artifact_persister=(persist_artifacts if include_artifact_persister else None),
         grant_revoker=(revoke if include_revoker else None),
         client_releaser=lambda profile: releases.append(profile),
     )

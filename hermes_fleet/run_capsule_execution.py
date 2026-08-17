@@ -45,9 +45,7 @@ LearningPersister = Callable[
     Mapping[str, Any] | None,
 ]
 GrantRevoker = Callable[[RunCapsuleSpec], None]
-ArtifactPersister = Callable[
-    [RunCapsuleRecord, Mapping[str, bytes]], Mapping[str, Any]
-]
+ArtifactPersister = Callable[[RunCapsuleRecord, Mapping[str, bytes]], Mapping[str, Any]]
 BodyFactory = Callable[[RunCapsuleSpec], DockerRunCapsuleBody]
 RunsFactory = Callable[[str], Any]
 ClientReleaser = Callable[[str], None]
@@ -263,10 +261,10 @@ class LocalRunCapsuleExecutor:
                 container_id=discovered.realization_id,
             )
 
-        if (
-            record.container_id is not None
-            and record.state not in {"cleaned", "finalized"}
-        ):
+        if record.container_id is not None and record.state not in {
+            "cleaned",
+            "finalized",
+        }:
             if record.state == "cleanup_pending":
                 body.cleanup_if_present(record.container_id)
             else:
@@ -495,9 +493,7 @@ class LocalRunCapsuleExecutor:
                 f"Run Capsule stopped in unexpected state {record.state}"
             )
         evidence = dict(record.evidence or {})
-        execution_status = str(
-            evidence.get("execution_outcome") or "completed"
-        )
+        execution_status = str(evidence.get("execution_outcome") or "completed")
         return RunCapsuleOutcome(
             status=execution_status,
             record=record,

@@ -357,8 +357,7 @@ def test_concurrent_ensure_creates_one_agent_without_staging_residue(
             errors.append(error)
 
     threads = [
-        threading.Thread(target=ensure, args=(item,))
-        for item in (first, second)
+        threading.Thread(target=ensure, args=(item,)) for item in (first, second)
     ]
     for thread in threads:
         thread.start()

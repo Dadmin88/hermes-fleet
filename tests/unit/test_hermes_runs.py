@@ -41,9 +41,11 @@ class _RunsAPI:
                         time.sleep(api.post_delay_seconds)
                     self._json(
                         api.post_status,
-                        {"run_id": "run-test", "status": "started"}
-                        if api.post_status == 202
-                        else {"error": {"message": "rejected"}},
+                        (
+                            {"run_id": "run-test", "status": "started"}
+                            if api.post_status == 202
+                            else {"error": {"message": "rejected"}}
+                        ),
                     )
                     return
                 if route == "/v1/runs/run-test/approval":
@@ -218,8 +220,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
 
 
-def test_fleet_runtime_submission_requires_advertised_capability_and_exact_payload(
-) -> None:
+def test_fleet_runtime_requires_capability_and_exact_payload() -> None:
     from hermes_fleet.hermes_runs import (
         HermesFleetRuntimeBinding,
         HermesRunError,
@@ -550,9 +551,7 @@ def test_hermes_runs_client_resolves_recipe_scoped_approval_once() -> None:
         for method, path, _, body in api.requests
     )
     assert any(
-        method == "POST"
-        and path.endswith("/approval")
-        and body == {"choice": "once"}
+        method == "POST" and path.endswith("/approval") and body == {"choice": "once"}
         for method, path, _, body in api.requests
     )
     assert not any(path.endswith("/stop") for _, path, _, _ in api.requests)

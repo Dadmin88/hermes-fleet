@@ -105,9 +105,7 @@ def test_recipe_toolsets_must_fit_node_ceiling() -> None:
 
     value = package(
         b"x",
-        extensions={
-            "fleet.hermes/toolsets.v1": {"names": ["fleet-terminal"]}
-        },
+        extensions={"fleet.hermes/toolsets.v1": {"names": ["fleet-terminal"]}},
     )
     with pytest.raises(ValueError, match="disallowed toolset"):
         _recipe_toolsets(value, ceiling=("file",))
@@ -171,9 +169,7 @@ def test_profile_runtime_materializes_exact_bundle_scopes_secret_and_cleans(
     bundle = bundle_agency_profile(agency)
     value = package(
         bundle.payload,
-        extensions={
-            "fleet.hermes/toolsets.v1": {"names": ["fleet-terminal"]}
-        },
+        extensions={"fleet.hermes/toolsets.v1": {"names": ["fleet-terminal"]}},
     )
     object.__setattr__(value, "resolved_recipe", value.resolved_recipe)
     object.__setattr__(value, "agency_bundle", bundle)

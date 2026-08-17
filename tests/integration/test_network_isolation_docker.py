@@ -33,6 +33,8 @@ from hermes_fleet.recipes import ResolvedRecipe
 BASE_IMAGE = (
     "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
 )
+
+
 def _ipv4(*octets: int) -> str:
     return ".".join(str(octet) for octet in octets)
 
@@ -191,8 +193,8 @@ def _connect_proxy(
         "$s=IO::Socket::INET->new(PeerAddr=>$ARGV[0],PeerPort=>8080,"
         "Proto=>'tcp',Timeout=>3); exit 20 unless $s; "
         "$s->autoflush(1); "
-        "print $s \"CONNECT \".$ARGV[1].':'.$ARGV[2].\" HTTP/1.1\\r\\n\"; "
-        "print $s \"Host: \".$ARGV[1].':'.$ARGV[2].\"\\r\\n\\r\\n\"; "
+        'print $s "CONNECT ".$ARGV[1].\':\'.$ARGV[2]." HTTP/1.1\\r\\n"; '
+        'print $s "Host: ".$ARGV[1].\':\'.$ARGV[2]."\\r\\n\\r\\n"; '
         "$line=<$s>; print $line // '';"
     )
     return _run(
@@ -299,9 +301,7 @@ def test_real_gateway_blocks_proxy_bypass_management_and_lateral_peers() -> None
         )[0]
         assert inspected["HostConfig"]["NetworkMode"] == binding.docker_network
         assert inspected["HostConfig"]["Dns"] == [_ipv4(127, 0, 0, 1)]
-        assert set(inspected["NetworkSettings"]["Networks"]) == {
-            binding.docker_network
-        }
+        assert set(inspected["NetworkSettings"]["Networks"]) == {binding.docker_network}
         proxy = f"http://{binding.gateway_ip}:8080"
         env = set(inspected["Config"].get("Env", []))
         assert {f"HTTP_PROXY={proxy}", f"HTTPS_PROXY={proxy}"}.issubset(env)
@@ -389,13 +389,9 @@ def test_real_gateway_blocks_proxy_bypass_management_and_lateral_peers() -> None
         if handle is not None:
             backend.cleanup_plan(plan, handle=handle)
         controller.cleanup(binding)
-        gateway_absent = _run(
-            ["docker", "inspect", binding.gateway_container_id or ""]
-        )
+        gateway_absent = _run(["docker", "inspect", binding.gateway_container_id or ""])
         assert gateway_absent.returncode != 0
-        network_absent = _run(
-            ["docker", "network", "inspect", binding.docker_network]
-        )
+        network_absent = _run(["docker", "network", "inspect", binding.docker_network])
         assert network_absent.returncode != 0
 
 
@@ -403,8 +399,9 @@ def test_real_gateway_blocks_proxy_bypass_management_and_lateral_peers() -> None
     not _docker_ready(),
     reason="Docker/pinned amd64 image unavailable",
 )
-def test_real_gateway_allows_only_exact_pinned_public_destination_when_reachable(
-) -> None:
+def test_real_gateway_allows_only_exact_pinned_public_destination_when_reachable() -> (
+    None
+):
     try:
         probe = socket.create_connection((PUBLIC_IP, 443), timeout=2)
     except OSError:
@@ -545,9 +542,7 @@ def test_real_gateway_runtime_dns_rebinding_is_rejected() -> None:
         assert " 403 " in response.stdout
         time.sleep(0.2)
         records = controller.audit(binding)
-        matching = [
-            record for record in records if record.host == "example.com"
-        ]
+        matching = [record for record in records if record.host == "example.com"]
         if not matching:
             pytest.skip(
                 "gateway DNS resolution is unavailable in this Docker environment"

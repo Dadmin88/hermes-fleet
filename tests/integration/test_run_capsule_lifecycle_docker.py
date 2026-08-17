@@ -32,9 +32,12 @@ BASE_IMAGE = (
 AUTHORITY = "sha256:" + "8" * 64
 IDEMPOTENCY = "sha256:" + "9" * 64
 TARGET = {"source": "local", "node_id": "phase8-docker", "generation": 1}
-TARGET_DIGEST = "sha256:" + hashlib.sha256(
-    json.dumps(TARGET, sort_keys=True, separators=(",", ":")).encode()
-).hexdigest()
+TARGET_DIGEST = (
+    "sha256:"
+    + hashlib.sha256(
+        json.dumps(TARGET, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+)
 
 
 def _run(argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:

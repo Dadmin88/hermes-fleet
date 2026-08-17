@@ -246,8 +246,7 @@ def test_workshop_prepare_is_non_root_read_only_and_ephemeral() -> None:
     assert "mode=0755" in input_tmpfs
     assert any(value.startswith("/tmp:rw,nosuid,nodev,exec,") for value in tmpfs_values)
     assert any(
-        value.startswith("/home/fleet:rw,nosuid,nodev,exec,")
-        for value in tmpfs_values
+        value.startswith("/home/fleet:rw,nosuid,nodev,exec,") for value in tmpfs_values
     )
     assert "HOME=/home/fleet" in create
     assert "TMPDIR=/tmp" in create
@@ -265,9 +264,7 @@ def test_workshop_prepare_is_non_root_read_only_and_ephemeral() -> None:
         for value in create
     )
     forwarded_env = [
-        create[index + 1]
-        for index, value in enumerate(create[:-1])
-        if value == "--env"
+        create[index + 1] for index, value in enumerate(create[:-1]) if value == "--env"
     ]
     assert forwarded_env == ["HOME=/home/fleet", "TMPDIR=/tmp"]
     labels = {

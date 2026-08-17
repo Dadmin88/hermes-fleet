@@ -661,9 +661,8 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         if config.get("WorkingDir") != "/workspace":
             _security_mismatch("Docker workshop working directory changed")
         environment = config.get("Env")
-        if (
-            type(environment) is not list
-            or not self._required_environment().issubset(set(environment))
+        if type(environment) is not list or not self._required_environment().issubset(
+            set(environment)
         ):
             _security_mismatch("Docker workshop environment changed")
         if host.get("NetworkMode") != self._docker_network_name():
