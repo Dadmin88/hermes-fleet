@@ -26,6 +26,7 @@ from hermes_fleet.network_isolation import (
     NetworkDestination,
     NetworkGrant,
     NetworkIsolatedWorkshopBackend,
+    NetworkIsolationError,
 )
 from hermes_fleet.oci_backend import OciRealizationSpec
 from hermes_fleet.recipes import ResolvedRecipe
@@ -237,15 +238,14 @@ def _direct_tcp(
     )
 
 
-@pytest.mark.skipif(not _docker_ready(), reason="Docker/pinned amd64 image unavailable")
-def test_provider_only_real_workshop_stays_network_none() -> None:
+def test_workshop_rejects_network_binding_from_another_execution() -> None:
     grant = NetworkGrant(
         mode=NETWORK_PROVIDER_ONLY,
         authority_ref=AUTHORITY,
     )
     controller = DockerEgressController(gateway_image=BASE_IMAGE)
     binding = controller.prepare(
-        execution_id="phase4-provider-only",
+        execution_id="phase4-binding-owner",
         grant=grant,
         authority=_authority(),
     )
@@ -257,7 +257,33 @@ def test_provider_only_real_workshop_stays_network_none() -> None:
         network_authority=_authority(),
         egress_binding=binding,
     )
-    plan = _plan(f"phase4provider{uuid.uuid4().hex[:12]}")
+    with pytest.raises(ExecutionBackendError) as raised:
+        backend.prepare(_plan("phase4-binding-other"))
+    assert raised.value.code == ExecutionBackendErrorCode.PLAN_CONFLICT
+
+
+@pytest.mark.skipif(not _docker_ready(), reason="Docker/pinned amd64 image unavailable")
+def test_provider_only_real_workshop_stays_network_none() -> None:
+    grant = NetworkGrant(
+        mode=NETWORK_PROVIDER_ONLY,
+        authority_ref=AUTHORITY,
+    )
+    execution_id = f"phase4provider{uuid.uuid4().hex[:12]}"
+    controller = DockerEgressController(gateway_image=BASE_IMAGE)
+    binding = controller.prepare(
+        execution_id=execution_id,
+        grant=grant,
+        authority=_authority(),
+    )
+    backend = NetworkIsolatedWorkshopBackend(
+        capabilities=_capabilities(),
+        realization=_realization(),
+        deadline_ms=int(time.time() * 1000) + 60_000,
+        network_grant=grant,
+        network_authority=_authority(),
+        egress_binding=binding,
+    )
+    plan = _plan(execution_id)
     handle = None
     try:
         handle = backend.ensure(plan)
@@ -289,6 +315,50 @@ def test_real_gateway_blocks_proxy_bypass_management_and_lateral_peers() -> None
         grant=grant,
         authority=_authority(),
     )
+    gateway_document = json.loads(
+        _run(["docker", "inspect", binding.gateway_container_id or ""]).stdout
+    )[0]
+
+    def reject_gateway_drift(mutator) -> None:
+        document = json.loads(json.dumps(gateway_document))
+        mutator(document)
+        with pytest.raises(NetworkIsolationError):
+            controller._verify_gateway_document(
+                document,
+                network_name=binding.docker_network,
+                gateway_ip=binding.gateway_ip,
+                execution_id=execution_id,
+                grant=grant,
+            )
+
+    reject_gateway_drift(
+        lambda value: value["State"].__setitem__("Status", "exited")
+    )
+    reject_gateway_drift(
+        lambda value: value["Config"]["Env"].append("HTTP_PROXY=http://127.0.0.1:9")
+    )
+    reject_gateway_drift(
+        lambda value: value["HostConfig"].__setitem__(
+            "Devices", [{"PathOnHost": "/dev/kvm"}]
+        )
+    )
+    reject_gateway_drift(lambda value: value.__setitem__("Mounts", None))
+    reject_gateway_drift(
+        lambda value: value["HostConfig"]["SecurityOpt"].append("seccomp=unconfined")
+    )
+    reject_gateway_drift(
+        lambda value: value["HostConfig"].__setitem__("PublishAllPorts", True)
+    )
+    reject_gateway_drift(
+        lambda value: value["HostConfig"]["Tmpfs"].__setitem__(
+            "/run/fleet-gateway",
+            "rw,nosuid,nodev,exec,size=1048576,uid=65534,gid=65534,mode=0700",
+        )
+    )
+    reject_gateway_drift(
+        lambda value: value["Config"].__setitem__("WorkingDir", "/tmp")
+    )
+
     backend = _backend(grant=grant, controller=controller, binding=binding)
     plan = _plan(execution_id)
     handle = None
@@ -305,6 +375,11 @@ def test_real_gateway_blocks_proxy_bypass_management_and_lateral_peers() -> None
         proxy = f"http://{binding.gateway_ip}:8080"
         env = set(inspected["Config"].get("Env", []))
         assert {f"HTTP_PROXY={proxy}", f"HTTPS_PROXY={proxy}"}.issubset(env)
+        proxy_drift = json.loads(json.dumps(inspected))
+        proxy_drift["Config"]["Env"].append("ALL_PROXY=http://127.0.0.1:9")
+        with pytest.raises(ExecutionBackendError) as proxy_error:
+            backend._validate_realization_security(proxy_drift)
+        assert proxy_error.value.code == ExecutionBackendErrorCode.CAPABILITY_MISMATCH
 
         # Topology, not proxy cooperation, blocks raw external sockets.
         assert _direct_tcp(handle.realization_id, PUBLIC_IP, 443).returncode != 0
