@@ -236,11 +236,11 @@ On execution deadline expiry:
 
 - transport certainty is `indeterminate`;
 - execution status is `timed_out`;
-- the observed underlying Keryx task may already be terminal `failed` when result retrieval becomes unavailable after deadline;
+- terminal state is `failed`;
 - the stable operator error category is `DEADLINE_EXCEEDED`;
-- the operator-level completion is returned as a timed-out execution rather than a transport-success claim.
+- the operator-level completion is returned as a failed terminal execution with timeout classification rather than a transport-success claim.
 
-Primary Fleet commit: `358d1e6`.
+Primary Fleet commits: `358d1e6` plus the Phase 1 canonical deadline-semantic correction.
 
 ### Current hardened baseline and canonical reconciliation
 

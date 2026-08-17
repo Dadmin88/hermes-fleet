@@ -422,7 +422,7 @@ def test_run_exact_timeout_returns_typed_deadline_result() -> None:
     result = asyncio.run(service.run_exact(_exact_request(deadline_seconds=1)))
 
     assert result.task_id == "task-deadline"
-    assert result.terminal_state == "timed_out"
+    assert result.terminal_state == "failed"
     assert result.transport_status == "indeterminate"
     assert result.execution_status == "timed_out"
     assert result.error_category is OperatorErrorCode.DEADLINE_EXCEEDED
@@ -443,7 +443,7 @@ def test_terminal_result_unavailable_after_deadline_is_typed_timeout(
 
     result = asyncio.run(service.run_exact(_exact_request(deadline_seconds=1)))
 
-    assert result.terminal_state == "timed_out"
+    assert result.terminal_state == "failed"
     assert result.transport_status == "indeterminate"
     assert result.execution_status == "timed_out"
     assert result.error_category is OperatorErrorCode.DEADLINE_EXCEEDED
