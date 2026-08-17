@@ -354,8 +354,7 @@ def test_idempotency_returns_same_evidence_and_changed_request_is_rejected() -> 
     service = broker(
         (
             adapter(
-                lambda _values: calls.append(1)
-                or {"effect_generation": len(calls)}
+                lambda _values: calls.append(1) or {"effect_generation": len(calls)}
             ),
         ),
         clock=clock,
