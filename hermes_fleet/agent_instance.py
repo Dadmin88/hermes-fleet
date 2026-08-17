@@ -359,14 +359,15 @@ class AgentInstanceManager:
         destination = self._profiles_root / profile
         if destination.exists() or destination.is_symlink():
             binding = self._read_binding(destination)
-            self._validate_existing(
-                destination,
-                binding,
-                bundle.resolved,
-                instance_id=instance_id,
-                profile=profile,
-                model_digest=model_digest,
-            )
+            with self._locked_state(profile):
+                self._validate_existing(
+                    destination,
+                    binding,
+                    bundle.resolved,
+                    instance_id=instance_id,
+                    profile=profile,
+                    model_digest=model_digest,
+                )
             return binding
 
         staging = self._profiles_root / f".{profile}.creating-{uuid.uuid4().hex}"
@@ -409,14 +410,15 @@ class AgentInstanceManager:
                     raise
                 shutil.rmtree(staging, ignore_errors=True)
                 existing = self._read_binding(destination)
-                self._validate_existing(
-                    destination,
-                    existing,
-                    bundle.resolved,
-                    instance_id=instance_id,
-                    profile=profile,
-                    model_digest=model_digest,
-                )
+                with self._locked_state(profile):
+                    self._validate_existing(
+                        destination,
+                        existing,
+                        bundle.resolved,
+                        instance_id=instance_id,
+                        profile=profile,
+                        model_digest=model_digest,
+                    )
                 return existing
             return binding
         except BaseException:
@@ -431,14 +433,15 @@ class AgentInstanceManager:
         model_digest = _canonical_digest(model_config)
         destination = self._profiles_root / profile
         binding = self._read_binding(destination)
-        self._validate_existing(
-            destination,
-            binding,
-            agent,
-            instance_id=instance_id,
-            profile=profile,
-            model_digest=model_digest,
-        )
+        with self._locked_state(profile):
+            self._validate_existing(
+                destination,
+                binding,
+                agent,
+                instance_id=instance_id,
+                profile=profile,
+                model_digest=model_digest,
+            )
         return binding
 
     def profile_path(self, binding: AgentInstanceBinding) -> Path:
@@ -448,8 +451,8 @@ class AgentInstanceManager:
 
     def read_state(self, binding: AgentInstanceBinding) -> AgentInstanceState:
         destination = self.profile_path(binding)
-        self._validate_binding_matches_disk(destination, binding)
         with self._locked_state(binding.profile):
+            self._validate_binding_matches_disk(destination, binding)
             return self._read_state_file(destination / _STATE_FILE)
 
     @contextmanager
@@ -476,8 +479,8 @@ class AgentInstanceManager:
         ):
             raise AgentInstanceError("expected Agent Instance generation is invalid")
         destination = self.profile_path(binding)
-        self._validate_binding_matches_disk(destination, binding)
         with self._locked_state(binding.profile):
+            self._validate_binding_matches_disk(destination, binding)
             current = self._read_state_file(destination / _STATE_FILE)
             if current.generation(component) != expected_generation:
                 raise AgentInstanceConflict(
