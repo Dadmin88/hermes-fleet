@@ -255,9 +255,20 @@ def test_request_surface_rejects_generic_shell_paths_transports_and_secrets() ->
 
     for parameters in (
         {"artifact_id": "artifact-1", "path": "logical"},
+        {"artifact_id": "artifact-1", "filepath": "logical"},
+        {"artifact_id": "artifact-1", "host": "node-1"},
+        {"artifact_id": "artifact-1", "endpoint": "node-1:22"},
+        {"artifact_id": "artifact-1", "port": 22},
+        {"artifact_id": "artifact-1", "url": "logical-endpoint"},
         {"artifact_id": "artifact-1", "destination": "/" + "etc/service"},
-        {"artifact_id": "artifact-1", "endpoint": "ssh" + "://host"},
+        {"artifact_id": "artifact-1", "destination": "../../etc/service"},
+        {"artifact_id": "artifact-1", "destination": r"\\server\share"},
+        {"artifact_id": "artifact-1", "destination": "user@host:/srv/release"},
+        {"artifact_id": "artifact-1", "endpoint_id": "ssh" + "://host"},
         {"artifact_id": "artifact-1", "api_key": "redacted"},
+        {"artifact_id": "artifact-1", "aws_access_key_id": "redacted"},
+        {"artifact_id": "artifact-1", "cookie": "redacted"},
+        {"artifact_id": "artifact-1", "authorization": "redacted"},
         {"artifact_id": "artifact-1", "nested": {"argv": ["anything"]}},
     ):
         with pytest.raises(HostActionBrokerError):
@@ -337,14 +348,31 @@ def test_parameter_digest_and_registered_target_must_match_exact_grant() -> None
 
 def test_idempotency_returns_same_evidence_and_changed_request_is_rejected() -> None:
     calls: list[int] = []
+    clock = Clock()
     parameters = deploy_parameters()
     scope = authority(grant_for(parameters, max_calls=2))
     service = broker(
-        (adapter(lambda _values: calls.append(1) or {"effect_generation": len(calls)}),)
+        (
+            adapter(
+                lambda _values: calls.append(1) or {"effect_generation": len(calls)}
+            ),
+        ),
+        clock=clock,
     )
     action = request()
     first = invoke(service, scope, action)
-    second = invoke(service, scope, action)
+
+    # Replaying stored evidence is not a new host effect. It remains available
+    # even if live admission state changes after the original effect.
+    clock.value = 0
+    second = invoke(
+        service,
+        scope,
+        action,
+        policy="sha256:" + "8" * 64,
+        recipe="sha256:" + "7" * 64,
+        target={**DESTINATION, "binding_generation": 999},
+    )
     assert second == first
     assert calls == [1]
 
@@ -500,3 +528,192 @@ def test_invalid_clock_and_expired_authority_fail_before_host_effect() -> None:
     expired = broker((adapter(lambda _values: {"ok": True}),), clock=Clock(1_501))
     with pytest.raises(HostActionBrokerError, match="authority has expired"):
         invoke(expired, scope, request(deadline_ms=1_500))
+
+
+def test_nested_request_parameters_are_detached_and_deeply_immutable() -> None:
+    parameters = {
+        **deploy_parameters(),
+        "metadata": {
+            "release": "one",
+            "labels": ["stable"],
+        },
+    }
+    action = request(parameters)
+
+    parameters["metadata"]["release"] = "two"  # type: ignore[index]
+    parameters["metadata"]["labels"].append("mutated")  # type: ignore[index,union-attr]
+
+    assert action.parameters["metadata"]["release"] == "one"
+    assert action.parameters["metadata"]["labels"] == ["stable"]
+    with pytest.raises(TypeError, match="immutable"):
+        action.parameters["metadata"]["release"] = "changed"
+    with pytest.raises(TypeError, match="immutable"):
+        action.parameters["metadata"]["labels"].append("changed")
+
+
+def test_adapter_evidence_is_detached_and_deeply_immutable() -> None:
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters))
+    raw_result = {
+        "details": {
+            "generation": 1,
+            "labels": ["stable"],
+        }
+    }
+    service = broker((adapter(lambda _values: raw_result),))
+
+    evidence = invoke(service, scope, request())
+    raw_result["details"]["generation"] = 999
+    raw_result["details"]["authorization"] = "would-have-leaked"
+    raw_result["details"]["labels"].append("mutated")
+
+    assert evidence.result["details"]["generation"] == 1
+    assert evidence.result["details"]["labels"] == ["stable"]
+    assert "authorization" not in evidence.result["details"]
+    with pytest.raises(TypeError, match="immutable"):
+        evidence.result["details"]["generation"] = 2
+    with pytest.raises(TypeError, match="immutable"):
+        evidence.result["details"]["labels"].append("changed")
+
+
+def test_same_idempotency_key_cannot_race_through_final_reservation() -> None:
+    barrier = threading.Barrier(2)
+    entered = threading.Event()
+    release = threading.Event()
+    loser_done = threading.Event()
+    calls: list[str] = []
+    outcomes: list[object] = []
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters, max_calls=2, rate_limit_per_minute=2))
+
+    def node_policy(_scope, _request):
+        barrier.wait(5)
+        return True
+
+    def handler(_values):
+        calls.append("effect")
+        entered.set()
+        assert release.wait(5)
+        return {"ok": True}
+
+    service = broker((adapter(handler),), node_policy=node_policy)
+    action = request()
+
+    def worker() -> None:
+        try:
+            outcomes.append(invoke(service, scope, action))
+        except BaseException as error:  # pragma: no cover - asserted below
+            outcomes.append(error)
+        finally:
+            loser_done.set()
+
+    first = threading.Thread(target=worker)
+    second = threading.Thread(target=worker)
+    first.start()
+    second.start()
+    assert entered.wait(5)
+    assert loser_done.wait(5)
+    assert calls == ["effect"]
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert calls == ["effect"]
+    assert len(outcomes) == 2
+    errors = [item for item in outcomes if isinstance(item, HostActionBrokerError)]
+    successes = [item for item in outcomes if not isinstance(item, BaseException)]
+    assert len(errors) == 1
+    assert "already in flight" in str(errors[0])
+    assert len(successes) == 1
+
+
+def test_deadline_is_rechecked_immediately_before_host_effect() -> None:
+    clock = Clock(1_000)
+    calls: list[str] = []
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters), deadline_ms=1_500)
+
+    def node_policy(_scope, _request):
+        clock.value = 1_600
+        return True
+
+    service = broker(
+        (adapter(lambda _values: calls.append("effect") or {"ok": True}),),
+        clock=clock,
+        node_policy=node_policy,
+    )
+    with pytest.raises(HostActionBrokerError, match="expired before effect"):
+        invoke(service, scope, request(deadline_ms=1_500))
+    assert calls == []
+
+
+def test_post_effect_clock_failure_becomes_sticky_indeterminate() -> None:
+    values: list[object] = [1_000, 1_000, RuntimeError("clock failed"), 1_001]
+    calls: list[str] = []
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters, max_calls=2))
+
+    def clock() -> int:
+        value = values.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        assert isinstance(value, int)
+        return value
+
+    service = HostActionBroker(
+        adapters=(adapter(lambda _values: calls.append("effect") or {"ok": True}),),
+        node_policy=lambda _scope, _request: True,
+        now_ms=clock,
+    )
+    action = request()
+    with pytest.raises(HostActionIndeterminateError) as raised:
+        invoke(service, scope, action)
+    assert raised.value.evidence.result == {"reason": "completion_time_unavailable"}
+    with pytest.raises(HostActionIndeterminateError) as repeated:
+        invoke(service, scope, action)
+    assert repeated.value.evidence == raised.value.evidence
+    assert calls == ["effect"]
+
+
+def test_audit_failure_is_sticky_indeterminate_and_never_reexecutes() -> None:
+    calls: list[str] = []
+    audits: list[str] = []
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters, max_calls=2))
+
+    def audit_sink(_evidence) -> None:
+        audits.append("attempt")
+        raise RuntimeError("audit store unavailable")
+
+    service = broker(
+        (adapter(lambda _values: calls.append("effect") or {"ok": True}),),
+        audit_sink=audit_sink,
+    )
+    action = request()
+    with pytest.raises(HostActionIndeterminateError) as raised:
+        invoke(service, scope, action)
+    assert raised.value.evidence.result == {"reason": "audit_persistence_failed"}
+    with pytest.raises(HostActionIndeterminateError) as repeated:
+        invoke(service, scope, action)
+    assert repeated.value.evidence == raised.value.evidence
+    assert calls == ["effect"]
+    assert audits == ["attempt"]
+
+
+def test_nested_secret_bearing_adapter_evidence_is_indeterminate() -> None:
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters))
+    service = broker(
+        (
+            adapter(
+                lambda _values: {
+                    "details": {"authorization": "sensitive"},
+                }
+            ),
+        )
+    )
+    with pytest.raises(HostActionIndeterminateError) as raised:
+        invoke(service, scope, request())
+    assert raised.value.evidence.result == {"reason": "invalid_adapter_evidence"}
+    assert "sensitive" not in str(raised.value.evidence.to_dict())
