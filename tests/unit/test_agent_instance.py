@@ -227,6 +227,37 @@ def test_profile_config_drift_and_run_scoped_state_fail_closed(tmp_path: Path) -
         service.open(bundle.resolved)
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "run_id",
+        "execution-id",
+        "planFingerprint",
+        "idempotency_key",
+        "deadline_ms",
+        "resource_limits",
+        "temporary_credentials",
+    ],
+)
+def test_additional_run_scoped_config_keys_fail_closed(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    bundle = bundle_agency_profile(package(tmp_path))
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    profile = service.profile_path(binding)
+    config_path = profile / "config.yaml"
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.setdefault("agent", {})[key] = "not-durable"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    config_path.chmod(0o600)
+
+    with pytest.raises(AgentInstanceError, match="run-scoped state"):
+        service.open(bundle.resolved)
+
+
 def test_reserved_legacy_owner_or_env_state_is_never_accepted(tmp_path: Path) -> None:
     bundle = bundle_agency_profile(package(tmp_path))
     service = manager(tmp_path)
