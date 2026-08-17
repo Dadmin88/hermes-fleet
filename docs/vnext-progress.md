@@ -29,8 +29,8 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 5 | COMPLETE | [Phase 5 host-action broker](vnext-phase5-host-action-broker.md); structured fixed verbs/targets, exact authority/policy/Recipe/target/parameter validation, race-safe budgets, sticky indeterminate idempotency, structured evidence, narrowing-only advisory seam, and real atomic host-effect proof. |
 | 6 | COMPLETE | [Phase 6 persistent Agent Instances](vnext-phase6-persistent-agent-instances.md); stable Agency-based Hermes-native profile identity, exact-base reuse/upgrade-required semantics, durable config integrity, memory/skill generation locking, immutable-base inventory, concurrent creation, and fresh-process persistence proof. |
 | 7 | COMPLETE | [Phase 7 run-scoped Hermes overrides](vnext-phase7-run-scoped-overrides.md); exact six-field `fleet_runtime`, ContextVar task/executor isolation, run-scoped toolset/iteration narrowing, attach-only exact image/container selection, live Docker proof, Hermes capability advertisement, and Fleet fail-closed capability gate. |
-| 8 | NEXT | Run Capsule lifecycle. Orchestrate the temporary Fleet-owned execution state around the persistent Agent Instance and exact disposable body without deleting the Agent. |
-| 9 | NOT STARTED | Principal identity. |
+| 8 | COMPLETE | [Phase 8 Run Capsule lifecycle](vnext-phase8-run-capsule-lifecycle.md); immutable Capsule spec/store, generation-CAS recovery, exact plan/container discovery, `run_submitting` duplicate-work fence, quiescence/evidence/artifact/learning/revocation ordering, idempotent cleanup, persistent-Agent survival, and real-Docker proof. |
+| 9 | NEXT | Principal identity. Bind local authenticated sessions directly and remote identity through Nodescale/Keryx only when crossing a machine boundary. |
 | 10 | NOT STARTED | Immutable RunAuthority. |
 | 11 | NOT STARTED | Scoped persistent memory. |
 | 12 | NOT STARTED | Context firewall. |
@@ -64,17 +64,17 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 8.**
+**Next work begins at Phase 9.**
 
-Before implementing Phase 8:
+Before implementing Phase 9:
 
-1. read the exact Run Capsule contents/lifecycle/recovery requirements from the operator-supplied master plan;
-2. keep Run Capsule state Fleet-owned and temporary; it references but never deletes the persistent Agent Instance;
-3. bind the Capsule to exact run/Agent/Recipe/authority/target/toolset/approval/secret/container/filesystem/network/broker/resource/deadline identities, while using verified placeholder authority slices until Phases 9–10 formalize principal and RunAuthority;
-4. lifecycle order must be admit → ensure Agent Instance → create/start exact workshop → call Hermes native `/v1/runs` with the Phase 7 binding → wait → finalization/quiescence → verify evidence → persist only authorized learning → revoke temporary powers → destroy workshop → release handles → finalize Capsule;
-5. make cleanup/recovery idempotent and recover by exact execution-plan identity; never silently create a replacement container while recovering an existing Capsule;
-6. prove Agent Instance survives successful, failed, cancelled, and recovered Capsule cleanup;
-7. preserve same-machine locality: no Keryx/Nodescale path for a local Capsule;
-8. close every Phase 8 requirement before marking Phase 9 active.
+1. read the exact principal-identity requirements from the operator-supplied master plan;
+2. keep local execution local: use the locally authenticated principal/session identity directly and do not route same-machine identity through Nodescale/Keryx;
+3. for remote work only, bind Nodescale machine/device trust and the authenticated Keryx sender to the projected principal;
+4. never infer principal identity from prompt/model text and never let the model claim or replace identity;
+5. define bounded owner/project/network/device/service principal forms plus revocation state without implementing the full Phase 10 RunAuthority early;
+6. make the principal reference consumed by Phase 8 Capsules deterministic and independently verifiable;
+7. prove concurrent principals cannot collide or substitute one another and revoked principals fail closed;
+8. close every Phase 9 requirement before marking Phase 10 active.
 
 Do not resume an old later-phase worktree simply because it exists.
