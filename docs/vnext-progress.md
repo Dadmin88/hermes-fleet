@@ -24,8 +24,8 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 0 | COMPLETE | [vNext foundation](vnext-foundation.md); ownership, invariants, machine-boundary rule, canonical lifecycle, terminology, and read-first docs frozen. |
 | 1 | COMPLETE | [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md); current Fleet + Agent reconciliation, upstream Nodescale socket fix, preserved 10-run soak. |
 | 2 | COMPLETE | [Phase 2 disposable OCI body](vnext-phase2-disposable-oci-body.md); canonical Fleet + Agent PRs/main CI, generic Fleet-owned workshop, fail-closed observed-state hardening, attach-only independent Hermes verification, and same-container cross-repo Docker proof. |
-| 3 | NEXT | Workspace/filesystem isolation. Existing Phase 3 code/docs are evidence candidates only until the phase is re-audited from the master plan under the canonical PR + green-CI closure rule. |
-| 4 | NOT YET RE-AUDITED | Existing network-isolation work remains in the repository as evidence only; Phase 4 cannot be credited before Phase 3 closes. |
+| 3 | COMPLETE | [Phase 3 workspace isolation](vnext-phase3-workspace-isolation.md); canonical Fleet + Agent PRs/main CI, bounded tmpfs zones, canonicalized authority-scoped project projections, immutable read staging, separately authorized disposable write copies, hardened declared artifact export, exact quiescence-gated destruction, cross-repo Docker proof, and N+1 zero residue. |
+| 4 | NEXT | Network isolation. Existing Phase 4 code/docs remain evidence candidates only until the phase is re-audited from the master plan under the canonical PR + green-CI closure rule. |
 | 5 | NOT YET RE-AUDITED | Existing host-broker work remains evidence only; Phase 5 cannot be credited before Phases 3–4 close. |
 | 6 | NOT YET RE-AUDITED | Existing persistent-Agent work remains evidence only; restart and lifecycle acceptance must be re-proven when Phase 6 is reached. |
 | 7 | NOT YET RE-AUDITED | Existing run-scoped override work remains evidence only and must be canonically reconciled when Phase 7 is reached. |
