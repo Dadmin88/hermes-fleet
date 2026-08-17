@@ -38,6 +38,23 @@ Do not document planned vNext behavior as already shipped.
 
 If merged code has moved ahead of durable docs, update the docs in the same change when practical.
 
+## Git and CI workflow invariants
+
+Repository changes must use the pull-request path. Keep every rule below true:
+
+- never force-push any branch;
+- never push directly to `main`;
+- never merge a feature/fix branch into local `main` and then push the result;
+- create a dedicated branch for every change and open a GitHub pull request;
+- run the relevant local gates before publishing the branch, but do not treat local green as a substitute for CI;
+- wait for every required PR CI check to be green before merging;
+- merge only through the GitHub pull request after CI is green; do not bypass required checks or use an administrative override;
+- when a PR needs more work, add normal forward commits to the same branch; do not rewrite published history to repair it;
+- after merge, update local `main` only by fetching and fast-forwarding from `origin/main`;
+- delete merged remote/local topic branches and clean worktrees once their work is safely merged, while preserving dirty or genuinely unique work until it is reconciled.
+
+A red CI run is a blocker. Fix the failing contract on the PR branch and make the PR green before proceeding with later master-plan phases.
+
 ## The ecosystem boundary
 
 Fleet coordinates several systems. It does not absorb their authority.
