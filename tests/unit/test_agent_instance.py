@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from hermes_fleet.agent_instance import (
     AgentInstanceUpgradeRequired,
 )
 from hermes_fleet.profile_inventory import (
+    ProfileInventoryError,
     _profile_content_digest,
     scan_profile_distributions,
 )
@@ -65,6 +67,22 @@ def package(
         capabilities=("review",),
         distribution_path=f"profiles/{name}",
         local_path=profile,
+    )
+
+
+def refreshed_package(value: AgencyProfilePackage) -> AgencyProfilePackage:
+    digest = _profile_content_digest(value.local_path, value.name, value.version)
+    assert digest is not None
+    return AgencyProfilePackage(
+        source=value.source,
+        name=value.name,
+        version=value.version,
+        content_digest=digest,
+        category=value.category,
+        priority=value.priority,
+        capabilities=value.capabilities,
+        distribution_path=value.distribution_path,
+        local_path=value.local_path,
     )
 
 
@@ -402,4 +420,185 @@ def test_metadata_and_lock_symlinks_fail_closed(tmp_path: Path) -> None:
     outside.write_bytes(metadata_payload)
     metadata.symlink_to(outside)
     with pytest.raises(AgentInstanceError):
+        service.open(bundle.resolved)
+
+
+def test_immutable_agency_base_manifest_rejects_base_file_drift_but_allows_new_learning(
+    tmp_path: Path,
+) -> None:
+    source = package(tmp_path)
+    bundle = bundle_agency_profile(source)
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    profile = service.profile_path(binding)
+
+    manifest = profile / ".fleet-agent-base-manifest.json"
+    assert manifest.is_file()
+    assert manifest.stat().st_mode & 0o777 == 0o600
+
+    learned = profile / "skills" / "learned-after-create" / "SKILL.md"
+    learned.parent.mkdir()
+    learned.write_text("new learned overlay\n", encoding="utf-8")
+    assert service.ensure(bundle) == binding
+
+    (profile / "SOUL.md").write_text("tampered base\n", encoding="utf-8")
+    with pytest.raises(AgentInstanceError, match="immutable Agency base"):
+        service.open(bundle.resolved)
+    with pytest.raises(
+        ProfileInventoryError,
+        match="persistent Agent Instance metadata",
+    ):
+        scan_profile_distributions(service.profiles_root)
+
+
+def test_nested_reserved_run_state_in_agency_bundle_is_rejected(tmp_path: Path) -> None:
+    source = package(tmp_path)
+    nested = source.local_path / "skills" / "unsafe"
+    nested.mkdir()
+    (nested / ".env").write_text("TOKEN=not-allowed\n", encoding="utf-8")
+    bundle = bundle_agency_profile(refreshed_package(source))
+    service = manager(tmp_path)
+    with pytest.raises(AgentInstanceError, match="reserved run/credential state"):
+        service.ensure(bundle)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "container_ids",
+        "approval_budgets",
+        "network_grant",
+        "filesystem_grant",
+        "host_broker_grant",
+        "run_authority_hash",
+        "secret_handle",
+        "secret_ref",
+    ],
+)
+def test_persistent_config_rejects_run_state_key_variants(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    source = package(tmp_path)
+    config = yaml.safe_load(
+        (source.local_path / "config.yaml").read_text(encoding="utf-8")
+    )
+    config[key] = "temporary"
+    (source.local_path / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=True),
+        encoding="utf-8",
+    )
+    bundle = bundle_agency_profile(refreshed_package(source))
+    with pytest.raises(AgentInstanceError, match="run-scoped state"):
+        manager(tmp_path).ensure(bundle)
+
+
+def test_profile_and_profiles_root_permissions_fail_closed(tmp_path: Path) -> None:
+    bundle = bundle_agency_profile(package(tmp_path))
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    profile = service.profile_path(binding)
+
+    profile.chmod(0o755)
+    with pytest.raises(AgentInstanceError, match="profile is invalid"):
+        service.open(bundle.resolved)
+    profile.chmod(0o700)
+
+    service.profiles_root.chmod(0o777)
+    with pytest.raises(AgentInstanceError, match="profiles root is unsafe"):
+        service.open(bundle.resolved)
+
+
+def test_generation_exhaustion_fails_before_mutation_window(tmp_path: Path) -> None:
+    bundle = bundle_agency_profile(package(tmp_path))
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    profile = service.profile_path(binding)
+    state_path = profile / ".fleet-agent-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema": "fleet.agent-state.v1",
+                "memory_generation": (1 << 63) - 1,
+                "skills_generation": 0,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state_path.chmod(0o600)
+
+    entered = False
+    with pytest.raises(AgentInstanceConflict, match="generation is exhausted"):
+        with service.mutation_guard(
+            binding,
+            component="memory",
+            expected_generation=(1 << 63) - 1,
+        ):
+            entered = True
+    assert entered is False
+
+
+def test_base_manifest_symlink_fails_closed(tmp_path: Path) -> None:
+    bundle = bundle_agency_profile(package(tmp_path))
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    profile = service.profile_path(binding)
+    manifest = profile / ".fleet-agent-base-manifest.json"
+    payload = manifest.read_bytes()
+    manifest.unlink()
+    outside = tmp_path / "outside-base-manifest"
+    outside.write_bytes(payload)
+    outside.chmod(0o600)
+    manifest.symlink_to(outside)
+    with pytest.raises(AgentInstanceError):
+        service.open(bundle.resolved)
+
+
+def test_base_manifest_digest_is_bound_into_agent_metadata(tmp_path: Path) -> None:
+    bundle = bundle_agency_profile(package(tmp_path))
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    profile = service.profile_path(binding)
+    manifest = profile / ".fleet-agent-base-manifest.json"
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value["files"] = []
+    manifest.write_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    manifest.chmod(0o600)
+
+    with pytest.raises(AgentInstanceError, match="base manifest digest changed"):
+        service.open(bundle.resolved)
+
+
+def test_immutable_base_intermediate_symlink_cannot_redirect_verification(
+    tmp_path: Path,
+) -> None:
+    source = package(tmp_path)
+    bundled = source.local_path / "skills" / "bundled"
+    bundled.mkdir()
+    (bundled / "SKILL.md").write_text("immutable bundled skill\n", encoding="utf-8")
+    bundle = bundle_agency_profile(refreshed_package(source))
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    profile = service.profile_path(binding)
+
+    skills = profile / "skills"
+    outside = tmp_path / "outside-skills"
+    outside.mkdir()
+    outside_bundled = outside / "bundled"
+    outside_bundled.mkdir()
+    (outside_bundled / "SKILL.md").write_text(
+        "immutable bundled skill\n",
+        encoding="utf-8",
+    )
+    moved = profile / "skills-original"
+    skills.rename(moved)
+    skills.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(AgentInstanceError, match="immutable Agency base"):
         service.open(bundle.resolved)

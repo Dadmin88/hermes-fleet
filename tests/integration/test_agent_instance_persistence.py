@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from hermes_fleet.agency_materialization import bundle_agency_profile
@@ -118,3 +119,110 @@ print(json.dumps({
         "skills_generation": 1,
         "learned": "learned before process restart\n",
     }
+
+
+def test_agent_instance_mutation_guard_serializes_across_processes(
+    tmp_path: Path,
+) -> None:
+    model_config = tmp_path / "hermes-config.yaml"
+    model_config.write_text(
+        "model:\n  default: persistent-model\n  provider: provider-test\n",
+        encoding="utf-8",
+    )
+    model_config.chmod(0o600)
+    profiles_root = tmp_path / "profiles"
+    manager = AgentInstanceManager(
+        profiles_root=profiles_root,
+        model_config_path=model_config,
+    )
+    bundle = _bundle(tmp_path)
+    binding = manager.ensure(bundle)
+    entered = tmp_path / "first-entered"
+    release = tmp_path / "release-first"
+
+    script = r"""
+import sys
+import time
+from pathlib import Path
+from hermes_fleet.agent_instance import AgentInstanceConflict, AgentInstanceManager
+from hermes_fleet.recipes import ResolvedAgencyProfile
+
+profiles_root = Path(sys.argv[1])
+model_config = Path(sys.argv[2])
+agent = ResolvedAgencyProfile(
+    repository=sys.argv[3],
+    revision=sys.argv[4],
+    name=sys.argv[5],
+    version=sys.argv[6],
+    content_digest=sys.argv[7],
+)
+role = sys.argv[8]
+entered = Path(sys.argv[9])
+release = Path(sys.argv[10])
+manager = AgentInstanceManager(
+    profiles_root=profiles_root,
+    model_config_path=model_config,
+)
+binding = manager.open(agent)
+try:
+    with manager.mutation_guard(
+        binding,
+        component="skills",
+        expected_generation=0,
+    ):
+        if role == "first":
+            entered.write_text("entered\n", encoding="utf-8")
+            deadline = time.monotonic() + 10
+            while not release.exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("release signal timed out")
+                time.sleep(0.01)
+        print("SUCCESS", flush=True)
+except AgentInstanceConflict:
+    print("CONFLICT", flush=True)
+"""
+    base = [
+        sys.executable,
+        "-c",
+        script,
+        str(profiles_root),
+        str(model_config),
+        bundle.resolved.repository,
+        bundle.resolved.revision,
+        bundle.resolved.name,
+        bundle.resolved.version,
+        bundle.resolved.content_digest,
+    ]
+    first = subprocess.Popen(
+        [*base, "first", str(entered), str(release)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 10
+    while not entered.exists():
+        if first.poll() is not None:
+            stdout, stderr = first.communicate()
+            raise AssertionError(f"first mutation exited early: {stdout!r} {stderr!r}")
+        if time.monotonic() >= deadline:
+            first.kill()
+            raise AssertionError("first mutation did not enter its lock window")
+        time.sleep(0.01)
+
+    second = subprocess.Popen(
+        [*base, "second", str(entered), str(release)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(0.1)
+    assert second.poll() is None, "second mutation did not block on the process lock"
+    release.write_text("release\n", encoding="utf-8")
+    first_stdout, first_stderr = first.communicate(timeout=10)
+    second_stdout, second_stderr = second.communicate(timeout=10)
+
+    assert first.returncode == 0, first_stderr
+    assert second.returncode == 0, second_stderr
+    assert first_stdout.strip() == "SUCCESS"
+    assert second_stdout.strip() == "CONFLICT"
+    assert manager.read_state(binding).skills_generation == 1
