@@ -10,9 +10,9 @@ A historical branch or old soak is evidence only. Phase 1 is accepted only where
 
 The vNext ownership and lifecycle rules in [vNext foundation](vnext-foundation.md) remain authoritative. In particular, preserving a reliability primitive does not preserve the retired disposable-Hermes-profile architecture that happened to exist when some of these fixes were first developed.
 
-## Fleet reconciliation branch
+## Fleet canonical reconciliation
 
-Fleet branch: `vnext/phase1-reliability-baseline`
+The Phase 1 Fleet reconciliation is present on canonical Fleet `main`. The working branch `vnext/phase1-reliability-baseline` is historical implementation provenance only and is not a closure authority.
 
 Reconciled commits after Phase 0:
 
@@ -34,26 +34,25 @@ Reconciled commits after Phase 0:
 - `a67ae74` — exact-execution typed outcome evidence so transport completion cannot launder an execution failure;
 - `efeb1ea` — formatting-only cleanup after semantic conflict resolution.
 
-## Hermes Agent reconciliation branch
+## Hermes Agent canonical reconciliation
 
-Hermes Agent branch: `vnext/phase1-reliability-baseline`
+Hermes Agent Phase 1 was reconciled onto the current `Dadmin88/hermes-agent` `main` through PR #1 (`Phase 1: preserve Fleet reliability baseline`). The PR merged only after all required checks were green. Merge commit: `974206859884089f8d194446f8dae4730b6108c2`.
 
-The branch is based directly on the then-current `NousResearch/hermes-agent` `origin/main` (`8ad055414`) rather than the machine's dirty/divergent local Agent `main`.
+The original `vnext/phase1-reliability-baseline` branch remains historical source evidence only. Its eight Phase 1 commits were replayed onto current fork `main`; hundreds of unrelated upstream commits carried by that historical branch were deliberately excluded.
 
-It was pushed to the `Dadmin88/hermes-agent` fork so the reconciliation is durable and reviewable.
+Canonical replay commits before merge:
 
-Reconciled reliability primitives:
+- `6a829ddae` — `/v1/runs/{run_id}/finalize` and profile-runtime quiescence barrier;
+- `6c157b2c2` — bounded API-run approval authority;
+- `e0be21750` — run tool-outcome evidence;
+- `a52d14541` — command exit/process evidence;
+- `3bf3ca264` — foreground-only terminal profile support;
+- `833353824` — multiplex profile iteration-budget enforcement;
+- `b928dfcee` — terminal-only `fleet-terminal` toolset;
+- `5ff741a5c` — terminology cleanup so finalization no longer assumes Fleet deletes disposable Hermes profiles;
+- `88e24713d` — marks `fleet-terminal` as a run/session posture so ordinary user toolset configuration cannot disable the shared core terminal tool.
 
-- `a6a31ce25` — `/v1/runs/{run_id}/finalize` and profile-runtime quiescence barrier, merged with current upstream `/steer` and thread-safe SessionDB caching;
-- `197db9224` — bounded API-run approval authority;
-- `0e241f846` — run tool-outcome evidence;
-- `0f28430b6` — command exit/process evidence;
-- `3fff61647` — foreground-only terminal profile support;
-- `56fab27b1` — multiplex profile iteration-budget enforcement;
-- `1d89a057f` — terminal-only `fleet-terminal` toolset;
-- `5a747591c` — terminology cleanup so finalization no longer assumes Fleet deletes disposable Hermes profiles.
-
-The later historical Agent branch commits for Fleet-owned Docker sandboxes, principal-private memory, and run scope were deliberately **not** included in Phase 1. Those belong to later vNext phases and must be reconsidered under the frozen architecture rather than inherited accidentally.
+The later historical Agent branch commits for Fleet-owned Docker sandboxes, principal-private memory, and run scope were deliberately **not** included in Phase 1. They are outside Phase 1 and were not part of PR #1.
 
 ## Requirement-by-requirement evidence
 
@@ -65,15 +64,15 @@ Fleet treats destination toolsets as a ceiling and requires the exact Recipe to 
 
 Primary Fleet commits: `9a5a60f`, `87fe96d`.
 
-Primary Agent commit: `1d89a057f`.
+Primary Agent commit: `b928dfcee`.
 
 ### `fleet-terminal`
 
 Owner: Hermes Agent.
 
-The Agent reconciliation branch contains the terminal-only Fleet toolset and its API-server toolset tests.
+Canonical Hermes Agent `main` contains the terminal-only Fleet toolset and its API-server toolset tests after PR #1.
 
-Primary Agent commit: `1d89a057f`.
+Primary Agent commit: `b928dfcee`.
 
 ### Foreground terminal coercion
 
@@ -83,7 +82,7 @@ Fleet stages `terminal.force_foreground: true` for the Fleet execution context. 
 
 Primary Fleet commit: `379a253`.
 
-Primary Agent commit: `3fff61647`.
+Primary Agent commit: `3bf3ca264`.
 
 ### Bounded model-turn budgets
 
@@ -93,7 +92,7 @@ Fleet stages `agent.max_turns: 8` for Fleet execution. Agent honors per-profile 
 
 Primary Fleet commit: `0cdbbc1`.
 
-Primary Agent commit: `56fab27b1`.
+Primary Agent commit: `833353824`.
 
 ### Approval budgets
 
@@ -103,7 +102,7 @@ The exact Recipe can request `fleet.hermes/approvals.v1` only with `mode: once` 
 
 Primary Fleet commits: `03dac1d`, `87fe96d`.
 
-Primary Agent commit: `197db9224`.
+Primary Agent commit: `6c157b2c2`.
 
 ### Hermes + Fleet independent approval enforcement
 
@@ -121,7 +120,7 @@ The reconciled Agent implementation uses current upstream SessionDB cache lockin
 
 Primary Fleet commit: `83d4d04`.
 
-Primary Agent commits: `a6a31ce25`, `5a747591c`.
+Primary Agent commits: `6a829ddae`, `5ff741a5c`.
 
 ### Transport status separate from execution status
 
@@ -137,7 +136,7 @@ Owner: Hermes Agent evidence production, Fleet semantic verification.
 
 Hermes finalization evidence exposes command-call/error counts and command/process state. Fleet validates this evidence before accepting the declared Recipe outcome.
 
-Primary Agent commit: `0f28430b6`.
+Primary Agent commit: `a52d14541`.
 
 Primary Fleet commit: `5515199`.
 
@@ -145,7 +144,7 @@ Primary Fleet commit: `5515199`.
 
 Owner: Hermes Agent.
 
-The Agent hardening records real command outcome/error state rather than trusting model text as proof that a terminal command succeeded. The current upstream base also already contains `8ad055414` (`fix(terminal): warn when exit_code 0 masks a piped build/test failure`), which is preserved under the reconciliation branch.
+Canonical Hermes Agent `main` records real command outcome/error state and exit/process evidence through the Phase 1 command-evidence reconciliation rather than trusting model text as proof that a terminal command succeeded.
 
 ### Background-process evidence
 
@@ -153,7 +152,7 @@ Owner: Hermes Agent.
 
 Finalization evidence distinguishes completed command work from work that remains alive in the background. Fleet consumes the structured command/process evidence rather than inferring completion from natural-language output.
 
-Primary Agent commit: `0f28430b6`.
+Primary Agent commit: `a52d14541`.
 
 ### Pending-process detection
 
@@ -161,7 +160,7 @@ Owner: Hermes Agent + Fleet.
 
 Hermes finalization reports `pending_processes`. A Recipe using `require_no_pending_processes` becomes `indeterminate` rather than falsely successful while work is still outstanding.
 
-Primary Agent commit: `0f28430b6`.
+Primary Agent commit: `a52d14541`.
 
 Primary Fleet commit: `5515199`.
 
@@ -224,10 +223,10 @@ Evidence:
 - `proof.txt` records ten separate runs, `FINAL-SOAK-01` through `FINAL-SOAK-10`;
 - Fleet commit recorded by the soak: `7099569205ac3399500dc12f0a9d22cbedd04f6f`;
 - Hermes Agent commit recorded by the soak: `5ecd55622af5e0d5988d4288d5602a3661f7607b`;
-- Katana service snapshot reports `NRestarts=0` for `hermes-api`, `hermes-fleet-orchestrator`, and `keryx-daemon`;
-- Nitro service snapshot reports `NRestarts=0` for `hermes-api`, `hermes-fleet-node`, and `keryx-daemon`.
+- Katana service snapshot reports `NRestarts=0` for `fleet-managed-projection.service`, `keryxd.service`, and `keryx-node.service`;
+- Nitro service snapshot reports `NRestarts=0` for `hermes-fleet-api.service`, `fleet-node.service`, `ollama-fleet.service`, `ollama-fleet-preflight.service`, `keryxd.service`, `keryx-node.service`, and `fleet-demo-web.service`.
 
-The proof remains historical evidence; the behavior it exercised has now been reconciled onto current Fleet and Agent branches rather than relying on the soak's old branch topology.
+The proof remains historical evidence; the behavior it exercised has now been reconciled onto canonical Fleet and Hermes Agent `main` branches rather than relying on the soak's old branch topology.
 
 ### Deadline semantics
 
@@ -243,46 +242,50 @@ On execution deadline expiry:
 
 Primary Fleet commit: `358d1e6`.
 
-### Current hardened baseline and upstream reconciliation
+### Current hardened baseline and canonical reconciliation
 
 Fleet historical hardening was replayed by behavior rather than merged wholesale. Superseded disposable-profile code was deliberately excluded.
 
-Hermes Agent reliability primitives were replayed onto current `origin/main` and pushed to the `Dadmin88/hermes-agent` fork as `vnext/phase1-reliability-baseline`.
+Hermes Agent Phase 1 reliability primitives are now merged into canonical `Dadmin88/hermes-agent` `main` through PR #1. The historical `vnext/phase1-reliability-baseline` branch is source evidence only and is not part of the closure condition.
 
-Nodescale stale-socket recovery is already present on its upstream `origin/main`.
+Nodescale stale-socket recovery remains present on its upstream `origin/main` at commit `101190e`.
 
 ## Validation record
 
 ### Fleet
 
-Current Phase 1 branch validation after reconciliation:
+Canonical Fleet `main` validation:
 
-- Python suite: **747 passed**;
-- Ruff lint: **passed**;
-- `git diff --check`: **passed**;
-- public-hygiene scan: **passed**.
+- Phase 1-only regression slice: **221 passed** across the exact unit-test files changed by the Phase 1 reconciliation;
+- latest post-policy `main` CI run `31988388188`: **success**;
+- CI jobs green: Rust workspace compatibility, real Nodescale/readiness proofs, Quality on Python 3.11, Quality on Python 3.13, and Hermes plugin clean-install smoke.
 
-A fresh Rust workspace test rerun was attempted. Cargo is intentionally configured to place build targets on `/media/kyle/External SSD/DevCache`. The external SSD currently returns `Input/output error (os error 5)` even when Cargo tries to create a brand-new approved target directory. The rerun therefore cannot begin compilation.
-
-This is recorded as an environment verification note rather than a Phase 1 code failure because:
-
-1. the full Rust workspace passed immediately before the Phase 1 Python/ops reconciliation;
-2. Phase 1 changes no Rust source files;
-3. the failure occurs while creating/opening the Cargo target directory, before Rust compilation or tests begin;
-4. the deliberate external-build guard was not bypassed to manufacture a green result on the internal disk.
+This supersedes the earlier environment note about the external Cargo cache: canonical GitHub CI now provides a successful Rust workspace proof for the current Fleet `main` containing Phase 1.
 
 ### Hermes Agent
 
-After replaying the reliability slice onto current upstream and installing the repository-declared `dev` + `messaging` dependency groups with `uv sync`:
+Canonical Hermes Agent validation after replaying only the eight Phase 1 reliability commits onto current fork `main` and adding the blank-slate compatibility fix:
 
-- focused Phase 1 suite: **98 passed, 2 skipped**;
+- local focused Phase 1 + affected blank-slate suite: **102 passed, 2 platform skips**;
 - Ruff on the affected Agent/gateway/tool/test surfaces: **passed**;
-- `git diff --check origin/main...HEAD`: **passed**.
+- `git diff --check`: **passed**;
+- PR #1 required checks: **all passed**, including all 12 Python test slices, Windows/macOS tests, Ruff/ty, and supply-chain checks;
+- PR #1 merge commit: `974206859884089f8d194446f8dae4730b6108c2`;
+- resulting `main` CI run `31991850281`: **success**;
+- resulting `main` Docker build/test workflow `31991849650`: **success**.
 
-The focused suite covers API runs/finalization/approval/evidence, profile logging release, foreground terminal behavior, Fleet toolsets, and runtime iteration-budget authority.
+The initial PR run exposed a real compatibility regression where the new `fleet-terminal` toolset could be persisted as a disabled user toolset and strip the shared core `terminal` tool from Blank Slate. Canonical commit `88e24713d` fixes this by marking `fleet-terminal` as a run/session posture. The unrelated compression-concurrency failure from that same first CI run passed independently on rerun and was not changed by Phase 1.
 
 ## Phase 1 closure
 
-Phase 1 is closed when this document, the Fleet reconciliation branch, the durable Agent reconciliation branch, the upstream Nodescale socket fix, and the preserved soak evidence remain available together.
+Phase 1 is closed only when all of the following are simultaneously true:
+
+1. the Fleet Phase 1 reconciliation is present on canonical Fleet `main` and canonical Fleet CI is green;
+2. the Hermes Agent Phase 1 primitives are present on canonical Agent `main`, having merged through a green PR, and the resulting Agent `main` CI is green;
+3. Nodescale stale-control-plane socket recovery remains present on its canonical upstream `main`;
+4. the preserved ten-run no-restart soak evidence remains available and matches the recorded service snapshots;
+5. the Phase 1 reconciliation contains no later-phase Agent runtime/container/principal/learning work.
+
+Historical branches are evidence only and cannot satisfy closure by themselves.
 
 Later phases may replace old execution plumbing, but they must preserve these behavior-level guarantees.
