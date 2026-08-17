@@ -16,6 +16,9 @@ import tarfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Protocol
+
+from .execution_backend import BackendExecutionHandle, ExecutionPlan
 
 _RUN_UID = 65532
 _RUN_GID = 65532
@@ -92,6 +95,54 @@ _FORBIDDEN_COMPONENTS = frozenset(
 
 class WorkspaceIsolationError(RuntimeError):
     """Filesystem authority or projection/export cannot be proven safe."""
+
+
+class WorkspaceCleanupBackend(Protocol):
+    """Minimal Phase 2 lifecycle seam used for quiescence-gated cleanup."""
+
+    def cleanup_plan(
+        self,
+        plan: ExecutionPlan,
+        *,
+        handle: BackendExecutionHandle | None = None,
+    ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceQuiescenceProof:
+    """Exact Phase 1 Hermes finalization evidence required before destruction."""
+
+    run_id: str
+    status: str
+    quiescent: bool
+
+    def __post_init__(self) -> None:
+        _identifier(self.run_id, "Hermes run ID")
+        if self.status not in {"completed", "failed", "cancelled"}:
+            raise WorkspaceIsolationError("Hermes finalization status is not terminal")
+        if self.quiescent is not True:
+            raise WorkspaceIsolationError(
+                "Hermes finalization did not prove quiescence"
+            )
+
+    @classmethod
+    def from_document(
+        cls,
+        document: Mapping[str, object],
+        *,
+        expected_run_id: str,
+    ) -> WorkspaceQuiescenceProof:
+        if not isinstance(document, Mapping):
+            raise WorkspaceIsolationError("Hermes finalization evidence is invalid")
+        _identifier(expected_run_id, "Hermes run ID")
+        if document.get("run_id") != expected_run_id:
+            raise WorkspaceIsolationError("Hermes finalization run identity changed")
+        status = document.get("status")
+        return cls(
+            run_id=expected_run_id,
+            status=status if type(status) is str else "",
+            quiescent=document.get("quiescent") is True,
+        )
 
 
 def _identifier(value: object, label: str) -> str:
@@ -310,6 +361,8 @@ class ProjectWorkspaceResolver:
                 raise WorkspaceIsolationError("project root is unavailable") from error
             if not canonical.is_dir() or canonical in _FORBIDDEN_PROJECT_ROOTS:
                 raise WorkspaceIsolationError("project root is unsafe")
+            if any(part in _FORBIDDEN_COMPONENTS for part in canonical.parts):
+                raise WorkspaceIsolationError("project root enters sensitive state")
             if any(
                 _intersects(canonical, forbidden_path)
                 for forbidden_path in self._forbidden
@@ -330,15 +383,21 @@ class ProjectWorkspaceResolver:
             raise WorkspaceIsolationError("filesystem authority scope is required")
         if type(grants) not in {tuple, list} or len(grants) > _MAX_GRANTS:
             raise WorkspaceIsolationError("filesystem grant collection is invalid")
-        targets: set[str] = set()
+        targets: list[PurePosixPath] = []
         resolved: list[ResolvedFilesystemGrant] = []
         total = 0
         for grant in grants:
             if type(grant) is not FilesystemGrant:
                 raise WorkspaceIsolationError("filesystem grant is invalid")
-            if grant.target in targets:
-                raise WorkspaceIsolationError("filesystem grant targets must be unique")
-            targets.add(grant.target)
+            target = PurePosixPath(grant.target)
+            if any(
+                _posix_within(target, existing) or _posix_within(existing, target)
+                for existing in targets
+            ):
+                raise WorkspaceIsolationError(
+                    "filesystem grant targets must not overlap"
+                )
+            targets.append(target)
             root = self._roots.get(grant.project_id)
             if root is None:
                 raise WorkspaceIsolationError("filesystem project is not configured")
@@ -387,6 +446,14 @@ def _within(path: Path, root: Path) -> bool:
         return False
 
 
+def _posix_within(path: PurePosixPath, root: PurePosixPath) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _intersects(project_root: Path, forbidden: Path) -> bool:
     """Reject project roots above, equal to, or inside forbidden host state."""
     return (
@@ -406,6 +473,8 @@ def _measure_safe_tree(path: Path, maximum: int) -> tuple[int, bool]:
     if stat.S_ISLNK(root_info.st_mode):
         raise WorkspaceIsolationError("filesystem source may not be a symlink")
     if stat.S_ISREG(root_info.st_mode):
+        if root_info.st_nlink != 1:
+            raise WorkspaceIsolationError("filesystem source may not be hard-linked")
         if root_info.st_size > maximum:
             raise WorkspaceIsolationError(
                 "filesystem source exceeds authority byte limit"
@@ -423,6 +492,8 @@ def _measure_safe_tree(path: Path, maximum: int) -> tuple[int, bool]:
         directories.sort()
         files.sort()
         for name in list(directories):
+            if name in _FORBIDDEN_COMPONENTS:
+                raise WorkspaceIsolationError("filesystem tree enters sensitive state")
             try:
                 info = (current_path / name).lstat()
             except OSError as error:
@@ -439,6 +510,8 @@ def _measure_safe_tree(path: Path, maximum: int) -> tuple[int, bool]:
                     "filesystem source contains too many entries"
                 )
         for name in files:
+            if name in _FORBIDDEN_COMPONENTS:
+                raise WorkspaceIsolationError("filesystem tree enters sensitive state")
             try:
                 info = (current_path / name).lstat()
             except OSError as error:
@@ -448,6 +521,10 @@ def _measure_safe_tree(path: Path, maximum: int) -> tuple[int, bool]:
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
                 raise WorkspaceIsolationError(
                     "filesystem tree contains a symlink or special entry"
+                )
+            if info.st_nlink != 1:
+                raise WorkspaceIsolationError(
+                    "filesystem tree contains a hard-linked file"
                 )
             total += info.st_size
             members += 1
@@ -519,9 +596,14 @@ def _archive_directory(
             raise WorkspaceIsolationError(
                 "filesystem tree changed to a symlink or special entry"
             )
+        relative = current_path.relative_to(root)
+        if any(part in _FORBIDDEN_COMPONENTS for part in relative.parts):
+            raise WorkspaceIsolationError("filesystem tree enters sensitive state")
         directories.sort()
         files.sort()
         for name in directories:
+            if name in _FORBIDDEN_COMPONENTS:
+                raise WorkspaceIsolationError("filesystem tree enters sensitive state")
             try:
                 child_info = (current_path / name).lstat()
             except OSError as error:
@@ -532,7 +614,6 @@ def _archive_directory(
                 raise WorkspaceIsolationError(
                     "filesystem tree changed to a symlink or special entry"
                 )
-        relative = current_path.relative_to(root)
         if relative.parts:
             info = tarfile.TarInfo(relative.as_posix())
             info.type = tarfile.DIRTYPE
@@ -541,6 +622,8 @@ def _archive_directory(
             archive.addfile(info)
             members += 1
         for name in files:
+            if name in _FORBIDDEN_COMPONENTS:
+                raise WorkspaceIsolationError("filesystem tree enters sensitive state")
             source = current_path / name
             arcname = (relative / name).as_posix()
             total += _archive_regular_file(
@@ -580,6 +663,10 @@ def _archive_regular_file(
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_size > maximum:
             raise WorkspaceIsolationError("filesystem staged file exceeds authority")
+        if info.st_nlink != 1:
+            raise WorkspaceIsolationError(
+                "filesystem staged file may not be hard-linked"
+            )
         with os.fdopen(os.dup(descriptor), "rb", closefd=True) as handle:
             payload = handle.read(info.st_size + 1)
         if len(payload) != info.st_size:
@@ -683,11 +770,11 @@ class DockerWorkspaceIO:
                 raise WorkspaceIsolationError(
                     "declared artifact exports exceed aggregate byte limit"
                 )
-            if grant.scan_required:
-                if scanner is None:
-                    raise WorkspaceIsolationError(
-                        "artifact export requires an output scanner"
-                    )
+            if grant.scan_required and scanner is None:
+                raise WorkspaceIsolationError(
+                    "artifact export requires an output scanner"
+                )
+            if scanner is not None:
                 try:
                     accepted = scanner(payload, grant)
                 except Exception as error:
@@ -696,18 +783,7 @@ class DockerWorkspaceIO:
                     ) from error
                 if accepted is not True:
                     raise WorkspaceIsolationError(
-                        "artifact output scan rejected export"
-                    )
-            elif scanner is not None:
-                try:
-                    accepted = scanner(payload, grant)
-                except Exception as error:
-                    raise WorkspaceIsolationError(
-                        "artifact output scan failed"
-                    ) from error
-                if accepted is False:
-                    raise WorkspaceIsolationError(
-                        "artifact output scan rejected export"
+                        "artifact output scan did not explicitly allow export"
                     )
             result[grant.name] = payload
         return result
@@ -753,6 +829,33 @@ class DockerWorkspaceIO:
             raise WorkspaceIsolationError("Docker workspace staging failed")
 
 
+def destroy_workspace_after_quiescence(
+    backend: WorkspaceCleanupBackend,
+    plan: ExecutionPlan,
+    handle: BackendExecutionHandle,
+    *,
+    expected_run_id: str,
+    finalization: Mapping[str, object],
+) -> WorkspaceQuiescenceProof:
+    """Destroy the disposable filesystem only after exact Hermes quiescence proof."""
+    if type(plan) is not ExecutionPlan or type(handle) is not BackendExecutionHandle:
+        raise WorkspaceIsolationError("workspace cleanup execution identity is invalid")
+    if (
+        handle.execution_id != plan.execution_id
+        or handle.plan_fingerprint != plan.fingerprint
+    ):
+        raise WorkspaceIsolationError("workspace cleanup plan identity changed")
+    cleanup = getattr(backend, "cleanup_plan", None)
+    if not callable(cleanup):
+        raise WorkspaceIsolationError("workspace cleanup backend is invalid")
+    proof = WorkspaceQuiescenceProof.from_document(
+        finalization,
+        expected_run_id=expected_run_id,
+    )
+    cleanup(plan, handle=handle)
+    return proof
+
+
 def validate_export_archive(payload: bytes, grant: ArtifactExportGrant) -> None:
     if type(payload) is not bytes or not payload:
         raise WorkspaceIsolationError("artifact export is empty or invalid")
@@ -764,6 +867,9 @@ def validate_export_archive(payload: bytes, grant: ArtifactExportGrant) -> None:
         ) from error
     total = 0
     members = 0
+    expected_root = PurePosixPath(grant.path).name
+    seen_paths: set[str] = set()
+    root_seen = False
     with archive:
         for member in archive.getmembers():
             members += 1
@@ -774,6 +880,18 @@ def validate_export_archive(payload: bytes, grant: ArtifactExportGrant) -> None:
             path = PurePosixPath(member.name)
             if path.is_absolute() or ".." in path.parts or not path.parts:
                 raise WorkspaceIsolationError("artifact export contains an unsafe path")
+            normalized = path.as_posix()
+            if normalized in seen_paths:
+                raise WorkspaceIsolationError(
+                    "artifact export contains duplicate member paths"
+                )
+            seen_paths.add(normalized)
+            if path.parts[0] != expected_root:
+                raise WorkspaceIsolationError(
+                    "artifact export escaped its declared output root"
+                )
+            if len(path.parts) == 1:
+                root_seen = True
             if not (member.isfile() or member.isdir()):
                 raise WorkspaceIsolationError(
                     "artifact export contains a link or special entry"
@@ -784,6 +902,10 @@ def validate_export_archive(payload: bytes, grant: ArtifactExportGrant) -> None:
                     raise WorkspaceIsolationError(
                         "artifact export exceeds its authority byte limit"
                     )
+        if not root_seen:
+            raise WorkspaceIsolationError(
+                "artifact export is missing its declared output root"
+            )
 
 
 def _payload_file_bytes(payload: bytes) -> int:

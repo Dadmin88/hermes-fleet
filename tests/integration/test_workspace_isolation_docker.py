@@ -21,6 +21,8 @@ from hermes_fleet.workspace_isolation import (
     FilesystemAuthorityScope,
     FilesystemGrant,
     ProjectWorkspaceResolver,
+    WorkspaceIsolationError,
+    destroy_workspace_after_quiescence,
 )
 
 BASE_IMAGE = (
@@ -226,6 +228,7 @@ def test_real_workspace_projection_export_and_cross_run_isolation(
             ]
         )
         assert writable.returncode == 0
+        assert (write_source / "draft.txt").read_text(encoding="utf-8") == "draft-one"
 
         scanned: list[str] = []
 
@@ -260,7 +263,38 @@ def test_real_workspace_projection_export_and_cross_run_isolation(
             exported_names = {member.name for member in archive.getmembers()}
             assert "undeclared.txt" not in exported_names
 
-        first_backend.cleanup_plan(first_plan, handle=first)
+        run_id = f"hermes-{uuid.uuid4().hex[:12]}"
+        with pytest.raises(WorkspaceIsolationError, match="quiescence"):
+            destroy_workspace_after_quiescence(
+                first_backend,
+                first_plan,
+                first,
+                expected_run_id=run_id,
+                finalization={
+                    "run_id": run_id,
+                    "status": "completed",
+                    "quiescent": False,
+                },
+            )
+        still_running = _run(
+            ["docker", "inspect", "--format", "{{.State.Status}}", first.realization_id]
+        )
+        assert still_running.returncode == 0
+        assert still_running.stdout.strip() == "running"
+
+        proof = destroy_workspace_after_quiescence(
+            first_backend,
+            first_plan,
+            first,
+            expected_run_id=run_id,
+            finalization={
+                "run_id": run_id,
+                "status": "completed",
+                "quiescent": True,
+            },
+        )
+        assert proof.run_id == run_id
+        assert proof.quiescent is True
         first = None
 
         second_plan = _plan(f"phase3b{uuid.uuid4().hex[:12]}")
