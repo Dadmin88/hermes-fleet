@@ -15,6 +15,11 @@ from urllib.parse import urlsplit
 _MAX_RESPONSE_BYTES = 1_048_576
 _ACTIVE_STATES = frozenset({"queued", "running", "stopping"})
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_IMAGE_RE = re.compile(
+    r"^(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9./_-]{0,254}@sha256:[0-9a-f]{64})$"
+)
 
 
 class HermesRunError(RuntimeError):
@@ -31,6 +36,56 @@ class HermesRunIndeterminate(HermesRunError):
 
 class HermesRunDeadlineExceeded(HermesRunError):
     """The exact bound run accepted cancellation at its Fleet deadline."""
+
+
+@dataclass(frozen=True, slots=True)
+class HermesFleetRuntimeBinding:
+    """Exact Phase 7 run-scoped Hermes binding; never persistent profile config."""
+
+    container_id: str
+    plan_fingerprint: str
+    image: str
+    max_iterations: int
+    version: str = "fleet-run-v1"
+    toolsets: tuple[str, ...] = ("fleet-terminal",)
+
+    def __post_init__(self) -> None:
+        if self.version != "fleet-run-v1":
+            raise ValueError("Fleet runtime version is unsupported")
+        if (
+            type(self.container_id) is not str
+            or _CONTAINER_ID_RE.fullmatch(self.container_id) is None
+        ):
+            raise ValueError("Fleet runtime container ID is invalid")
+        if (
+            type(self.plan_fingerprint) is not str
+            or _HASH_RE.fullmatch(self.plan_fingerprint) is None
+        ):
+            raise ValueError("Fleet runtime plan fingerprint is invalid")
+        if type(self.image) is not str or _IMAGE_RE.fullmatch(self.image) is None:
+            raise ValueError("Fleet runtime image must be digest-pinned")
+        if type(self.toolsets) not in {tuple, list}:
+            raise ValueError("Fleet runtime toolsets are invalid")
+        toolsets = tuple(self.toolsets)
+        if toolsets != ("fleet-terminal",):
+            raise ValueError("Fleet runtime toolsets must be exactly fleet-terminal")
+        object.__setattr__(self, "toolsets", toolsets)
+        if (
+            isinstance(self.max_iterations, bool)
+            or type(self.max_iterations) is not int
+            or not 1 <= self.max_iterations <= 32
+        ):
+            raise ValueError("Fleet runtime max_iterations must be between 1 and 32")
+
+    def to_request(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "container_id": self.container_id,
+            "plan_fingerprint": self.plan_fingerprint,
+            "image": self.image,
+            "toolsets": list(self.toolsets),
+            "max_iterations": self.max_iterations,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +161,7 @@ class HermesRunsClient:
             "run_status": False,
             "run_stop": False,
             "run_finalize": False,
+            "run_fleet_runtime": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -151,6 +207,7 @@ class HermesRunsClient:
             "run_status": features.get("run_status") is True,
             "run_stop": features.get("run_stop") is True,
             "run_finalize": features.get("run_finalize") is True,
+            "run_fleet_runtime": features.get("run_fleet_runtime") is True,
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
             "run_command_evidence": features.get("run_command_evidence") is True,
@@ -162,6 +219,7 @@ class HermesRunsClient:
         prompt: str,
         session_id: str | None = None,
         approval_budget: int | None = None,
+        fleet_runtime: HermesFleetRuntimeBinding | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
         """Create exactly one run and return its server-generated ID."""
@@ -178,11 +236,21 @@ class HermesRunsClient:
             type(approval_budget) is not int or not 1 <= approval_budget <= 32
         ):
             raise ValueError("Hermes approval budget must be between 1 and 32")
+        if fleet_runtime is not None:
+            if type(fleet_runtime) is not HermesFleetRuntimeBinding:
+                raise ValueError("Hermes Fleet runtime binding is invalid")
+            features = self.health(timeout_seconds=timeout_seconds)
+            if features.get("run_fleet_runtime") is not True:
+                raise HermesRunError(
+                    "Hermes does not advertise run_fleet_runtime"
+                )
         request = {"input": prompt}
         if session_id is not None:
             request["session_id"] = session_id
         if approval_budget is not None:
             request["approval_budget"] = approval_budget
+        if fleet_runtime is not None:
+            request["fleet_runtime"] = fleet_runtime.to_request()
         try:
             status_code, document = self._request_json(
                 "POST",

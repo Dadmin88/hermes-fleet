@@ -17,6 +17,7 @@ class _RunsAPI:
         self.requests: list[tuple[str, str, str, dict[str, Any] | None]] = []
         self.post_delay_seconds = 0.0
         self.post_status = 202
+        self.run_fleet_runtime = True
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -84,6 +85,7 @@ class _RunsAPI:
                                 "run_status": True,
                                 "run_stop": True,
                                 "run_finalize": True,
+                                "run_fleet_runtime": api.run_fleet_runtime,
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
                                 "run_command_evidence": True,
@@ -208,11 +210,92 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_status": True,
         "run_stop": True,
         "run_finalize": True,
+        "run_fleet_runtime": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
         "run_command_evidence": True,
     }
     assert [request[1] for request in api.requests] == ["/health", "/v1/capabilities"]
+
+
+def test_fleet_runtime_submission_requires_advertised_capability_and_exact_payload(
+) -> None:
+    from hermes_fleet.hermes_runs import (
+        HermesFleetRuntimeBinding,
+        HermesRunError,
+        HermesRunsClient,
+    )
+
+    runtime = HermesFleetRuntimeBinding(
+        container_id="a" * 64,
+        plan_fingerprint="sha256:" + "b" * 64,
+        image="debian@sha256:" + "c" * 64,
+        max_iterations=8,
+    )
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    api.run_fleet_runtime = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="secret-token-for-test",
+        )
+        with pytest.raises(HermesRunError, match="run_fleet_runtime"):
+            client.start(prompt="blocked", fleet_runtime=runtime)
+    assert [request[0:2] for request in api.requests] == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+    ]
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    with api.serve() as endpoint:
+        run_id = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="secret-token-for-test",
+        ).start(prompt="allowed", fleet_runtime=runtime)
+    assert run_id == "run-test"
+    assert [request[0:2] for request in api.requests] == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+        ("POST", "/v1/runs"),
+    ]
+    assert api.requests[-1][3] == {
+        "input": "allowed",
+        "fleet_runtime": {
+            "version": "fleet-run-v1",
+            "container_id": "a" * 64,
+            "plan_fingerprint": "sha256:" + "b" * 64,
+            "image": "debian@sha256:" + "c" * 64,
+            "toolsets": ["fleet-terminal"],
+            "max_iterations": 8,
+        },
+    }
+
+
+def test_fleet_runtime_binding_rejects_overbroad_or_unpinned_values() -> None:
+    from hermes_fleet.hermes_runs import HermesFleetRuntimeBinding
+
+    with pytest.raises(ValueError, match="container"):
+        HermesFleetRuntimeBinding(
+            container_id="short",
+            plan_fingerprint="sha256:" + "b" * 64,
+            image="debian@sha256:" + "c" * 64,
+            max_iterations=8,
+        )
+    with pytest.raises(ValueError, match="digest-pinned"):
+        HermesFleetRuntimeBinding(
+            container_id="a" * 64,
+            plan_fingerprint="sha256:" + "b" * 64,
+            image="debian:latest",
+            max_iterations=8,
+        )
+    with pytest.raises(ValueError, match="toolsets"):
+        HermesFleetRuntimeBinding(
+            container_id="a" * 64,
+            plan_fingerprint="sha256:" + "b" * 64,
+            image="debian@sha256:" + "c" * 64,
+            max_iterations=8,
+            toolsets=("fleet-terminal", "web"),
+        )
 
 
 def test_hermes_runs_client_finalizes_after_retryable_pending_state(
