@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -322,15 +323,25 @@ def test_failed_mutation_does_not_advance_generation(tmp_path: Path) -> None:
 
 def test_concurrent_same_generation_mutations_serialize_and_one_conflicts(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle = bundle_agency_profile(package(tmp_path))
     service = manager(tmp_path)
     binding = service.ensure(bundle)
     entered = threading.Event()
     release = threading.Event()
+    second_state_read = threading.Event()
     successes: list[str] = []
     conflicts: list[str] = []
     failures: list[BaseException] = []
+    original_read_state = service._read_state_file
+
+    def observed_read_state(path: Path):
+        if threading.current_thread().name == "phase6-second-mutation":
+            second_state_read.set()
+        return original_read_state(path)
+
+    monkeypatch.setattr(service, "_read_state_file", observed_read_state)
 
     def first() -> None:
         try:
@@ -358,19 +369,96 @@ def test_concurrent_same_generation_mutations_serialize_and_one_conflicts(
         except BaseException as error:  # pragma: no cover - surfaced below
             failures.append(error)
 
-    first_thread = threading.Thread(target=first)
-    second_thread = threading.Thread(target=second)
+    first_thread = threading.Thread(target=first, name="phase6-first-mutation")
+    second_thread = threading.Thread(target=second, name="phase6-second-mutation")
     first_thread.start()
     assert entered.wait(5)
     second_thread.start()
+    assert not second_state_read.wait(0.1), (
+        "second mutation read Agent state before acquiring the mutation lock"
+    )
     release.set()
     first_thread.join(5)
     second_thread.join(5)
 
+    assert second_state_read.is_set()
     assert failures == []
     assert successes == ["first"]
     assert conflicts == ["second"]
     assert service.read_state(binding).memory_generation == 1
+
+
+def test_open_and_existing_ensure_validate_state_under_mutation_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = bundle_agency_profile(package(tmp_path))
+    service = manager(tmp_path)
+    binding = service.ensure(bundle)
+    entered = threading.Event()
+    release = threading.Event()
+    observed_reads: set[str] = set()
+    observed_guard = threading.Lock()
+    results: list[object] = []
+    failures: list[BaseException] = []
+    original_read_state = service._read_state_file
+
+    def observed_read_state(path: Path):
+        name = threading.current_thread().name
+        if name in {"phase6-open", "phase6-ensure"}:
+            with observed_guard:
+                observed_reads.add(name)
+        return original_read_state(path)
+
+    monkeypatch.setattr(service, "_read_state_file", observed_read_state)
+
+    def mutate() -> None:
+        try:
+            with service.mutation_guard(
+                binding,
+                component="skills",
+                expected_generation=0,
+            ):
+                entered.set()
+                assert release.wait(5)
+        except BaseException as error:  # pragma: no cover - surfaced below
+            failures.append(error)
+
+    def reopen() -> None:
+        try:
+            results.append(service.open(bundle.resolved))
+        except BaseException as error:  # pragma: no cover - surfaced below
+            failures.append(error)
+
+    def ensure_existing() -> None:
+        try:
+            results.append(service.ensure(bundle))
+        except BaseException as error:  # pragma: no cover - surfaced below
+            failures.append(error)
+
+    mutation = threading.Thread(target=mutate, name="phase6-mutate")
+    open_thread = threading.Thread(target=reopen, name="phase6-open")
+    ensure_thread = threading.Thread(target=ensure_existing, name="phase6-ensure")
+    mutation.start()
+    assert entered.wait(5)
+    open_thread.start()
+    ensure_thread.start()
+    time.sleep(0.1)
+    with observed_guard:
+        assert observed_reads == set(), (
+            "Agent reopen/ensure read mutable state before acquiring the Agent lock"
+        )
+    release.set()
+    mutation.join(5)
+    open_thread.join(5)
+    ensure_thread.join(5)
+
+    assert failures == []
+    assert len(results) == 2
+    assert all(result == binding for result in results)
+    with observed_guard:
+        assert observed_reads == {"phase6-open", "phase6-ensure"}
+    assert service.read_state(binding).skills_generation == 1
 
 
 def test_new_manager_reopens_same_disk_agent_and_generations(tmp_path: Path) -> None:
