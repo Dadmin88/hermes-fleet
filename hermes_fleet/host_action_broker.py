@@ -21,6 +21,8 @@ _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _PARAMETER_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _WINDOWS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_PATH_TRAVERSAL_RE = re.compile(r"(?:^|[\\/])\.\.(?:[\\/]|$)")
+_SCP_ENDPOINT_RE = re.compile(r"^[^@\s]+@[^:\s]+:.+$")
 
 DEPLOY_APPROVED_ARTIFACT = "deploy-approved-artifact"
 RESTART_APPROVED_SERVICE = "restart-approved-service"
@@ -48,33 +50,76 @@ _MAX_VALUE_DEPTH = 8
 
 _FORBIDDEN_PARAMETER_KEY_PARTS = frozenset(
     {
+        "address",
         "argv",
         "cmd",
         "command",
         "cwd",
         "docker",
+        "dockercontext",
+        "dockerhost",
+        "endpoint",
         "env",
         "environment",
+        "envvar",
+        "filepath",
+        "host",
+        "hostname",
         "hostpath",
         "host_path",
+        "ip",
         "path",
+        "pathname",
+        "port",
         "shell",
         "socket",
+        "socketpath",
         "ssh",
+        "sshhost",
         "systemd",
+        "systemdunit",
         "unit",
+        "uri",
+        "url",
+        "workdir",
+        "workingdir",
     }
 )
 _SECRET_KEY_PARTS = frozenset(
-    {"credential", "password", "secret", "token", "private_key", "api_key"}
+    {
+        "access_key",
+        "api_key",
+        "authorization",
+        "cookie",
+        "credential",
+        "jwt",
+        "password",
+        "private_key",
+        "secret",
+        "session_key",
+        "token",
+    }
 )
 _FORBIDDEN_STRING_PREFIXES = (
     "/",
     "~/",
-    "file:",
-    "ssh:",
-    "unix:",
+    "./",
+    "../",
+    ".\\",
+    "..\\",
+    "\\\\",
     "docker:",
+    "file:",
+    "ftp:",
+    "grpc:",
+    "http:",
+    "https:",
+    "ssh:",
+    "tcp:",
+    "udp:",
+    "unix:",
+    "ws:",
+    "wss:",
 )
 _ADVISORIES = frozenset({"allow", "deny", "review"})
 _EVIDENCE_STATUSES = frozenset({"succeeded", "indeterminate"})
@@ -90,6 +135,52 @@ class HostActionIndeterminateError(HostActionBrokerError):
     def __init__(self, message: str, evidence: HostActionEvidence) -> None:
         self.evidence = evidence
         super().__init__(message)
+
+
+class _FrozenDict(dict):
+    """JSON-compatible mapping that cannot be mutated after authorization."""
+
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("host-action structured data is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+
+class _FrozenList(list):
+    """JSON-compatible sequence that cannot be mutated after authorization."""
+
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("host-action structured data is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+
+def _freeze_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _FrozenDict(
+            {key: _freeze_json_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return _FrozenList(_freeze_json_value(item) for item in value)
+    return value
 
 
 def canonical_digest(value: object) -> str:
@@ -146,9 +237,7 @@ def _parameter_key(value: object) -> str:
         part in _FORBIDDEN_PARAMETER_KEY_PARTS for part in value.split("_")
     ):
         raise HostActionBrokerError("host-action parameter exposes generic host power")
-    if value in _SECRET_KEY_PARTS or any(
-        part in _SECRET_KEY_PARTS for part in value.split("_")
-    ):
+    if any(part in value for part in _SECRET_KEY_PARTS):
         raise HostActionBrokerError(
             "host-action parameter may not carry secret material"
         )
@@ -175,6 +264,8 @@ def _validate_logical_value(value: object, *, depth: int = 0) -> None:
         if (
             lowered.startswith(_FORBIDDEN_STRING_PREFIXES)
             or _WINDOWS_PATH_RE.match(value) is not None
+            or _PATH_TRAVERSAL_RE.search(value) is not None
+            or _SCP_ENDPOINT_RE.match(value) is not None
             or "://" in value
         ):
             raise HostActionBrokerError(
@@ -188,7 +279,7 @@ def _validate_logical_value(value: object, *, depth: int = 0) -> None:
             _parameter_key(key)
             _validate_logical_value(item, depth=depth + 1)
         return
-    if type(value) in {list, tuple}:
+    if isinstance(value, (list, tuple)):
         if len(value) > _MAX_COLLECTION_ITEMS:
             raise HostActionBrokerError("host-action parameter list is too large")
         for item in value:
@@ -208,7 +299,7 @@ def _validate_result(value: object) -> dict[str, Any]:
                 "host-action result may not contain secret material"
             )
         _validate_result_value(item, depth=0)
-    return result
+    return _freeze_json_value(result)
 
 
 def _validate_result_value(value: object, *, depth: int) -> None:
@@ -234,7 +325,7 @@ def _validate_result_value(value: object, *, depth: int) -> None:
                 )
             _validate_result_value(item, depth=depth + 1)
         return
-    if type(value) in {list, tuple}:
+    if isinstance(value, (list, tuple)):
         if len(value) > _MAX_COLLECTION_ITEMS:
             raise HostActionBrokerError("host-action result list is too large")
         for item in value:
@@ -351,7 +442,7 @@ class HostActionRequest:
         for key, value in parameters.items():
             _parameter_key(key)
             _validate_logical_value(value)
-        object.__setattr__(self, "parameters", parameters)
+        object.__setattr__(self, "parameters", _freeze_json_value(parameters))
 
     @property
     def parameters_digest(self) -> str:
@@ -539,7 +630,6 @@ class HostActionBroker:
             raise HostActionBrokerError("host action requires verified authority")
         if type(request) is not HostActionRequest:
             raise HostActionBrokerError("host-action request is invalid")
-        now = self._validated_now()
         if request.principal_id != authority.principal_id:
             raise HostActionBrokerError("host-action principal changed")
         if request.execution_id != authority.execution_id:
@@ -548,6 +638,28 @@ class HostActionBroker:
             raise HostActionBrokerError("host-action authority binding changed")
         if request.resolved_recipe_hash != authority.resolved_recipe_hash:
             raise HostActionBrokerError("host-action Recipe binding changed")
+
+        idempotency = (authority.run_authority_hash, request.idempotency_key)
+        with self._lock:
+            if idempotency in self._in_flight:
+                raise HostActionBrokerError(
+                    "host-action idempotency key is already in flight"
+                )
+            completed = self._completed.get(idempotency)
+            if completed is not None:
+                existing_hash, evidence = completed
+                if existing_hash != request.request_hash:
+                    raise HostActionBrokerError(
+                        "host-action idempotency key was reused for a changed request"
+                    )
+                if evidence.status == "indeterminate":
+                    raise HostActionIndeterminateError(
+                        "host-action outcome remains indeterminate",
+                        evidence,
+                    )
+                return evidence
+
+        now = self._validated_now()
         _hash(current_policy_digest, "current policy digest")
         _hash(current_resolved_recipe_hash, "current Recipe hash")
         if current_policy_digest != authority.policy_digest:
@@ -563,26 +675,6 @@ class HostActionBroker:
             raise HostActionBrokerError(
                 "host-action destination authorization is stale"
             )
-
-        idempotency = (authority.run_authority_hash, request.idempotency_key)
-        with self._lock:
-            completed = self._completed.get(idempotency)
-            if completed is not None:
-                existing_hash, evidence = completed
-                if existing_hash != request.request_hash:
-                    raise HostActionBrokerError(
-                        "host-action idempotency key was reused for a changed request"
-                    )
-                if evidence.status == "indeterminate":
-                    raise HostActionIndeterminateError(
-                        "host-action outcome remains indeterminate",
-                        evidence,
-                    )
-                return evidence
-            if idempotency in self._in_flight:
-                raise HostActionBrokerError(
-                    "host-action idempotency key is already in flight"
-                )
 
         if now > authority.deadline_ms:
             raise HostActionBrokerError("host-action authority has expired")
@@ -618,6 +710,16 @@ class HostActionBroker:
         # advisory == "allow" deliberately grants nothing. Every deterministic
         # authority/policy/adapter check above already had to pass.
 
+        effect_now = self._validated_now()
+        if effect_now < now:
+            raise HostActionBrokerError(
+                "host-action broker clock regressed before effect"
+            )
+        if effect_now > authority.deadline_ms:
+            raise HostActionBrokerError("host-action authority expired before effect")
+        if effect_now > request.deadline_ms:
+            raise HostActionBrokerError("host-action request expired before effect")
+
         grant_key = (
             authority.run_authority_hash,
             grant.verb,
@@ -625,12 +727,29 @@ class HostActionBroker:
             grant.parameters_digest,
         )
         with self._lock:
+            if idempotency in self._in_flight:
+                raise HostActionBrokerError(
+                    "host-action idempotency key is already in flight"
+                )
+            completed = self._completed.get(idempotency)
+            if completed is not None:
+                existing_hash, evidence = completed
+                if existing_hash != request.request_hash:
+                    raise HostActionBrokerError(
+                        "host-action idempotency key was reused for a changed request"
+                    )
+                if evidence.status == "indeterminate":
+                    raise HostActionIndeterminateError(
+                        "host-action outcome remains indeterminate",
+                        evidence,
+                    )
+                return evidence
             if len(self._completed) >= _MAX_IDEMPOTENCY_ENTRIES:
                 raise HostActionBrokerError("host-action idempotency cache is full")
-            self._reserve_budget(grant_key, grant, now)
+            self._reserve_budget(grant_key, grant, effect_now)
             self._in_flight.add(idempotency)
 
-        started = now
+        started = effect_now
         try:
             try:
                 raw_result = adapter.handler(request.parameters)
@@ -647,7 +766,34 @@ class HostActionBroker:
                     evidence,
                 ) from error
 
-            completed_at = self._validated_now()
+            try:
+                completed_at = self._validated_now()
+            except HostActionBrokerError as error:
+                evidence = self._indeterminate_evidence(
+                    authority=authority,
+                    request=request,
+                    started=started,
+                    reason="completion_time_unavailable",
+                    completed_at=started,
+                )
+                self._remember(idempotency, request.request_hash, evidence)
+                raise HostActionIndeterminateError(
+                    "host-action completion time is indeterminate",
+                    evidence,
+                ) from error
+            if completed_at < started:
+                evidence = self._indeterminate_evidence(
+                    authority=authority,
+                    request=request,
+                    started=started,
+                    reason="completion_time_regressed",
+                    completed_at=started,
+                )
+                self._remember(idempotency, request.request_hash, evidence)
+                raise HostActionIndeterminateError(
+                    "host-action completion time regressed",
+                    evidence,
+                )
             if (
                 completed_at > authority.deadline_ms
                 or completed_at > request.deadline_ms
@@ -696,18 +842,30 @@ class HostActionBroker:
                 result=result,
             )
             self._remember(idempotency, request.request_hash, evidence)
+            if self._audit_sink is not None:
+                try:
+                    self._audit_sink(evidence)
+                except Exception as error:
+                    indeterminate = self._indeterminate_evidence(
+                        authority=authority,
+                        request=request,
+                        started=started,
+                        reason="audit_persistence_failed",
+                        completed_at=completed_at,
+                    )
+                    self._remember(
+                        idempotency,
+                        request.request_hash,
+                        indeterminate,
+                    )
+                    raise HostActionIndeterminateError(
+                        "host action completed but audit persistence is indeterminate",
+                        indeterminate,
+                    ) from error
+            return evidence
         finally:
             with self._lock:
                 self._in_flight.discard(idempotency)
-
-        if self._audit_sink is not None:
-            try:
-                self._audit_sink(evidence)
-            except Exception as error:
-                raise HostActionBrokerError(
-                    "host action completed but audit evidence could not be persisted"
-                ) from error
-        return evidence
 
     def _reserve_budget(
         self,
@@ -744,7 +902,13 @@ class HostActionBroker:
         reason: str,
         completed_at: int | None = None,
     ) -> HostActionEvidence:
-        completed = completed_at if completed_at is not None else self._validated_now()
+        if completed_at is None:
+            try:
+                completed = self._validated_now()
+            except HostActionBrokerError:
+                completed = started
+        else:
+            completed = completed_at
         result = {"reason": reason}
         return HostActionEvidence(
             status="indeterminate",
@@ -763,7 +927,12 @@ class HostActionBroker:
         )
 
     def _validated_now(self) -> int:
-        value = self._now_ms()
+        try:
+            value = self._now_ms()
+        except Exception as error:
+            raise HostActionBrokerError(
+                "host-action broker clock is unavailable"
+            ) from error
         if isinstance(value, bool) or type(value) is not int or value <= 0:
             raise HostActionBrokerError("host-action broker clock is invalid")
         return value
