@@ -373,7 +373,7 @@ class OperatorService:
     ) -> OperatorCompletionResult:
         return OperatorCompletionResult(
             task_id=submission.task_id,
-            terminal_state="timed_out",
+            terminal_state="failed",
             requested_target=request.target,
             resolved_target=resolved,
             routed_to=submission.routed_to,
