@@ -326,10 +326,7 @@ def test_artifact_export_only_declared_outputs_and_scanner_policy() -> None:
     )
     assert exported == {"result.tar": payload}
     assert scanned == ["result.tar"]
-    assert all(
-        "/workspace/out" not in " ".join(call[:-1])
-        for call in calls
-    )
+    assert all("/workspace/out" not in " ".join(call[:-1]) for call in calls)
 
 
 def test_stage_uses_copy_projection_and_read_grant_becomes_immutable(
@@ -353,13 +350,9 @@ def test_stage_uses_copy_projection_and_read_grant_becomes_immutable(
     DockerWorkspaceIO(command=command).stage(CONTAINER_ID, resolved)
     argv_calls = [argv for argv, _ in calls]
     assert any(
-        argv[-3:] == ["mkdir", "-p", "/workspace/inputs/src"]
-        for argv in argv_calls
+        argv[-3:] == ["mkdir", "-p", "/workspace/inputs/src"] for argv in argv_calls
     )
-    assert all(
-        argv[2:4] == ["--user", "65533:65533"]
-        for argv in argv_calls
-    )
+    assert all(argv[2:4] == ["--user", "65533:65533"] for argv in argv_calls)
     assert any("tar" in argv and "-xf" in argv for argv in argv_calls)
     assert any(
         argv[-4:] == ["chmod", "-R", "a-w", "/workspace/inputs/src"]
@@ -392,8 +385,6 @@ def test_stage_write_projection_requires_authority_and_stays_writable(
 
     DockerWorkspaceIO(command=command).stage(CONTAINER_ID, resolved)
     assert all(argv[2:4] == ["--user", "65532:65532"] for argv in calls)
-    assert any(
-        argv[-3:] == ["mkdir", "-p", "/workspace/work/src"] for argv in calls
-    )
+    assert any(argv[-3:] == ["mkdir", "-p", "/workspace/work/src"] for argv in calls)
     assert not any("chmod" in argv for argv in calls)
     assert not any("mount" in argv for argv in calls)

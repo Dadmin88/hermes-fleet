@@ -292,8 +292,7 @@ class RunCapsuleSpec:
             type(self.host_broker_grants) is not tuple
             or len(self.host_broker_grants) > _MAX_HOST_GRANTS
             or any(
-                type(item) is not HostActionGrant
-                for item in self.host_broker_grants
+                type(item) is not HostActionGrant for item in self.host_broker_grants
             )
         ):
             raise RunCapsuleError("Run Capsule host-broker grants are invalid")
@@ -361,9 +360,7 @@ class RunCapsuleSpec:
             "artifact_grants": [
                 _artifact_to_dict(item) for item in self.artifact_grants
             ],
-            "host_broker_grants": [
-                item.to_dict() for item in self.host_broker_grants
-            ],
+            "host_broker_grants": [item.to_dict() for item in self.host_broker_grants],
             "resources": {
                 "cpu_millis": self.cpu_millis,
                 "memory_bytes": self.memory_bytes,
@@ -431,10 +428,7 @@ class RunCapsuleRecord:
         }
         if self.state in container_states and self.container_id is None:
             raise RunCapsuleError("Run Capsule state requires an exact container")
-        if (
-            self.state in {"running", "terminal"}
-            and self.hermes_run_id is None
-        ):
+        if self.state in {"running", "terminal"} and self.hermes_run_id is None:
             raise RunCapsuleError("Run Capsule state requires an exact Hermes run")
         revoked_states = {"grants_revoked", "cleanup_pending", "cleaned", "finalized"}
         if self.state in revoked_states and not self.grants_revoked:
@@ -559,9 +553,7 @@ class RunCapsuleStore:
                 ),
                 evidence=(current.evidence if evidence is None else dict(evidence)),
                 grants_revoked=(
-                    current.grants_revoked
-                    if grants_revoked is None
-                    else grants_revoked
+                    current.grants_revoked if grants_revoked is None else grants_revoked
                 ),
                 learning_persisted=(
                     current.learning_persisted
@@ -601,9 +593,7 @@ class RunCapsuleStore:
                 ),
             )
             if cursor.rowcount != 1:
-                raise RunCapsuleConflict(
-                    "Run Capsule transition lost its CAS race"
-                )
+                raise RunCapsuleConflict("Run Capsule transition lost its CAS race")
             return next_record
 
     def list_unfinalized(self) -> tuple[RunCapsuleRecord, ...]:
@@ -759,9 +749,7 @@ class RunCapsuleStore:
             secret_refs=tuple(value["secret_refs"]),
             filesystem_grants=tuple(FilesystemGrant(**item) for item in filesystem),
             artifact_grants=tuple(ArtifactExportGrant(**item) for item in artifacts),
-            host_broker_grants=tuple(
-                HostActionGrant(**item) for item in host_grants
-            ),
+            host_broker_grants=tuple(HostActionGrant(**item) for item in host_grants),
             cpu_millis=resources["cpu_millis"],
             memory_bytes=resources["memory_bytes"],
             pids_limit=resources["pids_limit"],

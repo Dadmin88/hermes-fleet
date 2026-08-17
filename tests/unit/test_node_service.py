@@ -410,9 +410,10 @@ def test_destination_recipe_executor_is_unavailable_without_local_managed_contro
 def test_execution_toolsets_are_destination_scoped() -> None:
     from hermes_fleet.node_service import _execution_toolsets
 
-    assert _execution_toolsets(
-        {"FLEET_EXECUTION_TOOLSETS": "fleet-terminal,file"}
-    ) == ("fleet-terminal", "file")
+    assert _execution_toolsets({"FLEET_EXECUTION_TOOLSETS": "fleet-terminal,file"}) == (
+        "fleet-terminal",
+        "file",
+    )
     assert _execution_toolsets({}) == ()
 
 

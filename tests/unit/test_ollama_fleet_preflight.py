@@ -155,9 +155,7 @@ def test_preflight_requires_structured_terminal_marker(completion: dict) -> None
 def test_preflight_rejects_gpu_loaded_model() -> None:
     request, _ = _requester(
         processes={
-            "models": [
-                {"name": MODEL, "size_vram": 1024, "context_length": 8192}
-            ]
+            "models": [{"name": MODEL, "size_vram": 1024, "context_length": 8192}]
         }
     )
     with pytest.raises(PreflightError, match="CPU-only"):
@@ -166,11 +164,7 @@ def test_preflight_rejects_gpu_loaded_model() -> None:
 
 def test_preflight_rejects_small_context_window() -> None:
     request, _ = _requester(
-        processes={
-            "models": [
-                {"name": MODEL, "size_vram": 0, "context_length": 4096}
-            ]
-        }
+        processes={"models": [{"name": MODEL, "size_vram": 0, "context_length": 4096}]}
     )
     with pytest.raises(PreflightError, match="below 8192"):
         run_preflight(model=MODEL, base_url=BASE, request_json=request)

@@ -62,7 +62,7 @@ def test_agent_instance_survives_fresh_python_process(tmp_path: Path) -> None:
     ):
         pass
 
-    script = r'''
+    script = r"""
 import json
 import sys
 from pathlib import Path
@@ -91,7 +91,7 @@ print(json.dumps({
     "skills_generation": state.skills_generation,
     "learned": learned.read_text(encoding="utf-8"),
 }, sort_keys=True))
-'''
+"""
     result = subprocess.run(
         [
             sys.executable,

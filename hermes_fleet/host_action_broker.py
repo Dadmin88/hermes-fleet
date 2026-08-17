@@ -518,14 +518,12 @@ class HostActionBroker:
         self._now_ms = now_ms
         self._audit_sink = audit_sink
         self._lock = threading.RLock()
-        self._completed: dict[
-            tuple[str, str], tuple[str, HostActionEvidence]
-        ] = {}
+        self._completed: dict[tuple[str, str], tuple[str, HostActionEvidence]] = {}
         self._in_flight: set[tuple[str, str]] = set()
         self._attempt_counts: dict[tuple[str, str, str, str], int] = defaultdict(int)
-        self._rate_windows: dict[
-            tuple[str, str, str, str], deque[int]
-        ] = defaultdict(deque)
+        self._rate_windows: dict[tuple[str, str, str, str], deque[int]] = defaultdict(
+            deque
+        )
 
     def invoke(
         self,

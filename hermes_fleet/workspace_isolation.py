@@ -583,9 +583,7 @@ def _archive_regular_file(
         with os.fdopen(os.dup(descriptor), "rb", closefd=True) as handle:
             payload = handle.read(info.st_size + 1)
         if len(payload) != info.st_size:
-            raise WorkspaceIsolationError(
-                "filesystem source changed during staging"
-            )
+            raise WorkspaceIsolationError("filesystem source changed during staging")
         tar_info = tarfile.TarInfo(arcname)
         tar_info.size = len(payload)
         if read_only:
@@ -669,21 +667,15 @@ class DockerWorkspaceIO:
     ) -> dict[str, bytes]:
         _container_id(container_id)
         if type(grants) not in {tuple, list} or len(grants) > _MAX_EXPORTS:
-            raise WorkspaceIsolationError(
-                "artifact export grant collection is invalid"
-            )
+            raise WorkspaceIsolationError("artifact export grant collection is invalid")
         names: set[str] = set()
         result: dict[str, bytes] = {}
         total = 0
         for grant in grants:
             if type(grant) is not ArtifactExportGrant:
-                raise WorkspaceIsolationError(
-                    "artifact export grant is invalid"
-                )
+                raise WorkspaceIsolationError("artifact export grant is invalid")
             if grant.name in names:
-                raise WorkspaceIsolationError(
-                    "artifact export names must be unique"
-                )
+                raise WorkspaceIsolationError("artifact export names must be unique")
             names.add(grant.name)
             payload = self._export_one(container_id, grant)
             total += _payload_file_bytes(payload)

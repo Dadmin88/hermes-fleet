@@ -29,9 +29,7 @@ AUTHORITY = "sha256:" + "1" * 64
 APPROVAL = "sha256:" + "2" * 64
 PUBLIC_IP = _ipv4(1, 1, 1, 1)
 OTHER_PUBLIC_IP = _ipv4(8, 8, 8, 8)
-IMAGE = (
-    "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
-)
+IMAGE = "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
 
 
 def destination(
@@ -51,9 +49,7 @@ def grant(
 ) -> NetworkGrant:
     if destinations is None:
         destinations = (
-            ()
-            if mode in {NETWORK_NONE, NETWORK_PROVIDER_ONLY}
-            else (destination(),)
+            () if mode in {NETWORK_NONE, NETWORK_PROVIDER_ONLY} else (destination(),)
         )
     if mode == NETWORK_EXPLICIT_INTERNET and approval_ref is None:
         approval_ref = APPROVAL
@@ -65,8 +61,9 @@ def grant(
     )
 
 
-def test_public_ip_classifier_blocks_lan_tailscale_metadata_and_special_ranges(
-) -> None:
+def test_public_ip_classifier_blocks_lan_tailscale_metadata_and_special_ranges() -> (
+    None
+):
     assert public_egress_ipv4(PUBLIC_IP) is True
     for value in (
         _ipv4(127, 0, 0, 1),
@@ -116,8 +113,9 @@ def test_literal_destination_must_pin_only_itself() -> None:
         destination(host=PUBLIC_IP, ips=(OTHER_PUBLIC_IP,))
 
 
-def test_pin_destination_resolves_before_authorization_and_rejects_mixed_private(
-) -> None:
+def test_pin_destination_resolves_before_authorization_and_rejects_mixed_private() -> (
+    None
+):
     def resolver(_host, _port, **_kwargs):
         return [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC_IP, 0)),
@@ -144,8 +142,9 @@ def test_pin_destination_resolves_before_authorization_and_rejects_mixed_private
         pin_network_destination("example.com", (443,), resolver=unsafe)
 
 
-def test_four_network_modes_are_explicit_and_default_modes_carry_no_direct_egress(
-) -> None:
+def test_four_network_modes_are_explicit_and_default_modes_carry_no_direct_egress() -> (
+    None
+):
     none = grant(NETWORK_NONE)
     provider = grant(NETWORK_PROVIDER_ONLY)
     project = grant(NETWORK_PROJECT_ALLOWLIST)
@@ -168,8 +167,7 @@ def test_four_network_modes_are_explicit_and_default_modes_carry_no_direct_egres
         )
 
 
-def test_network_authority_scope_never_broadens_and_internet_needs_separate_approval(
-) -> None:
+def test_network_scope_never_broadens_and_internet_needs_approval() -> None:
     scope = NetworkAuthorityScope(
         run_authority_hash=AUTHORITY,
         approved_internet_hashes=(APPROVAL,),
@@ -218,8 +216,9 @@ def test_network_policy_hash_is_stable_and_authority_bound() -> None:
     assert changed.policy_hash != one.policy_hash
 
 
-def test_runtime_oracle_detects_rebinding_private_resolution_and_scope_changes(
-) -> None:
+def test_runtime_oracle_detects_rebinding_private_resolution_and_scope_changes() -> (
+    None
+):
     value = grant()
     allowed = evaluate_runtime_destination(
         value,
@@ -336,8 +335,6 @@ def test_direct_controller_fails_before_docker_when_authority_is_not_proven() ->
         controller.prepare(
             execution_id="execution-1",
             grant=grant(),
-            authority=NetworkAuthorityScope(
-                run_authority_hash="sha256:" + "3" * 64
-            ),
+            authority=NetworkAuthorityScope(run_authority_hash="sha256:" + "3" * 64),
         )
     assert calls == []

@@ -212,6 +212,7 @@ def test_all_structured_verbs_execute_only_registered_logical_adapters() -> None
     adapters: list[HostActionAdapterSpec] = []
     grants: list[HostActionGrant] = []
     for verb, target, parameters, required in cases:
+
         def handler(values, *, _verb=verb):
             calls.append((_verb, dict(values)))
             return {"accepted": True, "effect_id": f"effect-{_verb}"}
@@ -225,9 +226,7 @@ def test_all_structured_verbs_execute_only_registered_logical_adapters() -> None
                 optional=(),
             )
         )
-        grants.append(
-            grant_for(parameters, verb=verb, target=target, max_calls=1)
-        )
+        grants.append(grant_for(parameters, verb=verb, target=target, max_calls=1))
 
     service = broker(tuple(adapters))
     scope = authority(*grants)
@@ -265,8 +264,9 @@ def test_request_surface_rejects_generic_shell_paths_transports_and_secrets() ->
             request(parameters)
 
 
-def test_exact_authority_recipe_policy_target_principal_and_deadline_are_required(
-) -> None:
+def test_exact_authority_recipe_policy_target_principal_and_deadline_are_required() -> (
+    None
+):
     parameters = deploy_parameters()
     scope = authority(grant_for(parameters))
     service = broker((adapter(lambda _values: {"ok": True}),))
@@ -340,11 +340,7 @@ def test_idempotency_returns_same_evidence_and_changed_request_is_rejected() -> 
     parameters = deploy_parameters()
     scope = authority(grant_for(parameters, max_calls=2))
     service = broker(
-        (
-            adapter(
-                lambda _values: calls.append(1) or {"effect_generation": len(calls)}
-            ),
-        )
+        (adapter(lambda _values: calls.append(1) or {"effect_generation": len(calls)}),)
     )
     action = request()
     first = invoke(service, scope, action)
@@ -358,8 +354,9 @@ def test_idempotency_returns_same_evidence_and_changed_request_is_rejected() -> 
     assert calls == [1]
 
 
-def test_call_budget_is_reserved_before_effect_so_concurrent_calls_cannot_race(
-) -> None:
+def test_call_budget_is_reserved_before_effect_so_concurrent_calls_cannot_race() -> (
+    None
+):
     entered = threading.Event()
     release = threading.Event()
     calls: list[str] = []
@@ -468,9 +465,7 @@ def test_security_advisory_can_only_narrow_and_allow_grants_nothing() -> None:
     calls: list[str] = []
     parameters = deploy_parameters()
     valid_scope = authority(grant_for(parameters))
-    service = broker(
-        (adapter(lambda _values: calls.append("effect") or {"ok": True}),)
-    )
+    service = broker((adapter(lambda _values: calls.append("effect") or {"ok": True}),))
     for advisory, text in (("deny", "denied"), ("review", "review")):
         with pytest.raises(HostActionBrokerError, match=text):
             invoke(service, valid_scope, request(), advisory=advisory)

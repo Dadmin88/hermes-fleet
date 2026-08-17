@@ -35,12 +35,13 @@ TARGET = {
     "node_id": "node-test",
     "generation": 1,
 }
-TARGET_DIGEST = "sha256:" + __import__("hashlib").sha256(
-    json.dumps(TARGET, sort_keys=True, separators=(",", ":")).encode()
-).hexdigest()
-IMAGE = (
-    "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
+TARGET_DIGEST = (
+    "sha256:"
+    + __import__("hashlib")
+    .sha256(json.dumps(TARGET, sort_keys=True, separators=(",", ":")).encode())
+    .hexdigest()
 )
+IMAGE = "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
 
 
 def recipe() -> ResolvedRecipe:
@@ -151,9 +152,7 @@ def test_store_generation_fences_state_machine_and_survives_reopen(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "capsules.sqlite"
-    clock = iter(
-        (1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009)
-    )
+    clock = iter((1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009))
     store = RunCapsuleStore(path, now_ms=lambda: next(clock))
     spec = make_spec()
     record, _ = store.admit(spec)
