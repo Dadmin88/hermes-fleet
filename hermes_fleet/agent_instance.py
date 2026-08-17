@@ -995,9 +995,7 @@ class AgentInstanceManager:
         except AgentInstanceError:
             raise
         except OSError as error:
-            raise AgentInstanceError(
-                "Agent Instance directory sync failed"
-            ) from error
+            raise AgentInstanceError("Agent Instance directory sync failed") from error
         finally:
             if descriptor >= 0:
                 os.close(descriptor)

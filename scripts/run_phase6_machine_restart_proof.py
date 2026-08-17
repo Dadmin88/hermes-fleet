@@ -209,9 +209,7 @@ def _guest_stage(*, proof_dir: Path, stage: str) -> int:
     from hermes_fleet.recipes import ResolvedAgencyProfile
 
     boot_id = (
-        Path("/proc/sys/kernel/random/boot_id")
-        .read_text(encoding="utf-8")
-        .strip()
+        Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
     )
     model_config = proof_dir / "hermes-config.yaml"
     profiles_root = proof_dir / "profiles"
@@ -390,10 +388,7 @@ def _host_proof(*, proof_dir: Path) -> int:
                 "-virtfs",
                 "local,path=/,mount_tag=hostroot,security_model=none,readonly=on",
                 "-virtfs",
-                (
-                    f"local,path={proof_dir},mount_tag=proof,"
-                    "security_model=mapped-xattr"
-                ),
+                f"local,path={proof_dir},mount_tag=proof,security_model=mapped-xattr",
             ]
             try:
                 completed = subprocess.run(argv, check=False, timeout=180)
