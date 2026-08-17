@@ -214,7 +214,7 @@ The script emits `PHASE6_MACHINE_RESTART_PROOF_OK` only after validating all fou
 
 ## Current proof
 
-Phase 6 re-audit proof on the hardening branch:
+Phase 6 re-audit proof on follow-up PR **#140** (original implementation PR #139 merged as `8061b4f6cf11b6b99187727a5a73cb56bd68fee1`):
 
 - focused Agent Instance + inventory + fresh-process + cross-process + concurrent-Hermes + disposable-body + QEMU machine-restart suite: **54 passed**;
 - full Fleet Python suite on the verified local Hermes runtime: **900 passed**;
