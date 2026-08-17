@@ -230,6 +230,8 @@ The real-Docker Agent proof now creates a real labeled internal network plus a r
 
 ## Tests and current proof
 
+Fleet implementation, tests, this acceptance record, and the Phase 4 ledger transition ship together through PR #137 (`Phase 4: harden network isolation`).
+
 Fleet Phase 4 current proof on the implementation branch:
 
 - full Python suite: **867 passed**;
