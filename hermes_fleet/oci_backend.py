@@ -754,6 +754,7 @@ class DockerWorkshopBackend(DockerExecutionBackend):
         required_tmpfs = {"/workspace", "/workspace/inputs", "/tmp", "/home/fleet"}
         if type(tmpfs) is not dict or not required_tmpfs.issubset(set(tmpfs)):
             _security_mismatch("Docker workshop tmpfs layout changed")
+
         def require_tmpfs(path: str, required: set[str], label: str) -> None:
             options = tmpfs.get(path)
             if type(options) is not str:
