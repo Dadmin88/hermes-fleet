@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from hermes_fleet.agency_materialization import bundle_agency_profile
 from hermes_fleet.agency_snapshot import AgencyProfilePackage, AgencySource
@@ -225,4 +228,117 @@ except AgentInstanceConflict:
     assert second.returncode == 0, second_stderr
     assert first_stdout.strip() == "SUCCESS"
     assert second_stdout.strip() == "CONFLICT"
+    assert manager.read_state(binding).skills_generation == 1
+
+
+def test_native_profile_survives_concurrent_hermes_processes_and_restart(
+    tmp_path: Path,
+) -> None:
+    hermes = Path(sys.executable).with_name("hermes")
+    if not hermes.is_file():
+        pytest.skip("Hermes CLI is not installed beside the test interpreter")
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir(mode=0o700)
+    model_config = hermes_home / "config.yaml"
+    model_config.write_text(
+        "model:\n  default: persistent-model\n  provider: provider-test\n",
+        encoding="utf-8",
+    )
+    model_config.chmod(0o600)
+    manager = AgentInstanceManager(
+        profiles_root=hermes_home / "profiles",
+        model_config_path=model_config,
+    )
+    bundle = _bundle(tmp_path)
+    binding = manager.ensure(bundle)
+    profile = manager.profile_path(binding)
+    learned = profile / "skills" / "learned" / "SKILL.md"
+    with manager.mutation_guard(
+        binding,
+        component="skills",
+        expected_generation=0,
+    ):
+        learned.parent.mkdir(parents=True)
+        learned.write_text("learned before Hermes restart\n", encoding="utf-8")
+
+    config_before = (profile / "config.yaml").read_bytes()
+    metadata_before = (profile / ".fleet-agent-instance.json").read_bytes()
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+    env.pop("HERMES_PROFILE", None)
+    env.pop("PYTHONPATH", None)
+    command = [str(hermes), "profile", "show", binding.profile]
+    release = tmp_path / "release-hermes-processes"
+    ready_files = [tmp_path / f"hermes-ready-{index}" for index in range(2)]
+    gate_script = r"""
+import os
+import sys
+import time
+from pathlib import Path
+
+ready = Path(sys.argv[1])
+release = Path(sys.argv[2])
+hermes = sys.argv[3]
+profile = sys.argv[4]
+ready.write_text("ready\n", encoding="utf-8")
+deadline = time.monotonic() + 10
+while not release.exists():
+    if time.monotonic() >= deadline:
+        raise RuntimeError("concurrent Hermes release timed out")
+    time.sleep(0.01)
+os.execve(hermes, [hermes, "profile", "show", profile], os.environ)
+"""
+    concurrent = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                gate_script,
+                str(ready),
+                str(release),
+                str(hermes),
+                binding.profile,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        for ready in ready_files
+    ]
+    deadline = time.monotonic() + 10
+    while not all(ready.exists() for ready in ready_files):
+        if any(process.poll() is not None for process in concurrent):
+            outputs = [process.communicate() for process in concurrent]
+            raise AssertionError(f"Hermes process exited before barrier: {outputs!r}")
+        if time.monotonic() >= deadline:
+            for process in concurrent:
+                process.kill()
+            raise AssertionError("concurrent Hermes processes did not reach barrier")
+        time.sleep(0.01)
+    release.write_text("release\n", encoding="utf-8")
+    for process in concurrent:
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode == 0, stderr
+        assert binding.profile in stdout
+
+    assert (profile / "config.yaml").read_bytes() == config_before
+    assert (profile / ".fleet-agent-instance.json").read_bytes() == metadata_before
+    assert learned.read_text(encoding="utf-8") == "learned before Hermes restart\n"
+    assert manager.read_state(binding).skills_generation == 1
+
+    restarted = subprocess.run(
+        command,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=20,
+        env=env,
+    )
+    assert restarted.returncode == 0, restarted.stderr
+    assert binding.profile in restarted.stdout
+    assert (profile / "config.yaml").read_bytes() == config_before
+    assert (profile / ".fleet-agent-instance.json").read_bytes() == metadata_before
+    assert learned.read_text(encoding="utf-8") == "learned before Hermes restart\n"
     assert manager.read_state(binding).skills_generation == 1

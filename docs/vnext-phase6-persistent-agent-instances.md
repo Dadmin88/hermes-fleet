@@ -93,13 +93,17 @@ The durable Agent profile may contain the Agency base, normal Hermes profile con
 
 Phase 6 recursively rejects reserved files including Fleet execution ownership/slot markers, `.env`, RunAuthority/Run Capsule markers, Fleet runtime markers, and approval-budget markers.
 
-Persistent `config.yaml` is recursively checked for normalized singular/plural aliases of run-scoped state including:
+Persistent `config.yaml` is recursively checked for normalized aliases of run-scoped state including:
 
+- run/execution IDs and state;
+- idempotency keys/digests;
+- plan fingerprints;
+- deadlines and resource limits;
 - container IDs;
 - Fleet runtime;
 - approval budgets;
 - RunAuthority/Run Capsule;
-- secret references/handles;
+- temporary credential and secret references/handles;
 - network grants;
 - filesystem grants;
 - host-broker grants.
@@ -152,6 +156,20 @@ The normal persistence integration test creates an Agent Instance, writes a lear
 
 The new process reconstructs `AgentInstanceManager` from only the profiles root/model baseline, reopens the same stable Agent ID/profile, reads the persisted generation, and reads the learned skill. No in-memory Fleet manager state is required.
 
+## Hermes restart and concurrent-use proof
+
+The persistent profile is also exercised through the real Hermes CLI, not only Fleet's profile reader. The integration proof creates the Agent Instance directly under a temporary `HERMES_HOME`, then releases two fresh Hermes processes through a shared barrier so they open the same native profile concurrently.
+
+Both Hermes processes must recognize the exact `fleet-agent-…` profile while Fleet verifies that `config.yaml`, Agent metadata, skill generation, and learned skill bytes remain unchanged. After both exit, a third fresh Hermes process reopens the same profile and the same durable state is verified again. This proves Phase 6 itself does not use persistent config as per-run scratch state and that a Hermes process restart does not erase the durable brain.
+
+Phase 7 still owns the temporary `/v1/runs` execution override; this Phase 6 proof deliberately exercises only concurrent native-profile use and persistent-state isolation.
+
+## Disposable-body/job persistence proof
+
+A separate real-Docker integration proof creates one persistent Agent Instance and learned skill, then creates and destroys two distinct Phase 2 workshop containers with different execution IDs. After each container is gone, Fleet reopens the same Agent binding and verifies the persistent config bytes, Agent metadata, skill generation, and learned skill are unchanged. The two container IDs must differ.
+
+This proves job/body destruction is independent of Agent Instance lifetime without depending on the still-unaudited Phase 8 Run Capsule implementation.
+
 ## Real machine-restart proof
 
 Phase 6 no longer defers machine-restart acceptance.
@@ -181,10 +199,10 @@ Second guest boot:
 5. verifies the learned skill remains present;
 6. powers the guest off.
 
-A successful local proof produced:
+The current re-audit reran the proof successfully and produced:
 
-- first boot ID: `5fc919c3-1536-4c32-850b-4f9b147c3b90`;
-- second boot ID: `c7dea807-ff05-4c52-bfe5-daf2148f8d4e`;
+- first boot ID: `636a5189-74e4-452c-bb33-2efdace139ba`;
+- second boot ID: `a853514b-f9db-4f2f-9c45-de2faf6c89d3`;
 - Agent Instance ID: `sha256:aa011e4fe547f0afa66a0836f13feb2e38c263c9217b06af2ba5e15ba8a580c9`;
 - profile: `fleet-agent-aa011e4fe547f0afa66a0836`;
 - skills generation: `1`;
@@ -196,16 +214,18 @@ The script emits `PHASE6_MACHINE_RESTART_PROOF_OK` only after validating all fou
 
 ## Current proof
 
-Phase 6 hardened proof on the implementation branch:
+Phase 6 re-audit proof on the hardening branch:
 
-- focused Agent Instance + inventory + fresh-process + cross-process + QEMU machine-restart suite: **45 passed**;
-- full Fleet Python suite after final hardening: **891 passed**;
+- focused Agent Instance + inventory + fresh-process + cross-process + concurrent-Hermes + disposable-body + QEMU machine-restart suite: **54 passed**;
+- full Fleet Python suite on the verified local Hermes runtime: **900 passed**;
+- real concurrent Hermes profile-use/restart proof: PASS;
+- two distinct real-Docker workshop lifecycles with one persistent Agent Instance: PASS;
 - repository Ruff lint: PASS;
 - `git diff --check`: PASS at the pre-PR gate;
 - public-hygiene scan: PASS at the pre-PR gate;
 - repeatable isolated machine-restart script: `PHASE6_MACHINE_RESTART_PROOF_OK`.
 
-One earlier full-suite run hit an unrelated timing failure in the existing `/v1/runs` stop-confirmation test. The exact test immediately passed independently on both this branch and untouched canonical `main`; the subsequent complete branch run passed **891/891**. No Phase 1 code was changed.
+One initial local full-suite invocation resolved the machine-global Hermes launcher instead of Fleet's pinned test runtime and reproduced the known plugin-installation PATH contamination. Re-running with Fleet's verified `.venv/bin` first on `PATH` passed **900/900**. No product code was changed to accommodate the contaminated launcher.
 
 No Hermes Agent repository change is required in Phase 6. The durable brain deliberately uses Hermes' existing native profile/config/memory/skill substrate. Phase 7 is the Agent-side change that carries temporary Fleet execution binding through the native Runs path without rewriting this persistent config.
 
@@ -219,10 +239,13 @@ Phase 6 is closed only when all of the following remain true on canonical Fleet 
 4. immutable Agency base bytes cannot drift while Fleet continues advertising the old base identity;
 5. learned native overlay state survives exact-base reuse;
 6. memory/skill generations serialize across threads and processes;
-7. persistent control state fails closed on unsafe ownership/mode/link/path state;
-8. fresh-process persistence proof passes;
-9. real isolated machine-restart proof passes with two distinct kernel boot IDs and preserved learning;
-10. required PR CI and resulting `main` CI are green.
+7. concurrent Hermes processes can use the same native Agent profile without persistent config collisions;
+8. a fresh Hermes process reopens the same Agent profile with durable learning intact;
+9. destruction of distinct disposable workshop bodies does not change Agent identity/config/learning;
+10. persistent control state fails closed on unsafe ownership/mode/link/path state;
+11. fresh Fleet-process persistence proof passes;
+12. real isolated machine-restart proof passes with two distinct kernel boot IDs and preserved learning;
+13. required PR CI and resulting `main` CI are green.
 
 ## Explicit non-goals retained for later phases
 
