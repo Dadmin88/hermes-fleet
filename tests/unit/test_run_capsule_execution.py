@@ -24,7 +24,7 @@ from hermes_fleet.hermes_runs import (
     HermesRunSubmissionUnknown,
 )
 from hermes_fleet.host_action_broker import HostActionGrant
-from hermes_fleet.network_isolation import NETWORK_NONE, NetworkGrant
+from hermes_fleet.network_isolation import NETWORK_NONE
 from hermes_fleet.oci_backend import DockerWorkshopBackend
 from hermes_fleet.principal_identity import (
     PRINCIPAL_OWNER,
@@ -36,6 +36,14 @@ from hermes_fleet.principal_identity import (
 )
 from hermes_fleet.profile_inventory import _profile_content_digest
 from hermes_fleet.recipes import ResolvedRecipe
+from hermes_fleet.run_authority import (
+    IsolationAuthority,
+    NetworkAuthorityIntent,
+    RecipeAuthorityBinding,
+    ResourceAuthority,
+    RunAuthority,
+    RunAuthorityStore,
+)
 from hermes_fleet.run_capsule import (
     DockerRunCapsuleBody,
     RunCapsuleIndeterminate,
@@ -161,7 +169,7 @@ def capabilities() -> BackendCapabilities:
     )
 
 
-def make_spec(
+def make_authority(
     bundle,
     *,
     execution_id: str = "capsule-execution-1",
@@ -169,7 +177,7 @@ def make_spec(
     approval_budget: int = 0,
     secret_refs: tuple[str, ...] = (),
     host_broker_grants: tuple[HostActionGrant, ...] = (),
-) -> RunCapsuleSpec:
+) -> RunAuthority:
     resolved = recipe(bundle)
     caps = capabilities()
     plan = ExecutionPlan(
@@ -179,44 +187,50 @@ def make_spec(
         required_capabilities_hash=caps.content_hash,
     )
     agent_id = AgentInstanceManager.identity_for(bundle.resolved)[0]
-    network = NetworkGrant(mode=NETWORK_NONE, authority_ref=HASH_5)
-    return RunCapsuleSpec(
+    return RunAuthority(
         execution_id=execution_id,
         idempotency_digest=HASH_3,
-        agent_instance_id=agent_id,
         principal=PRINCIPAL,
-        recipe_hash=resolved.recipe_hash,
-        resolved_recipe_hash=resolved.content_hash,
-        recipe_compiler_version="fleet.recipe-direct.v1",
-        requirement_provenance_digest=HASH_6,
-        run_authority_hash=HASH_5,
+        agent_instance_id=agent_id,
+        recipe=RecipeAuthorityBinding(
+            recipe_hash=resolved.recipe_hash,
+            resolved_recipe_hash=resolved.content_hash,
+            compiler_version="fleet.recipe-direct.v1",
+            provenance_digest=HASH_6,
+            image=IMAGE,
+        ),
+        policy_digest=HASH_5,
         capabilities_hash=caps.content_hash,
         target=TARGET,
         target_digest=TARGET_DIGEST,
-        project_scope=(),
-        network_grant=network,
-        network_mode=NETWORK_NONE,
-        network_policy_hash=network.policy_hash,
+        plan_fingerprint=plan.fingerprint,
+        issued_at_ms=900,
+        deadline_ms=2_000_000_000_000,
+        resources=ResourceAuthority(
+            cpu_millis=100,
+            memory_bytes=67_108_864,
+            pids_limit=16,
+            max_iterations=8,
+        ),
+        isolation=IsolationAuthority(),
+        network=NetworkAuthorityIntent(mode=NETWORK_NONE),
+        artifacts=artifact_grants,
         toolsets=("fleet-terminal",),
         approval_budget=approval_budget,
         secret_refs=secret_refs,
-        filesystem_grants=(),
-        artifact_grants=artifact_grants,
-        host_broker_grants=host_broker_grants,
-        cpu_millis=100,
-        memory_bytes=67_108_864,
-        pids_limit=16,
-        max_iterations=8,
-        deadline_ms=2_000_000_000_000,
-        image=IMAGE,
-        plan_fingerprint=plan.fingerprint,
+        host_grants=host_broker_grants,
     )
+
+
+def make_spec(bundle, **kwargs) -> RunCapsuleSpec:
+    return make_authority(bundle, **kwargs).to_capsule_spec()
 
 
 class FakeWorkshop(DockerWorkshopBackend):
     def __init__(self, *, container_id: str = "c" * 64, events=None) -> None:
         self.container_id = container_id
         self.events = events if events is not None else []
+        self.on_ensure = None
         self.ensure_calls = 0
         self.find_calls = 0
         self.cleanup_calls = 0
@@ -226,6 +240,8 @@ class FakeWorkshop(DockerWorkshopBackend):
         self.events.append("body.ensure")
         self.ensure_calls += 1
         self.present = True
+        if self.on_ensure is not None:
+            self.on_ensure()
         return self._handle(plan)
 
     def find(self, plan: ExecutionPlan) -> BackendExecutionHandle | None:
@@ -274,6 +290,8 @@ class FakeRuns:
         self.start_calls = 0
         self.wait_calls = 0
         self.finalize_calls = 0
+        self.stop_calls = 0
+        self.stopped = False
 
     def start(self, **kwargs):
         self.events.append("hermes.start")
@@ -303,13 +321,19 @@ class FakeRuns:
             return HermesRunInspection(run_id=run_id, status="failed", text=None)
         return HermesRunInspection(run_id=run_id, status="completed", text="RESULT")
 
+    def stop(self, run_id, *, timeout_seconds=None):
+        del run_id, timeout_seconds
+        self.events.append("hermes.stop")
+        self.stop_calls += 1
+        self.stopped = True
+
     def finalize(self, run_id, *, timeout_seconds):
         del timeout_seconds
         self.events.append("hermes.finalize")
         self.finalize_calls += 1
         if self.mode == "finalize_fail":
             raise HermesRunIndeterminate("not quiescent")
-        status = "cancelled" if self.mode == "timeout" else "completed"
+        status = "cancelled" if self.mode == "timeout" or self.stopped else "completed"
         if self.mode == "wait_fail":
             status = "failed"
         return {
@@ -337,13 +361,14 @@ def harness(
 ):
     events: list[str] = []
     bundle = bundle_agency_profile(agency_package(tmp_path))
-    spec = make_spec(
+    authority = make_authority(
         bundle,
         artifact_grants=artifact_grants,
         approval_budget=approval_budget,
         secret_refs=secret_refs,
         host_broker_grants=host_broker_grants,
     )
+    spec = authority.to_capsule_spec()
     service = instances(tmp_path)
     fake = FakeWorkshop(events=events)
     workspace = FakeWorkspace()
@@ -359,6 +384,10 @@ def harness(
     store = RunCapsuleStore(tmp_path / "capsules.sqlite", now_ms=lambda: 1000)
     principals = PrincipalRegistry(tmp_path / "principals.sqlite", now_ms=lambda: 1000)
     principal_record, _ = principals.ensure(PRINCIPAL_DEFINITION, PRINCIPAL_BINDING)
+    authorities = RunAuthorityStore(
+        tmp_path / "authorities.sqlite", now_ms=lambda: 1000
+    )
+    authorities.admit(authority)
     assert principal_record.reference == spec.principal
     if principal_revoked:
         principals.revoke(principal_record.reference)
@@ -385,6 +414,12 @@ def harness(
     executor = LocalRunCapsuleExecutor(
         store=store,
         principals=principals,
+        authorities=authorities,
+        authority_context_inspector=lambda _spec: {
+            "policy_digest": authority.policy_digest,
+            "capabilities_hash": authority.capabilities_hash,
+            "target_digest": authority.target_digest,
+        },
         instances=service,
         runs_factory=lambda _profile: runs,
         body_factory=lambda _spec: body,
@@ -431,6 +466,145 @@ def test_revoked_principal_blocks_initial_admission_before_side_effects(
     assert fake.ensure_calls == 0
     assert runs.start_calls == 0
     assert events == []
+
+
+def test_cancelled_authority_blocks_initial_admission_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        events,
+        _releases,
+    ) = harness(tmp_path)
+    executor._authorities.cancel(spec.run_authority_hash)
+
+    with pytest.raises(RunCapsuleExecutionError, match="RunAuthority is not current"):
+        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+
+    assert store.get(spec.execution_id) is None
+    assert fake.ensure_calls == 0
+    assert runs.start_calls == 0
+    assert events == []
+
+
+def test_stale_policy_blocks_initial_admission_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        events,
+        _releases,
+    ) = harness(tmp_path)
+    executor._authority_context = lambda _spec: {
+        "policy_digest": HASH_1,
+        "capabilities_hash": spec.capabilities_hash,
+        "target_digest": spec.target_digest,
+    }
+
+    with pytest.raises(RunCapsuleExecutionError, match="RunAuthority is not current"):
+        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+
+    assert store.get(spec.execution_id) is None
+    assert fake.ensure_calls == 0
+    assert runs.start_calls == 0
+    assert events == []
+
+
+def test_authority_cancelled_during_body_creation_cleans_body_without_hermes(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        events,
+        _releases,
+    ) = harness(tmp_path)
+    fake.on_ensure = lambda: executor._authorities.cancel(spec.run_authority_hash)
+
+    with pytest.raises(
+        RunCapsuleExecutionError, match="changed before Hermes submission"
+    ):
+        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+
+    record = store.get(spec.execution_id)
+    assert record is not None
+    assert record.state == "finalized"
+    assert fake.ensure_calls == 1
+    assert fake.cleanup_calls == 1
+    assert runs.start_calls == 0
+    assert "body.ensure" in events
+    assert "hermes.start" not in events
+
+
+def test_cancelled_authority_stops_known_running_run_and_finishes_cleanup(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        _events,
+        _releases,
+    ) = harness(tmp_path)
+    executor._authorities.claim_capsule(spec.run_authority_hash, spec)
+    record, created = store.admit(spec)
+    assert created is True
+    record = store.transition(
+        spec,
+        expected_generation=record.generation,
+        state="agent_ready",
+    )
+    record = store.transition(
+        spec,
+        expected_generation=record.generation,
+        state="body_ready",
+        container_id=fake.container_id,
+    )
+    record = store.transition(
+        spec,
+        expected_generation=record.generation,
+        state="run_submitting",
+    )
+    record = store.transition(
+        spec,
+        expected_generation=record.generation,
+        state="running",
+        hermes_run_id="hermes-run-1",
+    )
+    executor._authorities.cancel(spec.run_authority_hash)
+
+    outcome = executor.recover(spec=spec, agency_bundle=bundle)
+
+    assert outcome.status == "cancelled"
+    assert outcome.record.state == "finalized"
+    assert runs.stop_calls == 1
+    assert runs.finalize_calls == 1
+    assert fake.cleanup_calls == 1
 
 
 def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(

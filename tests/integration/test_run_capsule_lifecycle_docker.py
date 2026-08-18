@@ -16,7 +16,7 @@ from hermes_fleet.agent_instance import AgentInstanceManager
 from hermes_fleet.backend_capabilities import BackendCapabilities
 from hermes_fleet.execution_backend import ExecutionPlan
 from hermes_fleet.hermes_runs import HermesRunResult
-from hermes_fleet.network_isolation import NETWORK_NONE, NetworkGrant
+from hermes_fleet.network_isolation import NETWORK_NONE
 from hermes_fleet.principal_identity import (
     PRINCIPAL_OWNER,
     SOURCE_LOCAL_PEER,
@@ -27,9 +27,16 @@ from hermes_fleet.principal_identity import (
 )
 from hermes_fleet.profile_inventory import _profile_content_digest
 from hermes_fleet.recipes import ResolvedRecipe
+from hermes_fleet.run_authority import (
+    IsolationAuthority,
+    NetworkAuthorityIntent,
+    RecipeAuthorityBinding,
+    ResourceAuthority,
+    RunAuthority,
+    RunAuthorityStore,
+)
 from hermes_fleet.run_capsule import (
     DockerRunCapsuleBody,
-    RunCapsuleSpec,
     RunCapsuleStore,
 )
 from hermes_fleet.run_capsule_execution import LocalRunCapsuleExecutor
@@ -188,6 +195,10 @@ class _Runs:
     def inspect(self, run_id):
         raise AssertionError(f"unexpected inspect fallback for {run_id}")
 
+    def stop(self, run_id, *, timeout_seconds=None):
+        del timeout_seconds
+        assert run_id == "phase8-hermes-run"
+
     def finalize(self, run_id, *, timeout_seconds):
         assert run_id == "phase8-hermes-run"
         assert timeout_seconds > 0
@@ -221,44 +232,45 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
         resolved_recipe=resolved,
         required_capabilities_hash=caps.content_hash,
     )
-    network = NetworkGrant(mode=NETWORK_NONE, authority_ref=AUTHORITY)
-    deadline_ms = int(time.time() * 1000) + 60_000
-    spec = RunCapsuleSpec(
+    issued_at_ms = int(time.time() * 1000)
+    deadline_ms = issued_at_ms + 60_000
+    authority = RunAuthority(
         execution_id=execution_id,
         idempotency_digest=IDEMPOTENCY,
-        agent_instance_id=agent_id,
         principal=PRINCIPAL,
-        recipe_hash=resolved.recipe_hash,
-        resolved_recipe_hash=resolved.content_hash,
-        recipe_compiler_version="fleet.recipe-direct.v1",
-        requirement_provenance_digest=PROVENANCE,
-        run_authority_hash=AUTHORITY,
+        agent_instance_id=agent_id,
+        recipe=RecipeAuthorityBinding(
+            recipe_hash=resolved.recipe_hash,
+            resolved_recipe_hash=resolved.content_hash,
+            compiler_version="fleet.recipe-direct.v1",
+            provenance_digest=PROVENANCE,
+            image=BASE_IMAGE,
+        ),
+        policy_digest=AUTHORITY,
         capabilities_hash=caps.content_hash,
         target=TARGET,
         target_digest=TARGET_DIGEST,
-        project_scope=(),
-        network_grant=network,
-        network_mode=NETWORK_NONE,
-        network_policy_hash=network.policy_hash,
-        toolsets=("fleet-terminal",),
-        approval_budget=0,
-        secret_refs=(),
-        filesystem_grants=(),
-        artifact_grants=(),
-        host_broker_grants=(),
-        cpu_millis=100,
-        memory_bytes=67_108_864,
-        pids_limit=16,
-        max_iterations=8,
-        deadline_ms=deadline_ms,
-        image=BASE_IMAGE,
         plan_fingerprint=plan.fingerprint,
+        issued_at_ms=issued_at_ms,
+        deadline_ms=deadline_ms,
+        resources=ResourceAuthority(
+            cpu_millis=100,
+            memory_bytes=67_108_864,
+            pids_limit=16,
+            max_iterations=8,
+        ),
+        isolation=IsolationAuthority(),
+        network=NetworkAuthorityIntent(mode=NETWORK_NONE),
+        toolsets=("fleet-terminal",),
     )
+    spec = authority.to_capsule_spec()
     store_path = tmp_path / "capsules.sqlite"
     store = RunCapsuleStore(store_path)
     principals = PrincipalRegistry(tmp_path / "principals.sqlite")
     principal_record, _ = principals.ensure(PRINCIPAL_DEFINITION, PRINCIPAL_BINDING)
     assert principal_record.reference == spec.principal
+    authorities = RunAuthorityStore(tmp_path / "authorities.sqlite")
+    authorities.admit(authority)
     runs = _Runs()
     body = DockerRunCapsuleBody(
         capabilities=caps,
@@ -269,6 +281,12 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
     executor = LocalRunCapsuleExecutor(
         store=store,
         principals=principals,
+        authorities=authorities,
+        authority_context_inspector=lambda _spec: {
+            "policy_digest": authority.policy_digest,
+            "capabilities_hash": authority.capabilities_hash,
+            "target_digest": authority.target_digest,
+        },
         instances=manager,
         runs_factory=lambda _profile: runs,
         body_factory=lambda _spec: body,
