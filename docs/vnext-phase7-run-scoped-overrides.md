@@ -1,6 +1,6 @@
 # Hermes Fleet vNext Phase 7 acceptance: run-scoped Hermes execution overrides
 
-Status: **COMPLETE**
+Status: **IN PROGRESS — canonical Fleet reconciliation pending**
 
 Phase 7 adds the native Hermes seam for temporary Fleet execution state. The durable Agent Instance remains a normal persistent Hermes profile. The exact disposable body binding exists only for one `/v1/runs` task through a `ContextVar`; it is never written into the profile, process-global environment, or shared terminal configuration.
 
@@ -31,7 +31,7 @@ Because the object has an exact key set, it has no representation for arbitrary 
 
 ## ContextVar-only temporary authority
 
-Hermes Agent branch `vnext/phase7-run-scoped-overrides`, commit `0f2fae340`, defines immutable `FleetRuntimeBinding` in `agent/fleet_runtime_scope.py` and stores it only in a `ContextVar`.
+Canonical Hermes Agent fork `Dadmin88/hermes-agent` now carries the implementation on `main` via PR **#5**. PR head `25e07b774f2f84d049faad30d07c56c1840bfd63` merged as `04be624ceb3ebadca0d514f4276a146cdc7296e9`. It defines immutable `FleetRuntimeBinding` in `agent/fleet_runtime_scope.py` and stores it only in a `ContextVar`. No write or PR was made to `NousResearch/hermes-agent`.
 
 `/v1/runs` validates the payload before creating any run state. When valid, it enters the Fleet runtime scope only long enough to create the background asyncio task. Python task-context capture gives that task its own immutable binding, and the request handler immediately restores its previous context.
 
@@ -143,22 +143,26 @@ Phase 6 already stores and validates a digest of persistent Agent `config.yaml`,
 
 ## Current proof
 
-Hermes Agent Phase 7 proof:
+Hermes Agent Phase 7 proof on the canonical fork:
 
-- focused ContextVar/API/terminal/capability suite: **10 passed** before the live-Docker addition;
-- real ContextVar-selected Docker workshop proof: **1 passed**;
-- preserved Phase 1–7 relevant regression slice after the live proof: **190 passed, 2 skipped**;
-- Ruff: PASS;
+- refreshed implementation branch based on `Dadmin88/hermes-agent:main` only;
+- focused ContextVar/API/terminal/live-Docker suite: **10 passed**;
+- touched gateway/terminal regression slice: **24 passed**;
+- Ruff on all changed files: PASS;
 - `git diff --check`: PASS;
-- branch pushed to `Dadmin88/hermes-agent` as `vnext/phase7-run-scoped-overrides`, commit `0f2fae340`.
+- PR **Dadmin88/hermes-agent#5** exact head `25e07b774f2f84d049faad30d07c56c1840bfd63`: all required CI checks PASS, including all 12 Python slices, e2e, macOS/Windows, Ruff/type checks, supply-chain checks, and unrelated-history guard;
+- PR #5 merged normally as `04be624ceb3ebadca0d514f4276a146cdc7296e9`;
+- resulting fork-`main` CI run `32092599764`: PASS on exact merge SHA;
+- resulting fork-`main` Docker Build, Test, and Publish run `32092598601`: PASS on exact merge SHA.
 
-Fleet Phase 7 proof:
+Fleet Phase 7 reconciliation proof before PR:
 
 - Hermes Runs client unit suite: **27 passed**;
-- full Fleet Python suite with Phase 7 client capability/payload support: **830 passed**;
-- full Ruff: PASS before documentation closure.
+- full Fleet Python suite with the verified Hermes environment first on `PATH`: **900 passed, 1 skipped**;
+- installed `FleetRuntimeBinding` parser/ContextVar seam probe: `PHASE7_FLEET_RUNTIME_SEAM_OK`;
+- clean-install CI is updated to fetch the exact canonical fork merge SHA and execute the runtime-seam probe before the complete Fleet suite.
 
-The two skipped Agent tests are pre-existing conditional API-run tests and are not Phase 7 failures.
+The remaining Phase 7 closure gate is the Fleet reconciliation PR and resulting Fleet `main` CI on its exact merge head.
 
 ## Explicit non-goals retained for later phases
 
