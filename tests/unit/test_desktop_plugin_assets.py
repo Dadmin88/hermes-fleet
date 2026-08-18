@@ -267,7 +267,7 @@ console.log(JSON.stringify({
         "human-approval",
     ]
     assert loaded["registryKeys"][0] == "machine"
-    assert len(loaded["registryKeys"]) == 47
+    assert len(loaded["registryKeys"]) == 48
     assert loaded["machineType"]["icon"] == "server-process"
     assert loaded["unknownType"] is None
     assert loaded["title"] == "compute-a"
@@ -459,6 +459,24 @@ workflow = mod.addWorkflowNode(workflow, {
   id: 'delay-1', type: 'delay', position: { x: 310, y: 20 }
 })
 const workflowWithoutConnection = workflow
+let recipeWorkflow = mod.createEmptyWorkflow('recipe-workflow')
+recipeWorkflow = mod.addWorkflowNode(recipeWorkflow, {
+  id: 'build-1', type: 'recipe-step', position: { x: 0, y: 0 },
+  configuration: {
+    agent_name: 'developer', agent_version: '>=1,<2',
+    cpu_requested_millis: 1000, cpu_min_millis: 500, cpu_limit_millis: 2000,
+    memory_requested_bytes: 1073741824,
+    memory_min_bytes: 536870912,
+    memory_limit_bytes: 2147483648,
+    gpu_mode: 'required', gpu_count: 1, gpu_vendor: 'nvidia',
+    gpu_min_vram_bytes: 8589934592,
+    network_mode: 'none', discovery_enabled: true
+  }
+})
+const recipeDescriptor = mod.getFleetNodeType('recipe-step')
+const legacyV1Packet = JSON.parse(mod.serializeWorkflow(workflowWithoutConnection))
+legacyV1Packet.schema = 'fleet.workflow-editor.v1'
+const legacyLoaded = mod.deserializeWorkflow(JSON.stringify(legacyV1Packet))
 const compatibility = mod.workflowConnectionCompatibility(workflow, {
   source: 'trigger-1', sourcePort: 'control',
   target: 'delay-1', targetPort: 'control'
@@ -580,8 +598,8 @@ let appendHistory = mod.createWorkflowHistory(workflow)
 appendHistory = mod.applyWorkflowEdit(appendHistory, appended)
 appendHistory = mod.undoWorkflow(appendHistory)
 const duplicateMemberJson = mod.serializeWorkflow(workflow).replace(
-  '"schema":"fleet.workflow-editor.v1"',
-  '"schema":"fleet.workflow-editor.v1","schema":"fleet.workflow-editor.v1"'
+  '"schema":"fleet.workflow-editor.v2"',
+  '"schema":"fleet.workflow-editor.v2","schema":"fleet.workflow-editor.v2"'
 )
 const contradictoryTarget = JSON.parse(mod.serializeWorkflow(topology))
 contradictoryTarget.nodes[0].target.stable_id = 'observed-node-' + 'b'.repeat(64)
@@ -905,6 +923,14 @@ console.log(JSON.stringify({
   duplicatedCounts: [duplicated.nodes.length, duplicated.connections.length],
   deletedCounts: [deleted.nodes.length, deleted.connections.length],
   parsedSchema: parsed.schema,
+  recipeWorkflowSchema: recipeWorkflow.schema,
+  recipeRuntime: recipeWorkflow.nodes[0].runtime,
+  recipeDescriptorRuntime: recipeDescriptor.runtime,
+  recipeGpuMode: recipeWorkflow.nodes[0].configuration.gpu_mode,
+  recipeDiscoveryEnabled: recipeWorkflow.nodes[0].configuration.discovery_enabled,
+  recipeExecutionAvailable: recipeWorkflow.metadata.executionAvailable,
+  legacyV1LoadedSchema: legacyLoaded.schema,
+  legacyV1ExecutionAvailable: legacyLoaded.metadata.executionAvailable,
   duplicateSerializedEdgeRejected,
   historyPresent: history.present.nodes.length,
   historyPast: history.past.length,
@@ -1029,6 +1055,7 @@ console.log(JSON.stringify({
         "start-agent",
         "continue-run",
         "run-profile",
+        "recipe-step",
         "delegate",
         "tool-call",
         "extract-result",
@@ -1085,7 +1112,15 @@ console.log(JSON.stringify({
     assert loaded["pastedCounts"] == [3, 1]
     assert loaded["duplicatedCounts"] == [3, 1]
     assert loaded["deletedCounts"] == [1, 0]
-    assert loaded["parsedSchema"] == "fleet.workflow-editor.v1"
+    assert loaded["parsedSchema"] == "fleet.workflow-editor.v2"
+    assert loaded["recipeWorkflowSchema"] == "fleet.workflow-editor.v2"
+    assert loaded["recipeRuntime"] == "recipe"
+    assert loaded["recipeDescriptorRuntime"] == "recipe"
+    assert loaded["recipeGpuMode"] == "required"
+    assert loaded["recipeDiscoveryEnabled"] is True
+    assert loaded["recipeExecutionAvailable"] is False
+    assert loaded["legacyV1LoadedSchema"] == "fleet.workflow-editor.v2"
+    assert loaded["legacyV1ExecutionAvailable"] is False
     assert loaded["duplicateSerializedEdgeRejected"] is True
     assert loaded["historyPresent"] == 3
     assert loaded["historyPast"] == 1

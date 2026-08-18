@@ -315,7 +315,8 @@ class DesktopApiClient:
 def _workflow_document(value: object) -> dict[str, Any]:
     if (
         type(value) is not dict
-        or value.get("schema") != "fleet.workflow-editor.v1"
+        or value.get("schema")
+        not in {"fleet.workflow-editor.v1", "fleet.workflow-editor.v2"}
         or set(value) != {"schema", "id", "name", "nodes", "connections", "metadata"}
         or type(value.get("nodes")) is not list
         or type(value.get("connections")) is not list

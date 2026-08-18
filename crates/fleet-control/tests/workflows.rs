@@ -91,6 +91,32 @@ fn transact_payload(socket: &Path, payload: &[u8]) -> Value {
     serde_json::from_slice(&body).expect("response JSON")
 }
 
+fn recipe_document() -> Value {
+    json!({
+        "schema": "fleet.workflow-editor.v2",
+        "id": "workflow-recipe-v2",
+        "name": "Compile recipe",
+        "nodes": [{
+            "id": "build",
+            "type": "recipe-step",
+            "title": "Build",
+            "position": {"x": 24.0, "y": 36.0},
+            "configuration": {
+                "agent_name": "developer",
+                "agent_version": ">=1,<2",
+                "cpu_requested_millis": 1000,
+                "memory_requested_bytes": 1073741824,
+                "gpu_mode": "required",
+                "gpu_count": 1
+            },
+            "target": null,
+            "runtime": "recipe"
+        }],
+        "connections": [],
+        "metadata": {"executionAvailable": false}
+    })
+}
+
 fn document(name: &str) -> Value {
     json!({
         "schema": "fleet.workflow-editor.v1",
@@ -241,5 +267,52 @@ fn authenticated_workflow_api_versions_persists_lists_and_soft_deletes() {
         "Version one"
     );
 
+    service.stop();
+}
+
+#[test]
+fn authenticated_workflow_api_preserves_v2_recipe_revision_without_execution_authority() {
+    let root = private_tempdir();
+    let mut service = RunningService::start(root.path());
+    let document = recipe_document();
+
+    let created = transact(
+        &service.socket,
+        json!({"schema":SCHEMA,"kind":"create","document":document}),
+    );
+    assert_eq!(created["ok"], true);
+    assert_eq!(created["result"]["revision"]["version"], 1);
+    assert_eq!(
+        created["result"]["revision"]["document"]["schema"],
+        "fleet.workflow-editor.v2"
+    );
+    assert_eq!(
+        created["result"]["revision"]["document"]["nodes"][0]["type"],
+        "recipe-step"
+    );
+    assert_eq!(
+        created["result"]["revision"]["document"]["nodes"][0]["runtime"],
+        "recipe"
+    );
+    assert_eq!(
+        created["result"]["revision"]["document"]["metadata"]["executionAvailable"],
+        false
+    );
+    let created_hash = created["result"]["revision"]["contentHash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    service.stop();
+    let mut service = RunningService::start(root.path());
+    let read = transact(
+        &service.socket,
+        json!({"schema":SCHEMA,"kind":"read_version","workflowId":"workflow-recipe-v2","version":1}),
+    );
+    assert_eq!(read["result"]["revision"]["contentHash"], created_hash);
+    assert_eq!(
+        read["result"]["revision"]["document"]["metadata"]["executionAvailable"],
+        false
+    );
     service.stop();
 }

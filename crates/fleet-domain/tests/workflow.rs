@@ -223,3 +223,67 @@ fn workflow_document_rejects_oversized_extensible_payloads() {
         Err(WorkflowValidationError::InvalidNode)
     );
 }
+
+#[test]
+fn workflow_v2_allows_compile_only_recipe_steps_without_execution_authority() {
+    let document = serde_json::json!({
+        "schema": "fleet.workflow-editor.v2",
+        "id": "workflow-v2",
+        "name": "Compile Recipes",
+        "nodes": [
+            {
+                "id": "trigger",
+                "type": "manual-trigger",
+                "title": "Manual Trigger",
+                "position": {"x": 0, "y": 0},
+                "configuration": {},
+                "target": null,
+                "runtime": "unavailable"
+            },
+            {
+                "id": "build",
+                "type": "recipe-step",
+                "title": "Build",
+                "position": {"x": 250, "y": 0},
+                "configuration": {"agent_name": "developer", "agent_version": ">=1,<2"},
+                "target": null,
+                "runtime": "recipe"
+            }
+        ],
+        "connections": [{
+            "id": "trigger-build",
+            "source": "trigger",
+            "sourcePort": "control",
+            "target": "build",
+            "targetPort": "control",
+            "kind": "control"
+        }],
+        "metadata": {"executionAvailable": false}
+    });
+
+    let parsed = WorkflowDocument::parse_json(&document.to_string()).unwrap();
+    assert_eq!(parsed.node_count(), 2);
+    assert!(!parsed.execution_available());
+    assert_eq!(
+        WorkflowDocument::parse_json(&parsed.canonical_json().unwrap()).unwrap(),
+        parsed
+    );
+}
+
+#[test]
+fn workflow_runtime_marker_cannot_widen_v1_or_non_recipe_v2_nodes() {
+    let v1_recipe_runtime =
+        VALID_DOCUMENT.replace("\"runtime\": \"unavailable\"", "\"runtime\": \"recipe\"");
+    assert_eq!(
+        WorkflowDocument::parse_json(&v1_recipe_runtime),
+        Err(WorkflowValidationError::InvalidNode)
+    );
+
+    let mut v2: serde_json::Value = serde_json::from_str(VALID_DOCUMENT).unwrap();
+    v2["schema"] = serde_json::Value::String("fleet.workflow-editor.v2".to_owned());
+    v2["nodes"][0]["runtime"] = serde_json::Value::String("recipe".to_owned());
+    assert_eq!(
+        WorkflowDocument::parse_json(&v2.to_string()),
+        Err(WorkflowValidationError::InvalidNode)
+    );
+}

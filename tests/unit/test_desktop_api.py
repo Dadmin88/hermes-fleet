@@ -246,7 +246,7 @@ def test_workflow_client_round_trips_versioned_backend_documents(tmp_path) -> No
     from hermes_fleet.desktop_api import DesktopApiClient
 
     document = {
-        "schema": "fleet.workflow-editor.v1",
+        "schema": "fleet.workflow-editor.v2",
         "id": "workflow-1",
         "name": "Deploy safely",
         "nodes": [],
@@ -307,6 +307,29 @@ def test_workflow_client_round_trips_versioned_backend_documents(tmp_path) -> No
     thread.join(timeout=2)
     assert workflows[0]["latestVersion"] == 1
     assert captured == [{"schema": "fleet.workflow.v1", "kind": "list"}]
+
+
+def test_workflow_document_accepts_legacy_v1_and_current_v2_without_execution() -> None:
+    from hermes_fleet.desktop_api import _workflow_document
+
+    base = {
+        "id": "workflow-compat",
+        "name": "Compatibility",
+        "nodes": [],
+        "connections": [],
+        "metadata": {"executionAvailable": False},
+    }
+    for schema in ("fleet.workflow-editor.v1", "fleet.workflow-editor.v2"):
+        document = {"schema": schema, **base}
+        assert _workflow_document(document) == document
+
+    with pytest.raises(ValueError, match="envelope"):
+        _workflow_document(
+            {
+                "schema": "fleet.workflow-editor.v2",
+                **{**base, "metadata": {"executionAvailable": True}},
+            }
+        )
 
 
 def test_workflow_client_keeps_execution_unavailable_and_uses_version_fences(

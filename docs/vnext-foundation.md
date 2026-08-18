@@ -160,6 +160,41 @@ They are appropriate for:
 
 The boundary is architectural, not merely an optimization.
 
+## Workflow → Recipe boundary
+
+Fleet's durable Workflow Library/Canvas is the human-facing orchestration layer.
+A backend-owned immutable Workflow revision may be compiled into one or more
+backend-neutral Recipes, but the editor is never an authority source.
+
+```text
+Workflow revision
+   |
+   v
+Deterministic Workflow compiler
+   |
+   +-- Candidate Recipe(s): declared/derived/discovered/proposed/unknown facts
+   |
+   v
+Validated Recipe(s)
+   |
+   v
+Resolved Recipe(s)
+   |
+   v
+later admission / RunAuthority / Run Capsule
+```
+
+Recipes are the Fleet-native Compose-style description of what each disposable
+execution body requires: CPU, RAM, GPU, storage, runtime/toolchains, filesystem,
+network, toolsets, symbolic secret needs, structured host-operation needs and
+execution/placement constraints. These are requirements, not grants. Unknown
+mandatory requirements and unvalidated proposals fail closed before authority.
+
+A Workflow edge may establish orchestration/dependency facts only. It cannot
+widen network, filesystem, secret, broker, host, container, model or Agent
+authority. Discovery runs in a lower-authority disposable body and produces
+evidence; it does not authorize its own findings.
+
 ## Canonical lifecycle
 
 ```text
