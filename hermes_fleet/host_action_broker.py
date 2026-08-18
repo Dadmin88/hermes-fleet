@@ -467,6 +467,7 @@ class HostActionRequest:
 
 Adapter = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 NodePolicyCheck = Callable[[HostActionAuthorityScope, HostActionRequest], bool]
+AuthorityStateCheck = Callable[[str], bool]
 AuditSink = Callable[["HostActionEvidence"], None]
 
 
@@ -586,6 +587,7 @@ class HostActionBroker:
         adapters: tuple[HostActionAdapterSpec, ...],
         node_policy: NodePolicyCheck,
         now_ms: Callable[[], int],
+        authority_state_check: AuthorityStateCheck | None = None,
         audit_sink: AuditSink | None = None,
     ) -> None:
         if type(adapters) is not tuple or len(adapters) > _MAX_ADAPTERS:
@@ -602,11 +604,14 @@ class HostActionBroker:
             registry[key] = adapter
         if not callable(node_policy) or not callable(now_ms):
             raise HostActionBrokerError("host-action broker dependencies are invalid")
+        if authority_state_check is not None and not callable(authority_state_check):
+            raise HostActionBrokerError("host-action authority state check is invalid")
         if audit_sink is not None and not callable(audit_sink):
             raise HostActionBrokerError("host-action audit sink is invalid")
         self._adapters = registry
         self._node_policy = node_policy
         self._now_ms = now_ms
+        self._authority_state_check = authority_state_check
         self._audit_sink = audit_sink
         self._lock = threading.RLock()
         self._completed: dict[tuple[str, str], tuple[str, HostActionEvidence]] = {}
@@ -638,6 +643,10 @@ class HostActionBroker:
             raise HostActionBrokerError("host-action authority binding changed")
         if request.resolved_recipe_hash != authority.resolved_recipe_hash:
             raise HostActionBrokerError("host-action Recipe binding changed")
+        if self._authority_state_check is not None and not self._authority_state_check(
+            authority.run_authority_hash
+        ):
+            raise HostActionBrokerError("host-action RunAuthority is inactive")
 
         idempotency = (authority.run_authority_hash, request.idempotency_key)
         with self._lock:
@@ -719,6 +728,12 @@ class HostActionBroker:
             raise HostActionBrokerError("host-action authority expired before effect")
         if effect_now > request.deadline_ms:
             raise HostActionBrokerError("host-action request expired before effect")
+        if self._authority_state_check is not None and not self._authority_state_check(
+            authority.run_authority_hash
+        ):
+            raise HostActionBrokerError(
+                "host-action RunAuthority became inactive before effect"
+            )
 
         grant_key = (
             authority.run_authority_hash,

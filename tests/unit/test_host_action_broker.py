@@ -137,12 +137,14 @@ def broker(
     *,
     clock: Clock | None = None,
     node_policy=lambda _authority, _request: True,
+    authority_state_check=None,
     audit_sink=None,
 ) -> HostActionBroker:
     return HostActionBroker(
         adapters=adapters,
         node_policy=node_policy,
         now_ms=clock or Clock(),
+        authority_state_check=authority_state_check,
         audit_sink=audit_sink,
     )
 
@@ -626,6 +628,40 @@ def test_same_idempotency_key_cannot_race_through_final_reservation() -> None:
     assert len(errors) == 1
     assert "already in flight" in str(errors[0])
     assert len(successes) == 1
+
+
+def test_inactive_run_authority_blocks_host_action_before_effect() -> None:
+    calls: list[str] = []
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters))
+    service = broker(
+        (adapter(lambda _values: calls.append("effect") or {"ok": True}),),
+        authority_state_check=lambda _authority_hash: False,
+    )
+
+    with pytest.raises(HostActionBrokerError, match="RunAuthority is inactive"):
+        invoke(service, scope, request())
+    assert calls == []
+
+
+def test_run_authority_is_rechecked_immediately_before_host_effect() -> None:
+    calls: list[str] = []
+    active = {"value": True}
+    parameters = deploy_parameters()
+    scope = authority(grant_for(parameters))
+
+    def node_policy(_scope, _request):
+        active["value"] = False
+        return True
+
+    service = broker(
+        (adapter(lambda _values: calls.append("effect") or {"ok": True}),),
+        node_policy=node_policy,
+        authority_state_check=lambda _authority_hash: active["value"],
+    )
+    with pytest.raises(HostActionBrokerError, match="inactive before effect"):
+        invoke(service, scope, request())
+    assert calls == []
 
 
 def test_deadline_is_rechecked_immediately_before_host_effect() -> None:

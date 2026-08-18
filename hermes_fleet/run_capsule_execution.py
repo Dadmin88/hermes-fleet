@@ -17,6 +17,13 @@ from .hermes_runs import (
     HermesRunSubmissionUnknown,
 )
 from .principal_identity import PrincipalError, PrincipalRegistry
+from .run_authority import (
+    RunAuthorityError,
+    RunAuthorityInactive,
+    RunAuthorityRecord,
+    RunAuthorityStale,
+    RunAuthorityStore,
+)
 from .run_capsule import (
     DockerRunCapsuleBody,
     RunCapsuleIndeterminate,
@@ -50,6 +57,7 @@ ArtifactPersister = Callable[[RunCapsuleRecord, Mapping[str, bytes]], Mapping[st
 BodyFactory = Callable[[RunCapsuleSpec], DockerRunCapsuleBody]
 RunsFactory = Callable[[str], Any]
 ClientReleaser = Callable[[str], None]
+AuthorityContextInspector = Callable[[RunCapsuleSpec], Mapping[str, str | None]]
 
 
 def _default_evidence_verifier(
@@ -107,6 +115,8 @@ class LocalRunCapsuleExecutor:
         *,
         store: RunCapsuleStore,
         principals: PrincipalRegistry,
+        authorities: RunAuthorityStore,
+        authority_context_inspector: AuthorityContextInspector,
         instances: AgentInstanceManager,
         runs_factory: RunsFactory,
         body_factory: BodyFactory,
@@ -122,6 +132,10 @@ class LocalRunCapsuleExecutor:
             raise RunCapsuleExecutionError("Run Capsule store is invalid")
         if type(principals) is not PrincipalRegistry:
             raise RunCapsuleExecutionError("principal registry is invalid")
+        if type(authorities) is not RunAuthorityStore:
+            raise RunCapsuleExecutionError("RunAuthority store is invalid")
+        if not callable(authority_context_inspector):
+            raise RunCapsuleExecutionError("RunAuthority context inspector is invalid")
         if type(instances) is not AgentInstanceManager:
             raise RunCapsuleExecutionError("Agent Instance manager is invalid")
         for dependency, label in (
@@ -149,6 +163,8 @@ class LocalRunCapsuleExecutor:
             raise RunCapsuleExecutionError("finalization timeout is invalid")
         self._store = store
         self._principals = principals
+        self._authorities = authorities
+        self._authority_context = authority_context_inspector
         self._instances = instances
         self._runs_factory = runs_factory
         self._body_factory = body_factory
@@ -179,6 +195,12 @@ class LocalRunCapsuleExecutor:
             raise RunCapsuleExecutionError(
                 "Run Capsule principal is not current"
             ) from error
+        try:
+            self._require_authority(spec, claim=True)
+        except RunAuthorityError as error:
+            raise RunCapsuleExecutionError(
+                "Run Capsule RunAuthority is not current"
+            ) from error
         record, created = self._store.admit(spec)
         if not created:
             return self.recover(spec=spec, agency_bundle=agency_bundle)
@@ -188,6 +210,18 @@ class LocalRunCapsuleExecutor:
         record = self._transition(record, "agent_ready")
 
         body = self._body(spec)
+        try:
+            self._require_authority(spec)
+        except RunAuthorityError as error:
+            record = self._transition(
+                record,
+                "failed",
+                evidence={"execution_outcome": "authority_inactive"},
+            )
+            self._persist_no_run_cleanup(record, agent, body)
+            raise RunCapsuleExecutionError(
+                "RunAuthority changed before body creation"
+            ) from error
         try:
             handle = body.create_initial()
         except Exception as error:
@@ -206,6 +240,18 @@ class LocalRunCapsuleExecutor:
             "body_ready",
             container_id=handle.realization_id,
         )
+        try:
+            self._require_authority(spec)
+        except RunAuthorityError as error:
+            record = self._transition(
+                record,
+                "failed",
+                evidence={"execution_outcome": "authority_inactive"},
+            )
+            self._persist_no_run_cleanup(record, agent, body)
+            raise RunCapsuleExecutionError(
+                "RunAuthority changed before Hermes submission"
+            ) from error
 
         record = self._transition(record, "run_submitting")
         client = self._client(agent.profile)
@@ -254,6 +300,11 @@ class LocalRunCapsuleExecutor:
         record = self._store.require_exact(spec)
         if record.state == "finalized":
             return RunCapsuleOutcome(status="finalized", record=record)
+        authority_error: RunAuthorityError | None = None
+        try:
+            self._require_authority(spec)
+        except RunAuthorityError as error:
+            authority_error = error
 
         agent = self._instances.ensure(agency_bundle)
         self._require_agent(spec, agent)
@@ -281,6 +332,22 @@ class LocalRunCapsuleExecutor:
             )
             return RunCapsuleOutcome(status="failed", record=record)
 
+        if authority_error is not None and record.state in {"admitted", "agent_ready"}:
+            if record.state == "admitted":
+                record = self._transition(record, "agent_ready")
+            outcome = (
+                "cancelled"
+                if isinstance(authority_error, RunAuthorityInactive)
+                else "failed"
+            )
+            record = self._transition(
+                record,
+                "failed",
+                evidence={"execution_outcome": outcome, "authority_inactive": True},
+            )
+            record = self._persist_no_run_cleanup(record, agent, body)
+            return RunCapsuleOutcome(status=outcome, record=record)
+
         if record.state == "admitted":
             record = self._transition(record, "agent_ready")
         if record.state == "agent_ready":
@@ -307,6 +374,20 @@ class LocalRunCapsuleExecutor:
             else:
                 body.recover_exact(record.container_id)
 
+        if authority_error is not None and record.state == "body_ready":
+            outcome = (
+                "cancelled"
+                if isinstance(authority_error, RunAuthorityInactive)
+                else "failed"
+            )
+            record = self._transition(
+                record,
+                "failed",
+                evidence={"execution_outcome": outcome, "authority_inactive": True},
+            )
+            record = self._persist_no_run_cleanup(record, agent, body)
+            return RunCapsuleOutcome(status=outcome, record=record)
+
         if record.state == "body_ready":
             record = self._transition(record, "indeterminate")
             raise RunCapsuleIndeterminate(
@@ -324,6 +405,31 @@ class LocalRunCapsuleExecutor:
                     "running Capsule lost Hermes run identity"
                 )
             client = self._client(agent.profile)
+            if authority_error is not None:
+                try:
+                    client.stop(
+                        record.hermes_run_id,
+                        timeout_seconds=self._finalize_seconds,
+                    )
+                except Exception as error:
+                    self._transition(record, "indeterminate")
+                    raise RunCapsuleIndeterminate(
+                        "RunAuthority cancellation could not prove Hermes stop"
+                    ) from error
+                outcome = (
+                    "cancelled"
+                    if isinstance(authority_error, RunAuthorityInactive)
+                    else "failed"
+                )
+                evidence = dict(record.evidence or {})
+                evidence.update(
+                    {
+                        "execution_outcome": outcome,
+                        "authority_inactive": True,
+                    }
+                )
+                record = self._transition(record, "failed", evidence=evidence)
+                return self._continue_post_run(record, agent, body)
             return self._continue_known_run(record, agent, body, client)
 
         return self._continue_post_run(record, agent, body)
@@ -609,6 +715,51 @@ class LocalRunCapsuleExecutor:
             **changes,
         )
 
+    def _require_authority(
+        self,
+        spec: RunCapsuleSpec,
+        *,
+        claim: bool = False,
+    ) -> RunAuthorityRecord:
+        try:
+            self._principals.require_current(spec.principal)
+        except PrincipalError as error:
+            raise RunAuthorityStale("RunAuthority principal is stale") from error
+        context = self._authority_context(spec)
+        required_context = {
+            "policy_digest",
+            "capabilities_hash",
+            "target_digest",
+        }
+        if (
+            type(context) is not dict
+            or not required_context.issubset(context)
+            or set(context) - required_context - {"provider", "model"}
+        ):
+            raise RunAuthorityError("RunAuthority context evidence is invalid")
+        record = self._authorities.require_active(
+            spec.run_authority_hash,
+            policy_digest=context["policy_digest"],
+            capabilities_hash=context["capabilities_hash"],
+            target_digest=context["target_digest"],
+        )
+        record.authority.validate_context(
+            principal=spec.principal,
+            agent_instance_id=spec.agent_instance_id,
+            recipe_hash=spec.recipe_hash,
+            resolved_recipe_hash=spec.resolved_recipe_hash,
+            policy_digest=context["policy_digest"],
+            capabilities_hash=context["capabilities_hash"],
+            target_digest=context["target_digest"],
+            now_ms=self._now_ms(),
+            provider=context.get("provider"),
+            model=context.get("model"),
+        )
+        record.authority.validate_capsule(spec)
+        if claim:
+            return self._authorities.claim_capsule(spec.run_authority_hash, spec)
+        return record
+
     def _body(self, spec: RunCapsuleSpec) -> DockerRunCapsuleBody:
         body = self._body_factory(spec)
         if type(body) is not DockerRunCapsuleBody:
@@ -619,7 +770,7 @@ class LocalRunCapsuleExecutor:
 
     def _client(self, profile: str) -> Any:
         client = self._runs_factory(profile)
-        for method in ("start", "wait", "inspect", "finalize"):
+        for method in ("start", "wait", "inspect", "finalize", "stop"):
             if not callable(getattr(client, method, None)):
                 raise RunCapsuleExecutionError("Hermes Runs client is incomplete")
         return client

@@ -103,6 +103,20 @@ exact active Fleet-managed device projection.
 Principal state never contains temporary execution permissions. `RunAuthority`
 remains the source of temporary power.
 
+### RunAuthority
+
+RunAuthority is Fleet's single immutable root of temporary execution power. The
+content-addressed document binds the exact principal, Agent Instance, Recipe,
+destination, current policy/capabilities, resource/isolation limits and every
+permitted temporary grant. Existing network/filesystem/broker grant objects are
+derived from this authority after its hash exists; they are not independent
+sources of power.
+
+Cancellation and revocation do not mutate the authority document. Fleet stores
+operational authority state separately and rechecks it before Capsule admission,
+before Hermes submission, during recovery and immediately before brokered host
+effects. Authority may only remain equal or narrow.
+
 ### Templar
 
 Templar is a low-authority evaluator only.
