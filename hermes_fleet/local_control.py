@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from .managed_projection import ManagedProjectionStore
+from .principal_identity import local_peer_scope
 
 SCHEMA = "fleet.managed-projection.v1"
 MAX_FRAME_BYTES = 32_768
@@ -332,7 +333,8 @@ class LocalControlServer:
             with connection:
                 connection.settimeout(self._io_timeout_seconds)
                 # Denied peers receive no body parsing, dispatch, or response.
-                if not self._authenticated(connection):
+                peer_uid = self._peer_uid(connection)
+                if peer_uid is None or peer_uid != self.allowed_uid:
                     return
                 try:
                     header = _read_exact(connection, 4)
@@ -342,7 +344,8 @@ class LocalControlServer:
                     payload = _read_exact(connection, length)
                     _require_write_half_close(connection)
                     kind, argument = parse_request(payload)
-                    raw_result = self._dispatch(kind, argument)
+                    with local_peer_scope(peer_uid):
+                        raw_result = self._dispatch(kind, argument)
                     response = {
                         "schema": SCHEMA,
                         "kind": kind,
@@ -366,17 +369,21 @@ class LocalControlServer:
         finally:
             self._connection_slots.release()
 
-    def _authenticated(self, connection: socket.socket) -> bool:
+    @staticmethod
+    def _peer_uid(connection: socket.socket) -> int | None:
         if not hasattr(socket, "SO_PEERCRED"):
-            return False
+            return None
         try:
             credentials = connection.getsockopt(
                 socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
             )
             _pid, uid, _gid = struct.unpack("3i", credentials)
         except (OSError, struct.error):
-            return False
-        return uid == self.allowed_uid
+            return None
+        return uid if uid >= 0 else None
+
+    def _authenticated(self, connection: socket.socket) -> bool:
+        return self._peer_uid(connection) == self.allowed_uid
 
     def _dispatch(
         self, kind: str, argument: dict[str, object] | None

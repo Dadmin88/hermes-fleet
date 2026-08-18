@@ -15,6 +15,7 @@ from hermes_fleet.execution_backend import (
 )
 from hermes_fleet.network_isolation import NETWORK_NONE, NetworkGrant
 from hermes_fleet.oci_backend import DockerWorkshopBackend
+from hermes_fleet.principal_identity import PrincipalReference
 from hermes_fleet.recipes import ResolvedRecipe
 from hermes_fleet.run_capsule import (
     DockerRunCapsuleBody,
@@ -31,6 +32,12 @@ HASH_3 = "sha256:" + "3" * 64
 HASH_4 = "sha256:" + "4" * 64
 HASH_5 = "sha256:" + "5" * 64
 HASH_6 = "sha256:" + "6" * 64
+PRINCIPAL = PrincipalReference(
+    principal_id="sha256:" + "d" * 64,
+    kind="owner",
+    generation=1,
+    binding_hash="sha256:" + "e" * 64,
+)
 TARGET = {
     "source": "local",
     "node_id": "node-test",
@@ -101,7 +108,7 @@ def make_spec(*, execution_id: str = "capsule-exec-1") -> RunCapsuleSpec:
         execution_id=execution_id,
         idempotency_digest=HASH_3,
         agent_instance_id=HASH_4,
-        principal_id="local-principal-test",
+        principal=PRINCIPAL,
         recipe_hash=resolved.recipe_hash,
         resolved_recipe_hash=resolved.content_hash,
         recipe_compiler_version="fleet.recipe-direct.v1",
@@ -154,7 +161,8 @@ def test_spec_separates_recipe_resolution_and_binds_workflow_provenance(
     assert spec.recipe_compiler_version == "fleet.recipe-direct.v1"
     assert spec.requirement_provenance_digest == HASH_6
     payload = spec.to_dict()
-    assert payload["schema"] == "fleet.run-capsule-spec.v2"
+    assert payload["schema"] == "fleet.run-capsule-spec.v3"
+    assert payload["principal"] == PRINCIPAL.to_dict()
     assert payload["workflow_id"] == "workflow-demo"
     assert payload["workflow_revision"] == 7
     assert payload["workflow_hash"] == HASH_2
@@ -197,6 +205,56 @@ def test_persisted_legacy_spec_shape_fails_closed(tmp_path: Path) -> None:
         )
 
     with pytest.raises(RunCapsuleError, match="legacy, incomplete, or unknown"):
+        store.get(spec.execution_id)
+
+
+def test_persisted_v2_principal_id_shape_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "capsules.sqlite"
+    store = RunCapsuleStore(path, now_ms=lambda: 1000)
+    spec = make_spec()
+    store.admit(spec)
+
+    with sqlite3.connect(path) as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT spec_json FROM run_capsules WHERE execution_id = ?",
+                (spec.execution_id,),
+            ).fetchone()[0]
+        )
+        payload["schema"] = "fleet.run-capsule-spec.v2"
+        principal = payload.pop("principal")
+        payload["principal_id"] = principal["principal_id"]
+        connection.execute(
+            "UPDATE run_capsules SET spec_json = ? WHERE execution_id = ?",
+            (json.dumps(payload, sort_keys=True), spec.execution_id),
+        )
+
+    with pytest.raises(RunCapsuleError, match="legacy, incomplete, or unknown"):
+        store.get(spec.execution_id)
+
+
+def test_persisted_v3_malformed_principal_fails_as_capsule_error(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "capsules.sqlite"
+    store = RunCapsuleStore(path, now_ms=lambda: 1000)
+    spec = make_spec()
+    store.admit(spec)
+
+    with sqlite3.connect(path) as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT spec_json FROM run_capsules WHERE execution_id = ?",
+                (spec.execution_id,),
+            ).fetchone()[0]
+        )
+        payload["principal"]["generation"] = 0
+        connection.execute(
+            "UPDATE run_capsules SET spec_json = ? WHERE execution_id = ?",
+            (json.dumps(payload, sort_keys=True), spec.execution_id),
+        )
+
+    with pytest.raises(RunCapsuleError, match="principal reference is invalid"):
         store.get(spec.execution_id)
 
 
@@ -254,7 +312,7 @@ def test_store_admission_is_idempotent_and_changed_replay_fails(tmp_path: Path) 
     assert created is False
     assert second == first
 
-    changed = replace(spec, principal_id="other-principal")
+    changed = replace(spec, principal=replace(PRINCIPAL, generation=2))
     with pytest.raises(RunCapsuleConflict, match="replay identity"):
         store.admit(changed)
 

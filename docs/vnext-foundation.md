@@ -82,6 +82,27 @@ Keryx owns authenticated **inter-machine** task transport:
 
 Keryx is not the intra-machine execution path. Fleet must not bounce same-machine work through Keryx.
 
+### Fleet principal identity
+
+Fleet formalizes identity without turning identity into authority. A stable
+principal definition yields a stable `principal_id`; an exact current
+`PrincipalReference` additionally binds principal kind, generation, and exact
+binding hash.
+
+Supported identity scopes begin with owner, project, network, device, and
+service principals. Rebinding and revocation are explicit generation-fenced
+transitions. Scoped child identities depend on the exact current parent
+reference, so parent revocation or rebinding invalidates descendants.
+
+For local work, Fleet resolves the principal directly from the locally
+authenticated kernel/session evidence such as Unix `SO_PEERCRED`; Nodescale and
+Keryx are not inserted into that path. For remote work, Fleet composes Keryx's
+authenticated sender with current Nodescale identity/trust evidence and the
+exact active Fleet-managed device projection.
+
+Principal state never contains temporary execution permissions. `RunAuthority`
+remains the source of temporary power.
+
 ### Templar
 
 Templar is a low-authority evaluator only.

@@ -1,8 +1,8 @@
 """Durable temporary Run Capsule state and exact disposable-body recovery.
 
-Phase 8 composes already-proven Fleet primitives. It deliberately does not mint
-principal identity or RunAuthority. ``principal_id`` and ``run_authority_hash``
-are opaque, already-verified references that later phases will formalize.
+Phase 8 composes already-proven Fleet primitives. Phase 9 formalizes the
+principal reference carried by each Capsule; RunAuthority remains an opaque
+already-verified reference until Phase 10.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from .network_isolation import (
     NetworkGrant,
 )
 from .oci_backend import DockerWorkshopBackend, OciRealizationSpec
+from .principal_identity import PrincipalError, PrincipalReference
 from .recipes import ResolvedRecipe
 from .workspace_isolation import (
     ArtifactExportGrant,
@@ -43,7 +44,7 @@ from .workspace_isolation import (
 )
 
 _SCHEMA_ID = "fleet.run-capsule.v1"
-_SPEC_SCHEMA_ID = "fleet.run-capsule-spec.v2"
+_SPEC_SCHEMA_ID = "fleet.run-capsule-spec.v3"
 _BACKEND_KIND = "fleet.dev/docker-oci"
 _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -199,7 +200,7 @@ class RunCapsuleSpec:
     execution_id: str
     idempotency_digest: str
     agent_instance_id: str
-    principal_id: str
+    principal: PrincipalReference
     recipe_hash: str
     resolved_recipe_hash: str
     recipe_compiler_version: str
@@ -235,7 +236,8 @@ class RunCapsuleSpec:
         _identifier(self.execution_id, "Run Capsule execution id")
         _hash(self.idempotency_digest, "Run Capsule idempotency digest")
         _hash(self.agent_instance_id, "Run Capsule Agent Instance id")
-        _identifier(self.principal_id, "Run Capsule principal id")
+        if type(self.principal) is not PrincipalReference:
+            raise RunCapsuleError("Run Capsule principal reference is invalid")
         for value, label in (
             (self.recipe_hash, "Run Capsule Recipe hash"),
             (self.resolved_recipe_hash, "Run Capsule ResolvedRecipe hash"),
@@ -368,13 +370,17 @@ class RunCapsuleSpec:
         if self.remote_keryx_task_id is not None:
             _identifier(self.remote_keryx_task_id, "Run Capsule Keryx task id")
 
+    @property
+    def principal_id(self) -> str:
+        return self.principal.principal_id
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": _SPEC_SCHEMA_ID,
             "execution_id": self.execution_id,
             "idempotency_digest": self.idempotency_digest,
             "agent_instance_id": self.agent_instance_id,
-            "principal_id": self.principal_id,
+            "principal": self.principal.to_dict(),
             "recipe_hash": self.recipe_hash,
             "resolved_recipe_hash": self.resolved_recipe_hash,
             "recipe_compiler_version": self.recipe_compiler_version,
@@ -745,7 +751,7 @@ class RunCapsuleStore:
             "execution_id",
             "idempotency_digest",
             "agent_instance_id",
-            "principal_id",
+            "principal",
             "recipe_hash",
             "resolved_recipe_hash",
             "recipe_compiler_version",
@@ -810,11 +816,17 @@ class RunCapsuleStore:
             ),
             approval_ref=network.get("approval_ref"),
         )
+        try:
+            principal = PrincipalReference.from_dict(value["principal"])
+        except PrincipalError as error:
+            raise RunCapsuleError(
+                "Run Capsule persisted principal reference is invalid"
+            ) from error
         return RunCapsuleSpec(
             execution_id=value["execution_id"],
             idempotency_digest=value["idempotency_digest"],
             agent_instance_id=value["agent_instance_id"],
-            principal_id=value["principal_id"],
+            principal=principal,
             recipe_hash=value["recipe_hash"],
             resolved_recipe_hash=value["resolved_recipe_hash"],
             recipe_compiler_version=value["recipe_compiler_version"],
