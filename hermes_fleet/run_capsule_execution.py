@@ -180,7 +180,11 @@ class LocalRunCapsuleExecutor:
         try:
             handle = body.create_initial()
         except Exception as error:
-            record = self._transition(record, "indeterminate")
+            record = self._transition(
+                record,
+                "indeterminate",
+                evidence={"indeterminate_stage": "body_creation"},
+            )
             raise RunCapsuleIndeterminate(
                 "Run Capsule body creation outcome is indeterminate"
             ) from error
@@ -243,6 +247,28 @@ class LocalRunCapsuleExecutor:
         agent = self._instances.ensure(agency_bundle)
         self._require_agent(spec, agent)
         body = self._body(spec)
+
+        if (
+            record.state == "indeterminate"
+            and record.container_id is None
+            and record.hermes_run_id is None
+            and dict(record.evidence or {}).get("indeterminate_stage")
+            == "body_creation"
+        ):
+            discovered = body.find_existing_by_plan()
+            if discovered is None:
+                raise RunCapsuleIndeterminate(
+                    "Run Capsule body creation remains indeterminate; "
+                    "no exact existing body is observable"
+                )
+            body.recover_exact(discovered.realization_id)
+            record = self._persist_no_run_cleanup(
+                record,
+                agent,
+                body,
+                recovered_container_id=discovered.realization_id,
+            )
+            return RunCapsuleOutcome(status="failed", record=record)
 
         if record.state == "admitted":
             record = self._transition(record, "agent_ready")
@@ -506,28 +532,35 @@ class LocalRunCapsuleExecutor:
         record: RunCapsuleRecord,
         agent: AgentInstanceBinding,
         body: DockerRunCapsuleBody,
+        *,
+        recovered_container_id: str | None = None,
     ) -> RunCapsuleRecord:
         # A definite failure before a Hermes run has no learning/evidence to
         # preserve. We still follow revoke -> cleanup ordering.
+        evidence = dict(record.evidence or {})
+        evidence["finalization"] = {
+            "status": "not_started",
+            "quiescent": True,
+        }
         record = self._transition(
             record,
             "quiescent",
-            evidence={
-                "finalization": {
-                    "status": "not_started",
-                    "quiescent": True,
-                }
-            },
+            container_id=recovered_container_id,
+            evidence=evidence,
         )
+        evidence = dict(record.evidence or {})
+        evidence["verified"] = {"status": "not_started"}
         record = self._transition(
             record,
             "evidence_verified",
-            evidence={"verified": {"status": "not_started"}},
+            evidence=evidence,
         )
+        evidence = dict(record.evidence or {})
+        evidence["learning"] = {"status": "skipped"}
         record = self._transition(
             record,
             "learning_persisted",
-            evidence={"learning": {"status": "skipped"}},
+            evidence=evidence,
             learning_persisted=True,
         )
         if self._revoke_grants is not None:

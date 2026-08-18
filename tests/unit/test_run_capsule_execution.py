@@ -44,6 +44,7 @@ HASH_1 = "sha256:" + "1" * 64
 HASH_2 = "sha256:" + "2" * 64
 HASH_3 = "sha256:" + "3" * 64
 HASH_5 = "sha256:" + "5" * 64
+HASH_6 = "sha256:" + "6" * 64
 IMAGE = "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
 TARGET = {"source": "local", "node_id": "node-test", "generation": 1}
 TARGET_DIGEST = (
@@ -161,7 +162,10 @@ def make_spec(
         idempotency_digest=HASH_3,
         agent_instance_id=agent_id,
         principal_id="principal-local-test",
-        recipe_hash=resolved.content_hash,
+        recipe_hash=resolved.recipe_hash,
+        resolved_recipe_hash=resolved.content_hash,
+        recipe_compiler_version="fleet.recipe-direct.v1",
+        requirement_provenance_digest=HASH_6,
         run_authority_hash=HASH_5,
         capabilities_hash=caps.content_hash,
         target=TARGET,
@@ -422,6 +426,54 @@ def test_timeout_is_finalized_quiescent_and_cleaned(tmp_path: Path) -> None:
     assert outcome.status == "timed_out"
     assert outcome.record.state == "finalized"
     assert fake.present is False
+    assert service.profile_path(service.open(bundle.resolved)).is_dir()
+
+
+def test_recovery_cleans_exact_body_after_indeterminate_creation_without_recreation(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        _events,
+        _releases,
+    ) = harness(tmp_path)
+    original_ensure = fake.ensure
+
+    def ambiguous_creation(plan: ExecutionPlan) -> BackendExecutionHandle:
+        original_ensure(plan)
+        raise RuntimeError("lost Docker create response")
+
+    fake.ensure = ambiguous_creation  # type: ignore[method-assign]
+
+    with pytest.raises(RunCapsuleIndeterminate, match="body creation outcome"):
+        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+
+    stranded = store.require_exact(spec)
+    assert stranded.state == "indeterminate"
+    assert stranded.container_id is None
+    assert stranded.hermes_run_id is None
+    assert stranded.evidence == {"indeterminate_stage": "body_creation"}
+    assert fake.present is True
+    assert fake.ensure_calls == 1
+    assert runs.start_calls == 0
+
+    outcome = executor.recover(spec=spec, agency_bundle=bundle)
+    assert outcome.status == "failed"
+    assert outcome.record.state == "finalized"
+    assert outcome.record.evidence is not None
+    assert outcome.record.evidence["indeterminate_stage"] == "body_creation"
+    assert fake.ensure_calls == 1
+    assert fake.find_calls >= 3
+    assert fake.cleanup_calls == 1
+    assert fake.present is False
+    assert runs.start_calls == 0
     assert service.profile_path(service.open(bundle.resolved)).is_dir()
 
 

@@ -19,6 +19,7 @@ from hermes_fleet.recipes import ResolvedRecipe
 from hermes_fleet.run_capsule import (
     DockerRunCapsuleBody,
     RunCapsuleConflict,
+    RunCapsuleError,
     RunCapsuleIndeterminate,
     RunCapsuleSpec,
     RunCapsuleStore,
@@ -101,7 +102,10 @@ def make_spec(*, execution_id: str = "capsule-exec-1") -> RunCapsuleSpec:
         idempotency_digest=HASH_3,
         agent_instance_id=HASH_4,
         principal_id="local-principal-test",
-        recipe_hash=resolved.content_hash,
+        recipe_hash=resolved.recipe_hash,
+        resolved_recipe_hash=resolved.content_hash,
+        recipe_compiler_version="fleet.recipe-direct.v1",
+        requirement_provenance_digest=HASH_6,
         run_authority_hash=HASH_5,
         capabilities_hash=caps.content_hash,
         target=TARGET,
@@ -130,6 +134,113 @@ def make_spec(*, execution_id: str = "capsule-exec-1") -> RunCapsuleSpec:
         image=IMAGE,
         plan_fingerprint=plan.fingerprint,
     )
+
+
+def test_spec_separates_recipe_resolution_and_binds_workflow_provenance(
+    tmp_path: Path,
+) -> None:
+    resolved = recipe()
+    spec = replace(
+        make_spec(),
+        workflow_id="workflow-demo",
+        workflow_revision=7,
+        workflow_hash=HASH_2,
+        workflow_step_id="build-node",
+    )
+
+    assert spec.recipe_hash == resolved.recipe_hash
+    assert spec.resolved_recipe_hash == resolved.content_hash
+    assert spec.recipe_hash != spec.resolved_recipe_hash
+    assert spec.recipe_compiler_version == "fleet.recipe-direct.v1"
+    assert spec.requirement_provenance_digest == HASH_6
+    payload = spec.to_dict()
+    assert payload["schema"] == "fleet.run-capsule-spec.v2"
+    assert payload["workflow_id"] == "workflow-demo"
+    assert payload["workflow_revision"] == 7
+    assert payload["workflow_hash"] == HASH_2
+    assert payload["workflow_step_id"] == "build-node"
+
+    path = tmp_path / "capsules.sqlite"
+    store = RunCapsuleStore(path, now_ms=lambda: 1000)
+    record, created = store.admit(spec)
+    assert created is True
+    assert record.spec == spec
+    reopened = RunCapsuleStore(path, now_ms=lambda: 2000)
+    assert reopened.require_exact(spec).spec == spec
+
+    with pytest.raises(RunCapsuleConflict, match="replay identity"):
+        store.admit(replace(spec, workflow_revision=8))
+
+
+def test_workflow_binding_is_all_or_nothing() -> None:
+    with pytest.raises(RunCapsuleError, match="Workflow binding"):
+        replace(make_spec(), workflow_id="workflow-demo")
+
+
+def test_persisted_legacy_spec_shape_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "capsules.sqlite"
+    store = RunCapsuleStore(path, now_ms=lambda: 1000)
+    spec = make_spec()
+    store.admit(spec)
+
+    with sqlite3.connect(path) as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT spec_json FROM run_capsules WHERE execution_id = ?",
+                (spec.execution_id,),
+            ).fetchone()[0]
+        )
+        del payload["resolved_recipe_hash"]
+        connection.execute(
+            "UPDATE run_capsules SET spec_json = ? WHERE execution_id = ?",
+            (json.dumps(payload, sort_keys=True), spec.execution_id),
+        )
+
+    with pytest.raises(RunCapsuleError, match="legacy, incomplete, or unknown"):
+        store.get(spec.execution_id)
+
+
+def test_persisted_unknown_spec_schema_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "capsules.sqlite"
+    store = RunCapsuleStore(path, now_ms=lambda: 1000)
+    spec = make_spec()
+    store.admit(spec)
+
+    with sqlite3.connect(path) as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT spec_json FROM run_capsules WHERE execution_id = ?",
+                (spec.execution_id,),
+            ).fetchone()[0]
+        )
+        payload["schema"] = "fleet.run-capsule-spec.v999"
+        connection.execute(
+            "UPDATE run_capsules SET spec_json = ? WHERE execution_id = ?",
+            (json.dumps(payload, sort_keys=True), spec.execution_id),
+        )
+
+    with pytest.raises(RunCapsuleError, match="spec schema is unsupported"):
+        store.get(spec.execution_id)
+
+
+def test_body_binds_logical_and_resolved_recipe_hashes() -> None:
+    resolved = recipe()
+    caps = capabilities()
+    spec = make_spec()
+
+    DockerRunCapsuleBody(capabilities=caps, resolved_recipe=resolved, spec=spec)
+    with pytest.raises(RunCapsuleError, match="Recipe identity changed"):
+        DockerRunCapsuleBody(
+            capabilities=caps,
+            resolved_recipe=resolved,
+            spec=replace(spec, recipe_hash=HASH_6),
+        )
+    with pytest.raises(RunCapsuleError, match="ResolvedRecipe identity changed"):
+        DockerRunCapsuleBody(
+            capabilities=caps,
+            resolved_recipe=resolved,
+            spec=replace(spec, resolved_recipe_hash=HASH_5),
+        )
 
 
 def test_store_admission_is_idempotent_and_changed_replay_fails(tmp_path: Path) -> None:

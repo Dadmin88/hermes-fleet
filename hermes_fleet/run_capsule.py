@@ -43,6 +43,7 @@ from .workspace_isolation import (
 )
 
 _SCHEMA_ID = "fleet.run-capsule.v1"
+_SPEC_SCHEMA_ID = "fleet.run-capsule-spec.v2"
 _BACKEND_KIND = "fleet.dev/docker-oci"
 _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -200,6 +201,9 @@ class RunCapsuleSpec:
     agent_instance_id: str
     principal_id: str
     recipe_hash: str
+    resolved_recipe_hash: str
+    recipe_compiler_version: str
+    requirement_provenance_digest: str
     run_authority_hash: str
     capabilities_hash: str
     target: Mapping[str, Any]
@@ -222,6 +226,10 @@ class RunCapsuleSpec:
     image: str
     plan_fingerprint: str
     remote_keryx_task_id: str | None = None
+    workflow_id: str | None = None
+    workflow_revision: int | None = None
+    workflow_hash: str | None = None
+    workflow_step_id: str | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.execution_id, "Run Capsule execution id")
@@ -230,6 +238,11 @@ class RunCapsuleSpec:
         _identifier(self.principal_id, "Run Capsule principal id")
         for value, label in (
             (self.recipe_hash, "Run Capsule Recipe hash"),
+            (self.resolved_recipe_hash, "Run Capsule ResolvedRecipe hash"),
+            (
+                self.requirement_provenance_digest,
+                "Run Capsule requirement provenance digest",
+            ),
             (self.run_authority_hash, "Run Capsule RunAuthority hash"),
             (self.capabilities_hash, "Run Capsule capabilities hash"),
             (self.target_digest, "Run Capsule target digest"),
@@ -237,6 +250,25 @@ class RunCapsuleSpec:
             (self.plan_fingerprint, "Run Capsule plan fingerprint"),
         ):
             _hash(value, label)
+        _identifier(
+            self.recipe_compiler_version,
+            "Run Capsule Recipe compiler version",
+        )
+        workflow_values = (
+            self.workflow_id,
+            self.workflow_revision,
+            self.workflow_hash,
+            self.workflow_step_id,
+        )
+        if any(value is not None for value in workflow_values):
+            if any(value is None for value in workflow_values):
+                raise RunCapsuleError(
+                    "Run Capsule Workflow binding must be complete when present"
+                )
+            _identifier(self.workflow_id, "Run Capsule Workflow id")
+            _positive_int(self.workflow_revision, "Run Capsule Workflow revision")
+            _hash(self.workflow_hash, "Run Capsule Workflow hash")
+            _identifier(self.workflow_step_id, "Run Capsule Workflow step id")
         if not isinstance(self.target, Mapping):
             raise RunCapsuleError("Run Capsule target is invalid")
         target_document = dict(self.target)
@@ -338,11 +370,19 @@ class RunCapsuleSpec:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "schema": _SPEC_SCHEMA_ID,
             "execution_id": self.execution_id,
             "idempotency_digest": self.idempotency_digest,
             "agent_instance_id": self.agent_instance_id,
             "principal_id": self.principal_id,
             "recipe_hash": self.recipe_hash,
+            "resolved_recipe_hash": self.resolved_recipe_hash,
+            "recipe_compiler_version": self.recipe_compiler_version,
+            "requirement_provenance_digest": self.requirement_provenance_digest,
+            "workflow_id": self.workflow_id,
+            "workflow_revision": self.workflow_revision,
+            "workflow_hash": self.workflow_hash,
+            "workflow_step_id": self.workflow_step_id,
             "run_authority_hash": self.run_authority_hash,
             "capabilities_hash": self.capabilities_hash,
             "target": dict(self.target),
@@ -700,6 +740,46 @@ class RunCapsuleStore:
     def _spec_from_dict(value: object) -> RunCapsuleSpec:
         if type(value) is not dict:
             raise RunCapsuleError("Run Capsule persisted spec is invalid")
+        expected_keys = {
+            "schema",
+            "execution_id",
+            "idempotency_digest",
+            "agent_instance_id",
+            "principal_id",
+            "recipe_hash",
+            "resolved_recipe_hash",
+            "recipe_compiler_version",
+            "requirement_provenance_digest",
+            "workflow_id",
+            "workflow_revision",
+            "workflow_hash",
+            "workflow_step_id",
+            "run_authority_hash",
+            "capabilities_hash",
+            "target",
+            "target_digest",
+            "project_scope",
+            "network_grant",
+            "network_mode",
+            "network_policy_hash",
+            "toolsets",
+            "approval_budget",
+            "secret_refs",
+            "filesystem_grants",
+            "artifact_grants",
+            "host_broker_grants",
+            "resources",
+            "deadline_ms",
+            "image",
+            "plan_fingerprint",
+            "remote_keryx_task_id",
+        }
+        if set(value) != expected_keys:
+            raise RunCapsuleError(
+                "Run Capsule persisted spec shape is legacy, incomplete, or unknown"
+            )
+        if value["schema"] != _SPEC_SCHEMA_ID:
+            raise RunCapsuleError("Run Capsule persisted spec schema is unsupported")
         resources = value.get("resources")
         if type(resources) is not dict:
             raise RunCapsuleError("Run Capsule persisted resources are invalid")
@@ -736,6 +816,9 @@ class RunCapsuleStore:
             agent_instance_id=value["agent_instance_id"],
             principal_id=value["principal_id"],
             recipe_hash=value["recipe_hash"],
+            resolved_recipe_hash=value["resolved_recipe_hash"],
+            recipe_compiler_version=value["recipe_compiler_version"],
+            requirement_provenance_digest=value["requirement_provenance_digest"],
             run_authority_hash=value["run_authority_hash"],
             capabilities_hash=value["capabilities_hash"],
             target=value["target"],
@@ -757,7 +840,11 @@ class RunCapsuleStore:
             deadline_ms=value["deadline_ms"],
             image=value["image"],
             plan_fingerprint=value["plan_fingerprint"],
-            remote_keryx_task_id=value.get("remote_keryx_task_id"),
+            remote_keryx_task_id=value["remote_keryx_task_id"],
+            workflow_id=value["workflow_id"],
+            workflow_revision=value["workflow_revision"],
+            workflow_hash=value["workflow_hash"],
+            workflow_step_id=value["workflow_step_id"],
         )
 
     def _now(self) -> int:
@@ -788,8 +875,10 @@ class DockerRunCapsuleBody:
             raise RunCapsuleError("Run Capsule Recipe is invalid")
         if type(spec) is not RunCapsuleSpec:
             raise RunCapsuleError("Run Capsule spec is invalid")
-        if resolved_recipe.content_hash != spec.recipe_hash:
+        if resolved_recipe.recipe_hash != spec.recipe_hash:
             raise RunCapsuleError("Run Capsule Recipe identity changed")
+        if resolved_recipe.content_hash != spec.resolved_recipe_hash:
+            raise RunCapsuleError("Run Capsule ResolvedRecipe identity changed")
         if capabilities.content_hash != spec.capabilities_hash:
             raise RunCapsuleError("Run Capsule capabilities changed")
         if not callable(backend_factory):
