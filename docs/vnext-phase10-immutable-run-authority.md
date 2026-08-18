@@ -1,6 +1,6 @@
 # Hermes Fleet vNext Phase 10 acceptance: immutable RunAuthority
 
-Status: **IN PROGRESS — implementation pending PR/main CI**
+Status: **COMPLETE**
 
 Phase 10 makes RunAuthority the single immutable root of temporary execution
 power. A RunAuthority is an exact content-addressed authorization document; its
@@ -283,8 +283,21 @@ Current local implementation proof before PR:
 - `git diff --check`: PASS;
 - public-hygiene scan: PASS.
 
-These local results are not canonical closure evidence. Exact PR-head CI and the
-resulting `main` push CI remain mandatory.
+PR **#146** implementation head
+`a92cde0ea7e883ed7e1057edc7c8a4511843e662` then passed CI run
+`32157355274` completely:
+
+- Rust workspace compatibility: PASS;
+- Real Nodescale and readiness proofs: PASS;
+- Quality Python 3.11: PASS;
+- Quality Python 3.13: PASS;
+- Hermes plugin clean-install smoke: PASS;
+- clean-install complete Fleet suite: **962 passed, 12 skipped**.
+
+The closure-status commit intentionally changes the PR head after that proof. Per
+repository policy, fresh CI must pass on the new exact head before merge, and the
+resulting Fleet `main` merge commit must then pass its push CI. The `COMPLETE`
+label is not itself closure evidence.
 
 ## Closure gates
 
