@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Final
 
@@ -500,7 +500,7 @@ class CandidateRecipe:
     agent: AgentRequirement
     requirements: Mapping[str, RecipeRequirement]
     dependencies: tuple[str, ...] = ()
-    extensions: Mapping[str, Any] = MappingProxyType({})
+    extensions: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if type(self.workflow) is not WorkflowBinding:
@@ -638,7 +638,7 @@ class ValidatedRecipe:
     agent: AgentRequirement
     requirements: Mapping[str, RecipeRequirement]
     dependencies: tuple[str, ...] = ()
-    extensions: Mapping[str, Any] = MappingProxyType({})
+    extensions: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _hash(self.candidate_hash, "Candidate Recipe hash")
@@ -789,7 +789,7 @@ class ResolvedWorkflowRecipe:
     agent: ResolvedAgencyProfile
     requirements: Mapping[str, RecipeRequirement]
     dependencies: tuple[str, ...] = ()
-    extensions: Mapping[str, Any] = MappingProxyType({})
+    extensions: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _hash(self.validated_hash, "Validated Recipe hash")
