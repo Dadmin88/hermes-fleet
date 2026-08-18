@@ -31,6 +31,7 @@ BASE_IMAGE = (
 )
 AUTHORITY = "sha256:" + "8" * 64
 IDEMPOTENCY = "sha256:" + "9" * 64
+PROVENANCE = "sha256:" + "7" * 64
 TARGET = {"source": "local", "node_id": "phase8-docker", "generation": 1}
 TARGET_DIGEST = (
     "sha256:"
@@ -204,7 +205,10 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
         idempotency_digest=IDEMPOTENCY,
         agent_instance_id=agent_id,
         principal_id="principal-phase8-local",
-        recipe_hash=resolved.content_hash,
+        recipe_hash=resolved.recipe_hash,
+        resolved_recipe_hash=resolved.content_hash,
+        recipe_compiler_version="fleet.recipe-direct.v1",
+        requirement_provenance_digest=PROVENANCE,
         run_authority_hash=AUTHORITY,
         capabilities_hash=caps.content_hash,
         target=TARGET,

@@ -1,6 +1,6 @@
 # Hermes Fleet vNext Phase 8 acceptance: Run Capsule lifecycle
 
-Status: **COMPLETE**
+Status: **IN PROGRESS — current-master-plan reconciliation pending PR/main CI**
 
 Phase 8 composes the already-closed Phase 2–7 primitives into one temporary,
 Fleet-owned Run Capsule lifecycle around a persistent Hermes Agent Instance.
@@ -14,12 +14,15 @@ the authoritative producers/verifiers of those identities.
 
 ## Durable Capsule contract
 
-`RunCapsuleSpec` is immutable and content-hashed. It contains:
+`RunCapsuleSpec` is immutable, content-hashed, and serialized as the exact
+`fleet.run-capsule-spec.v2` payload. It contains:
 
 - execution/run identity and idempotency digest;
 - persistent Agent Instance ID;
 - principal ID reference;
-- resolved Recipe hash;
+- logical Recipe hash and exact ResolvedRecipe hash as separate identities;
+- Recipe compiler/version identifier and exact requirement-provenance digest;
+- optional all-or-nothing Workflow ID/revision/hash/step binding for later Phase 8A callers;
 - RunAuthority hash reference;
 - capabilities hash;
 - canonical target object plus exact target digest;
@@ -35,6 +38,14 @@ the authoritative producers/verifiers of those identities.
 - digest-pinned OCI image;
 - exact execution-plan fingerprint;
 - optional remote Keryx task identity for a later cross-machine caller.
+
+Phase 8 binds these identities but does not implement the Phase 8A Workflow
+compiler. Direct Recipe callers use an explicit compiler/source identifier such
+as `fleet.recipe-direct.v1` plus a provenance digest. When a Workflow binding is
+present, all four Workflow fields are required together; partial Workflow
+identity fails closed. The body independently requires both
+`ResolvedRecipe.recipe_hash == spec.recipe_hash` and
+`ResolvedRecipe.content_hash == spec.resolved_recipe_hash`.
 
 The local Phase 8 executor accepts only `none` and `provider-only` workshop
 network modes. Provider traffic remains outside the workshop. The direct-egress
@@ -52,6 +63,7 @@ Phase 7 `fleet_runtime` payload in this phase.
 - owned, non-symlink database state with mode `0600`;
 - safe parent-directory ownership/permission checks;
 - bounded canonical JSON for spec/evidence;
+- exact persisted spec shape validation; legacy/incomplete/unknown Capsule specs fail closed rather than being reinterpreted under the new Recipe identity semantics;
 - only references/metadata, never secret bodies or artifact payload bytes.
 
 The lifecycle state machine includes:
@@ -72,7 +84,9 @@ Likewise, Docker creation and recovery are different APIs:
 - `find_existing_by_plan()` and `recover_exact()` use `find()` only;
 - recovery never calls `ensure()`;
 - an existing body can be rediscovered by exact execution-plan identity;
-- a missing exact body is never silently replaced;
+- if initial body creation becomes indeterminate before the container ID is durably recorded, Fleet persists that exact stage and recovery may only rediscover the already-existing body by plan identity for no-run cleanup;
+- that recovery path never calls `ensure()` or submits Hermes work, and it finalizes only after the rediscovered exact body is removed;
+- a missing exact body is never silently replaced and an unobservable ambiguous creation remains indeterminate;
 - cleanup is idempotent when the exact body is already gone.
 
 This locks the master-plan requirement that recovery must not manufacture a new
@@ -152,6 +166,7 @@ The focused suite proves:
 - deadline path: Hermes cancellation/finalization is quiesced, Capsule records
   `timed_out`, body is destroyed, Agent remains;
 - definite pre-acceptance Hermes failure: body is safely cleaned, Agent remains;
+- indeterminate body creation before durable container binding: the stage is persisted; recovery can rediscover only the exact plan-owned body and clean it without recreation or Hermes submission;
 - submission response loss: Capsule becomes indeterminate and retains the exact
   body; the run is never reposted;
 - finalization failure: body remains because quiescence is unproven;
@@ -190,26 +205,36 @@ Docker prune was used.
 
 ## Current proof
 
-Phase 8 closure evidence:
+The older Phase 8 implementation remains useful evidence, but the 2026-08-17
+re-audit found that the updated master plan had split logical Recipe identity
+from ResolvedRecipe identity and added Workflow/compiler provenance binding. It
+also found an uncovered crash window where body creation could be indeterminate
+before the container ID reached durable Capsule state.
 
-- focused Phase 8 store/executor/live-Docker suite: **20 passed**;
-- Phase 2–8 composition slice before the final crash-fence refinements:
-  **143 passed**; the subsequent full suite supersedes it;
-- final full Fleet Python suite: **850 passed**;
+Current master-plan reconciliation proof before PR:
+
+- focused Phase 8 store/executor/live-Docker suite: **26 passed**;
+- logical Recipe hash and ResolvedRecipe hash are independently bound and mismatch-tested;
+- optional Workflow ID/revision/hash/step binding round-trips through the durable SQLite store and partial binding fails closed;
+- compiler/source version plus requirement-provenance digest survive canonical persistence and replay fencing;
+- legacy/incomplete persisted Capsule shape fails closed;
+- indeterminate body-creation recovery rediscovers and destroys only the exact plan-owned body, with no second `ensure()` and no Hermes submission;
+- final full Fleet Python suite: **906 passed, 1 skipped**;
 - full Ruff: PASS;
-- `git diff --check`: PASS at the pre-documentation gate and re-run at closure;
-- public-hygiene scan: PASS at the pre-documentation gate and re-run at closure;
-- Fleet workshop Docker residue: none;
-- Fleet Phase 4 egress-network residue: none.
+- `git diff --check`: PASS;
+- public-hygiene scan: PASS.
 
 No Hermes Agent code change is required in Phase 8. The executor consumes the
-Phase 7 Hermes native run-scoped contract already preserved on the Agent branch
-`vnext/phase7-run-scoped-overrides` at `0f2fae340`.
+canonically merged Phase 7 native run-scoped contract from
+`Dadmin88/hermes-agent:main` merge `04be624ceb3ebadca0d514f4276a146cdc7296e9`.
+Phase 8 is not canonically closed until its exact Fleet PR head and the resulting
+Fleet `main` merge commit both pass required CI.
 
 ## Explicit later-phase ownership
 
 Phase 8 does not claim completion of:
 
+- Workflow graph → Candidate/Validated/Resolved Recipe compilation, first-run discovery, GPU/resource inference, or adaptive Recipe revision: Phase 8A;
 - authenticated principal identity/revocation: Phase 9;
 - canonical signed/immutable RunAuthority issuance, replay and narrowing rules:
   Phase 10;
