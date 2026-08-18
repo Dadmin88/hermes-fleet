@@ -16,6 +16,7 @@ from .hermes_runs import (
     HermesRunIndeterminate,
     HermesRunSubmissionUnknown,
 )
+from .principal_identity import PrincipalError, PrincipalRegistry
 from .run_capsule import (
     DockerRunCapsuleBody,
     RunCapsuleIndeterminate,
@@ -105,6 +106,7 @@ class LocalRunCapsuleExecutor:
         self,
         *,
         store: RunCapsuleStore,
+        principals: PrincipalRegistry,
         instances: AgentInstanceManager,
         runs_factory: RunsFactory,
         body_factory: BodyFactory,
@@ -118,6 +120,8 @@ class LocalRunCapsuleExecutor:
     ) -> None:
         if type(store) is not RunCapsuleStore:
             raise RunCapsuleExecutionError("Run Capsule store is invalid")
+        if type(principals) is not PrincipalRegistry:
+            raise RunCapsuleExecutionError("principal registry is invalid")
         if type(instances) is not AgentInstanceManager:
             raise RunCapsuleExecutionError("Agent Instance manager is invalid")
         for dependency, label in (
@@ -144,6 +148,7 @@ class LocalRunCapsuleExecutor:
         ):
             raise RunCapsuleExecutionError("finalization timeout is invalid")
         self._store = store
+        self._principals = principals
         self._instances = instances
         self._runs_factory = runs_factory
         self._body_factory = body_factory
@@ -168,6 +173,12 @@ class LocalRunCapsuleExecutor:
             raise RunCapsuleExecutionError("Agency bundle is invalid")
         if type(prompt) is not str or not prompt.strip():
             raise RunCapsuleExecutionError("Run Capsule prompt is invalid")
+        try:
+            self._principals.require_current(spec.principal)
+        except PrincipalError as error:
+            raise RunCapsuleExecutionError(
+                "Run Capsule principal is not current"
+            ) from error
         record, created = self._store.admit(spec)
         if not created:
             return self.recover(spec=spec, agency_bundle=agency_bundle)

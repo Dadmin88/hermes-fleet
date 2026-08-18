@@ -26,6 +26,14 @@ from hermes_fleet.hermes_runs import (
 from hermes_fleet.host_action_broker import HostActionGrant
 from hermes_fleet.network_isolation import NETWORK_NONE, NetworkGrant
 from hermes_fleet.oci_backend import DockerWorkshopBackend
+from hermes_fleet.principal_identity import (
+    PRINCIPAL_OWNER,
+    SOURCE_LOCAL_PEER,
+    PrincipalBinding,
+    PrincipalDefinition,
+    PrincipalReference,
+    PrincipalRegistry,
+)
 from hermes_fleet.profile_inventory import _profile_content_digest
 from hermes_fleet.recipes import ResolvedRecipe
 from hermes_fleet.run_capsule import (
@@ -45,6 +53,21 @@ HASH_2 = "sha256:" + "2" * 64
 HASH_3 = "sha256:" + "3" * 64
 HASH_5 = "sha256:" + "5" * 64
 HASH_6 = "sha256:" + "6" * 64
+PRINCIPAL_DEFINITION = PrincipalDefinition(
+    kind=PRINCIPAL_OWNER,
+    subject="node-test:uid:1000",
+    scope={"owner": "node-test:uid:1000"},
+)
+PRINCIPAL_BINDING = PrincipalBinding(
+    source=SOURCE_LOCAL_PEER,
+    evidence={"machine_id": "node-test", "uid": 1000},
+)
+PRINCIPAL = PrincipalReference(
+    principal_id=PRINCIPAL_DEFINITION.principal_id,
+    kind=PRINCIPAL_OWNER,
+    generation=1,
+    binding_hash=PRINCIPAL_BINDING.content_hash,
+)
 IMAGE = "debian@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258"
 TARGET = {"source": "local", "node_id": "node-test", "generation": 1}
 TARGET_DIGEST = (
@@ -161,7 +184,7 @@ def make_spec(
         execution_id=execution_id,
         idempotency_digest=HASH_3,
         agent_instance_id=agent_id,
-        principal_id="principal-local-test",
+        principal=PRINCIPAL,
         recipe_hash=resolved.recipe_hash,
         resolved_recipe_hash=resolved.content_hash,
         recipe_compiler_version="fleet.recipe-direct.v1",
@@ -310,6 +333,7 @@ def harness(
     host_broker_grants: tuple[HostActionGrant, ...] = (),
     include_artifact_persister: bool = False,
     include_revoker: bool = True,
+    principal_revoked: bool = False,
 ):
     events: list[str] = []
     bundle = bundle_agency_profile(agency_package(tmp_path))
@@ -333,6 +357,11 @@ def harness(
     )
     runs = FakeRuns(mode=mode, events=events)
     store = RunCapsuleStore(tmp_path / "capsules.sqlite", now_ms=lambda: 1000)
+    principals = PrincipalRegistry(tmp_path / "principals.sqlite", now_ms=lambda: 1000)
+    principal_record, _ = principals.ensure(PRINCIPAL_DEFINITION, PRINCIPAL_BINDING)
+    assert principal_record.reference == spec.principal
+    if principal_revoked:
+        principals.revoke(principal_record.reference)
     releases: list[str] = []
 
     def learning(agent, record, evidence):
@@ -355,6 +384,7 @@ def harness(
 
     executor = LocalRunCapsuleExecutor(
         store=store,
+        principals=principals,
         instances=service,
         runs_factory=lambda _profile: runs,
         body_factory=lambda _spec: body,
@@ -376,6 +406,31 @@ def harness(
         events,
         releases,
     )
+
+
+def test_revoked_principal_blocks_initial_admission_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        events,
+        _releases,
+    ) = harness(tmp_path, principal_revoked=True)
+
+    with pytest.raises(RunCapsuleExecutionError, match="principal is not current"):
+        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+
+    assert store.get(spec.execution_id) is None
+    assert fake.ensure_calls == 0
+    assert runs.start_calls == 0
+    assert events == []
 
 
 def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(

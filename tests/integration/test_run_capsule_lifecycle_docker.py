@@ -17,6 +17,14 @@ from hermes_fleet.backend_capabilities import BackendCapabilities
 from hermes_fleet.execution_backend import ExecutionPlan
 from hermes_fleet.hermes_runs import HermesRunResult
 from hermes_fleet.network_isolation import NETWORK_NONE, NetworkGrant
+from hermes_fleet.principal_identity import (
+    PRINCIPAL_OWNER,
+    SOURCE_LOCAL_PEER,
+    PrincipalBinding,
+    PrincipalDefinition,
+    PrincipalReference,
+    PrincipalRegistry,
+)
 from hermes_fleet.profile_inventory import _profile_content_digest
 from hermes_fleet.recipes import ResolvedRecipe
 from hermes_fleet.run_capsule import (
@@ -32,6 +40,21 @@ BASE_IMAGE = (
 AUTHORITY = "sha256:" + "8" * 64
 IDEMPOTENCY = "sha256:" + "9" * 64
 PROVENANCE = "sha256:" + "7" * 64
+PRINCIPAL_DEFINITION = PrincipalDefinition(
+    kind=PRINCIPAL_OWNER,
+    subject="phase9-docker:uid:1000",
+    scope={"owner": "phase9-docker:uid:1000"},
+)
+PRINCIPAL_BINDING = PrincipalBinding(
+    source=SOURCE_LOCAL_PEER,
+    evidence={"machine_id": "phase9-docker", "uid": 1000},
+)
+PRINCIPAL = PrincipalReference(
+    principal_id=PRINCIPAL_DEFINITION.principal_id,
+    kind=PRINCIPAL_OWNER,
+    generation=1,
+    binding_hash=PRINCIPAL_BINDING.content_hash,
+)
 TARGET = {"source": "local", "node_id": "phase8-docker", "generation": 1}
 TARGET_DIGEST = (
     "sha256:"
@@ -204,7 +227,7 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
         execution_id=execution_id,
         idempotency_digest=IDEMPOTENCY,
         agent_instance_id=agent_id,
-        principal_id="principal-phase8-local",
+        principal=PRINCIPAL,
         recipe_hash=resolved.recipe_hash,
         resolved_recipe_hash=resolved.content_hash,
         recipe_compiler_version="fleet.recipe-direct.v1",
@@ -233,6 +256,9 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
     )
     store_path = tmp_path / "capsules.sqlite"
     store = RunCapsuleStore(store_path)
+    principals = PrincipalRegistry(tmp_path / "principals.sqlite")
+    principal_record, _ = principals.ensure(PRINCIPAL_DEFINITION, PRINCIPAL_BINDING)
+    assert principal_record.reference == spec.principal
     runs = _Runs()
     body = DockerRunCapsuleBody(
         capabilities=caps,
@@ -242,6 +268,7 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
     released: list[str] = []
     executor = LocalRunCapsuleExecutor(
         store=store,
+        principals=principals,
         instances=manager,
         runs_factory=lambda _profile: runs,
         body_factory=lambda _spec: body,
