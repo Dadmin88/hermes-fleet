@@ -1,6 +1,6 @@
 # Hermes Fleet vNext Phase 8A acceptance: Workflow → Recipe compilation and first-run discovery
 
-Status: **IN PROGRESS — implementation pending PR/main CI**
+Status: **COMPLETE**
 
 Phase 8A connects Fleet's existing durable Workflow Library/Canvas to the vNext
 Recipe and disposable-body architecture without turning editor state into
@@ -284,11 +284,31 @@ Current local reconciliation proof before PR:
 - direct `rustfmt --check` on all changed Rust files: PASS;
 - public-hygiene scan: PASS.
 
-Rust domain, state and control v2 tests are added, but local Cargo execution is
-intentionally blocked by the repository's external-build guard because
-`/media/kyle/External SSD` is not mounted. That guard is not bypassed; GitHub CI
-is the required Rust compile/test proof for this phase unless the external build
-volume becomes available.
+Rust domain, state and control v2 tests were intentionally left to CI because
+local Cargo execution was blocked by the repository's external-build guard while
+`/media/kyle/External SSD` was not mounted. That guard was not bypassed.
+
+PR **#144** then supplied the missing cross-platform/build proof. The first
+implementation head `7af9f5ee4fbc33e19687affd6dd5f981c2eab685` proved Rust, Nodescale/readiness
+and Python 3.13 green, but Python 3.11 legitimately failed during collection
+because immutable `MappingProxyType` defaults are rejected by Python 3.11
+dataclasses. The fix was committed forward without rewriting history.
+
+Repaired implementation head `c443fccc17764fb6793fae70c47760b63701413e`
+passed CI run `32101827670` completely:
+
+- Rust workspace compatibility: PASS, including Workflow v2 domain/state/control
+  tests and authenticated v2 Recipe revision persistence;
+- Real Nodescale and readiness proofs: PASS;
+- Quality Python 3.11: PASS;
+- Quality Python 3.13: PASS;
+- Hermes plugin clean-install smoke: PASS;
+- clean-install complete Fleet suite: **922 passed, 12 skipped**.
+
+The closure-status commit intentionally changes the PR head after that proof.
+Per repository policy, fresh CI must pass on the new exact head before merge,
+and the resulting Fleet `main` merge commit must then pass its push CI. The
+`COMPLETE` label is not itself closure evidence.
 
 ## Closure gates
 
