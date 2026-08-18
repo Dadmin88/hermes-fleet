@@ -132,7 +132,7 @@ function isPlainRecord(value) {
   return prototype === Object.prototype || prototype === null
 }
 
-const CONFIGURATION_PROPERTY_LIMIT = 32
+const CONFIGURATION_PROPERTY_LIMIT = 48
 const CONFIGURATION_ENUM_LIMIT = 32
 const CONFIGURATION_STRING_LIMIT = 4096
 const CONTRIBUTION_PORT_LIMIT = 16
@@ -319,6 +319,52 @@ const EDITOR_NODE_TYPE_DEFINITIONS = [
   defineFleetNodeType('run-profile', 'Run Profile', 'hermes-action', 'account', {
     inputs: [PORTS.controlIn, PORTS.machineIn, PORTS.dataIn], outputs: [PORTS.success, PORTS.result, PORTS.error]
   }),
+  defineFleetNodeType('recipe-step', 'Recipe Step', 'hermes-action', 'package', {
+    inputs: [PORTS.controlIn, PORTS.machineIn, PORTS.dataIn],
+    outputs: [PORTS.success, PORTS.result, PORTS.error],
+    runtime: 'recipe',
+    configurationSchema: configurationSchema({
+      agent_name: { type: 'string' },
+      agent_version: { type: 'string' },
+      cpu_min_millis: { type: 'number', minimum: 1 },
+      cpu_requested_millis: { type: 'number', minimum: 1 },
+      cpu_limit_millis: { type: 'number', minimum: 1 },
+      memory_min_bytes: { type: 'number', minimum: 1 },
+      memory_requested_bytes: { type: 'number', minimum: 1 },
+      memory_limit_bytes: { type: 'number', minimum: 1 },
+      swap_policy: { type: 'string', enum: ['disabled', 'bounded', 'backend-policy'] },
+      pids_limit: { type: 'number', minimum: 1 },
+      gpu_mode: { type: 'string', enum: ['none', 'optional', 'required'] },
+      gpu_count: { type: 'number', minimum: 0 },
+      gpu_vendor: { type: 'string' },
+      gpu_class: { type: 'string' },
+      gpu_min_vram_bytes: { type: 'number', minimum: 1 },
+      gpu_features: { type: 'string' },
+      operating_systems: { type: 'string' },
+      architectures: { type: 'string' },
+      runtime_image: { type: 'string' },
+      toolchains: { type: 'string' },
+      workspace_bytes: { type: 'number', minimum: 1 },
+      tmp_bytes: { type: 'number', minimum: 1 },
+      home_bytes: { type: 'number', minimum: 1 },
+      inputs: { type: 'string' },
+      outputs: { type: 'string' },
+      artifacts: { type: 'string' },
+      filesystem_mode: { type: 'string', enum: ['read-only', 'project-write'] },
+      filesystem_paths: { type: 'string' },
+      network_mode: { type: 'string', enum: ['none', 'provider-only', 'project-allowlist', 'internet-approved'] },
+      dns: { type: 'string' },
+      network_allowlist: { type: 'string' },
+      toolsets: { type: 'string' },
+      secret_requirements: { type: 'string' },
+      host_operations: { type: 'string' },
+      deadline_ms: { type: 'number', minimum: 1 },
+      max_iterations: { type: 'number', minimum: 1, maximum: 32 },
+      placement_capabilities: { type: 'string' },
+      placement_labels: { type: 'string' },
+      discovery_enabled: { type: 'boolean' }
+    })
+  }),
   defineFleetNodeType('delegate', 'Delegate', 'hermes-action', 'organization', {
     inputs: [PORTS.controlIn, PORTS.dataIn], outputs: [PORTS.success, PORTS.result, PORTS.error]
   }),
@@ -487,7 +533,8 @@ export function createFleetNodeRegistry(contributions = [], options = {}) {
   return registry
 }
 
-const WORKFLOW_SCHEMA = 'fleet.workflow-editor.v1'
+const WORKFLOW_SCHEMA_V1 = 'fleet.workflow-editor.v1'
+const WORKFLOW_SCHEMA = 'fleet.workflow-editor.v2'
 const WORKFLOW_CLIPBOARD_SCHEMA = 'fleet.workflow-clipboard.v1'
 
 function cloneJson(value) {
@@ -558,7 +605,7 @@ function workflowNodeFromInput(input) {
   if (
     !isPlainRecord(input) ||
     !descriptor ||
-    descriptor.runtime !== 'unavailable' ||
+    !['unavailable', 'recipe'].includes(descriptor.runtime) ||
     !validWorkflowId(input.id) ||
     !validWorkflowPosition(input.position) ||
     Object.keys(input).some(key => !allowedKeys.includes(key)) ||
@@ -976,7 +1023,7 @@ export function deserializeWorkflow(value) {
   const parsed = typeof value === 'string' ? JSON.parse(value) : cloneJson(value)
   if (
     !hasExactKeys(parsed, ['schema', 'id', 'name', 'nodes', 'connections', 'metadata']) ||
-    parsed.schema !== WORKFLOW_SCHEMA ||
+    ![WORKFLOW_SCHEMA_V1, WORKFLOW_SCHEMA].includes(parsed.schema) ||
     !validWorkflowId(parsed.id) ||
     typeof parsed.name !== 'string' ||
     !hasExactKeys(parsed.metadata, ['executionAvailable']) ||

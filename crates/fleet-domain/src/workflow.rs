@@ -7,7 +7,10 @@ use serde::{
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-const WORKFLOW_SCHEMA: &str = "fleet.workflow-editor.v1";
+const WORKFLOW_SCHEMA_V1: &str = "fleet.workflow-editor.v1";
+const WORKFLOW_SCHEMA_V2: &str = "fleet.workflow-editor.v2";
+const RECIPE_STEP_TYPE: &str = "recipe-step";
+const RECIPE_STEP_RUNTIME: &str = "recipe";
 const WORKFLOW_LIMIT: usize = 256;
 const POSITION_LIMIT: f64 = 100_000.0;
 const MAX_DOCUMENT_BYTES: usize = 1_900_000;
@@ -127,7 +130,7 @@ impl WorkflowDocument {
     }
 
     pub fn validate(&self) -> Result<(), WorkflowValidationError> {
-        if self.schema != WORKFLOW_SCHEMA {
+        if self.schema != WORKFLOW_SCHEMA_V1 && self.schema != WORKFLOW_SCHEMA_V2 {
             return Err(WorkflowValidationError::UnsupportedSchema);
         }
         if !valid_id(&self.id) {
@@ -161,7 +164,7 @@ impl WorkflowDocument {
                 || !node.position.y.is_finite()
                 || node.position.x.abs() > POSITION_LIMIT
                 || node.position.y.abs() > POSITION_LIMIT
-                || node.runtime != "unavailable"
+                || !valid_node_runtime(&self.schema, node)
                 || !bounded_json(&node.configuration)
                 || !valid_target(node.target.as_ref())
             {
@@ -199,6 +202,17 @@ impl WorkflowDocument {
             return Err(WorkflowValidationError::MalformedDocument);
         }
         Ok(())
+    }
+}
+
+fn valid_node_runtime(schema: &str, node: &WorkflowNode) -> bool {
+    match schema {
+        WORKFLOW_SCHEMA_V1 => node.runtime == "unavailable",
+        WORKFLOW_SCHEMA_V2 if node.block_type == RECIPE_STEP_TYPE => {
+            node.runtime == RECIPE_STEP_RUNTIME
+        }
+        WORKFLOW_SCHEMA_V2 => node.runtime == "unavailable",
+        _ => false,
     }
 }
 

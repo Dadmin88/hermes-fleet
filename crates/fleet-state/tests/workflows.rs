@@ -29,6 +29,36 @@ fn document_with_id(id: &str, name: &str) -> WorkflowDocument {
     .unwrap()
 }
 
+fn recipe_document() -> WorkflowDocument {
+    WorkflowDocument::parse_json(
+        &serde_json::json!({
+            "schema": "fleet.workflow-editor.v2",
+            "id": "workflow-recipe-v2",
+            "name": "Compile recipe",
+            "nodes": [{
+                "id": "build",
+                "type": "recipe-step",
+                "title": "Build",
+                "position": {"x": 10, "y": 20},
+                "configuration": {
+                    "agent_name": "developer",
+                    "agent_version": ">=1,<2",
+                    "cpu_requested_millis": 1000,
+                    "memory_requested_bytes": 1073741824,
+                    "gpu_mode": "required",
+                    "gpu_count": 1
+                },
+                "target": null,
+                "runtime": "recipe"
+            }],
+            "connections": [],
+            "metadata": {"executionAvailable": false}
+        })
+        .to_string(),
+    )
+    .unwrap()
+}
+
 fn unchecked_executable_document() -> WorkflowDocument {
     serde_json::from_value(serde_json::json!({
         "schema": "fleet.workflow-editor.v1",
@@ -149,6 +179,32 @@ fn active_workflow_definition_count_is_owner_bounded() {
         store.create_workflow(document_with_id("workflow-overflow", "Overflow"), 300),
         Err(StateError::InvalidTransition(_))
     ));
+}
+
+#[test]
+fn workflow_v2_recipe_step_round_trips_as_backend_owned_non_executable_revision() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("fleet.sqlite3");
+    let store = FleetStateStore::open(&path).unwrap();
+    let document = recipe_document();
+    let expected_hash = document.content_hash();
+
+    let created = store.create_workflow(document, 1_000).unwrap();
+    assert_eq!(created.revision.content_hash, expected_hash);
+    assert!(!created.revision.document.execution_available());
+    drop(store);
+
+    let reopened = FleetStateStore::open(&path).unwrap();
+    let revision = reopened
+        .read_workflow_version("workflow-recipe-v2", 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(revision.content_hash, expected_hash);
+    assert!(!revision.document.execution_available());
+    let canonical = revision.document.canonical_json().unwrap();
+    assert!(canonical.contains("fleet.workflow-editor.v2"));
+    assert!(canonical.contains("\"type\":\"recipe-step\""));
+    assert!(canonical.contains("\"runtime\":\"recipe\""));
 }
 
 #[test]
