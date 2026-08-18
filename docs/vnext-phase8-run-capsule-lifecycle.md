@@ -1,6 +1,6 @@
 # Hermes Fleet vNext Phase 8 acceptance: Run Capsule lifecycle
 
-Status: **IN PROGRESS — current-master-plan reconciliation pending PR/main CI**
+Status: **COMPLETE**
 
 Phase 8 composes the already-closed Phase 2–7 primitives into one temporary,
 Fleet-owned Run Capsule lifecycle around a persistent Hermes Agent Instance.
@@ -211,24 +211,28 @@ from ResolvedRecipe identity and added Workflow/compiler provenance binding. It
 also found an uncovered crash window where body creation could be indeterminate
 before the container ID reached durable Capsule state.
 
-Current master-plan reconciliation proof before PR:
+Current master-plan reconciliation proof:
 
 - focused Phase 8 store/executor/live-Docker suite: **26 passed**;
 - logical Recipe hash and ResolvedRecipe hash are independently bound and mismatch-tested;
 - optional Workflow ID/revision/hash/step binding round-trips through the durable SQLite store and partial binding fails closed;
 - compiler/source version plus requirement-provenance digest survive canonical persistence and replay fencing;
-- legacy/incomplete persisted Capsule shape fails closed;
+- `fleet.run-capsule-spec.v2` is exact and versioned; legacy/incomplete/unknown persisted Capsule shapes fail closed;
 - indeterminate body-creation recovery rediscovers and destroys only the exact plan-owned body, with no second `ensure()` and no Hermes submission;
 - final full Fleet Python suite: **906 passed, 1 skipped**;
 - full Ruff: PASS;
 - `git diff --check`: PASS;
-- public-hygiene scan: PASS.
+- public-hygiene scan: PASS;
+- Fleet PR **#143** first exact implementation head `8bd587bd1b417b94b2d2ffca6e62cf7f5e1d8b35`: all five CI jobs PASS in run `32096597660`;
+- PR #143 clean-install smoke on that head: Phase 7 installed runtime-seam probe PASS and complete Fleet suite **896 passed, 11 skipped**.
 
 No Hermes Agent code change is required in Phase 8. The executor consumes the
 canonically merged Phase 7 native run-scoped contract from
 `Dadmin88/hermes-agent:main` merge `04be624ceb3ebadca0d514f4276a146cdc7296e9`.
-Phase 8 is not canonically closed until its exact Fleet PR head and the resulting
-Fleet `main` merge commit both pass required CI.
+The closure-status commit intentionally changes PR #143 after the first green
+implementation head. Per repository policy, fresh CI must pass on that new exact
+head before merge, and the resulting Fleet `main` merge commit must then pass its
+push CI. The `COMPLETE` label is not itself closure evidence.
 
 ## Explicit later-phase ownership
 
