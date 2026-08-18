@@ -168,10 +168,10 @@ jobs:
       - name: Check out verified Hermes source
         run: |
           git init --quiet "$RUNNER_TEMP/hermes-agent"
-          git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git
-          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin a991dfc25daf68994c21d6adcdfbafb1b3dc23cf
+          git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/Dadmin88/hermes-agent.git
+          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin 04be624ceb3ebadca0d514f4276a146cdc7296e9
           git -C "$RUNNER_TEMP/hermes-agent" checkout --quiet --detach FETCH_HEAD
-          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "a991dfc25daf68994c21d6adcdfbafb1b3dc23cf"
+          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "04be624ceb3ebadca0d514f4276a146cdc7296e9"
 
       - name: Install verified Hermes and Fleet test dependencies
         run: |
@@ -181,6 +181,31 @@ jobs:
 
       - name: Verify Hermes CLI
         run: hermes --help >/dev/null
+
+      - name: Verify Hermes Fleet runtime seam
+        run: |
+          python - <<'PY'
+          from agent.fleet_runtime_scope import (
+              FleetRuntimeBinding,
+              fleet_runtime_scope,
+              get_fleet_runtime,
+          )
+
+          payload = {
+              "version": "fleet-run-v1",
+              "container_id": "a" * 64,
+              "plan_fingerprint": "sha256:" + "b" * 64,
+              "image": "example.invalid/fleet-workshop@sha256:" + "c" * 64,
+              "toolsets": ["fleet-terminal"],
+              "max_iterations": 8,
+          }
+          binding = FleetRuntimeBinding.from_request(payload)
+          assert binding.to_request() == payload
+          assert get_fleet_runtime() is None
+          with fleet_runtime_scope(binding):
+              assert get_fleet_runtime() is binding
+          assert get_fleet_runtime() is None
+          PY
 
       - name: Run complete Fleet test suite
         run: python -m pytest -q
