@@ -1,6 +1,6 @@
 # Hermes Fleet vNext Phase 7 acceptance: run-scoped Hermes execution overrides
 
-Status: **IN PROGRESS — canonical Fleet reconciliation pending**
+Status: **COMPLETE**
 
 Phase 7 adds the native Hermes seam for temporary Fleet execution state. The durable Agent Instance remains a normal persistent Hermes profile. The exact disposable body binding exists only for one `/v1/runs` task through a `ContextVar`; it is never written into the profile, process-global environment, or shared terminal configuration.
 
@@ -160,9 +160,11 @@ Fleet Phase 7 reconciliation proof before PR:
 - Hermes Runs client unit suite: **27 passed**;
 - full Fleet Python suite with the verified Hermes environment first on `PATH`: **900 passed, 1 skipped**;
 - installed `FleetRuntimeBinding` parser/ContextVar seam probe: `PHASE7_FLEET_RUNTIME_SEAM_OK`;
-- clean-install CI is updated to fetch the exact canonical fork merge SHA and execute the runtime-seam probe before the complete Fleet suite.
+- clean-install CI is updated to fetch the exact canonical fork merge SHA and execute the runtime-seam probe before the complete Fleet suite;
+- Fleet reconciliation PR **#142** first exact head `80765beee49d6b3669f8557b3230882bc45f6826`: all five CI jobs PASS;
+- PR #142 clean-install smoke on that head: runtime-seam step PASS and complete Fleet suite **890 passed, 11 skipped** in a fresh Agent/Fleet install.
 
-The remaining Phase 7 closure gate is the Fleet reconciliation PR and resulting Fleet `main` CI on its exact merge head.
+The closure-status commit intentionally changes the PR head after that proof. Per repository policy, PR #142 must pass fresh CI on the new exact head before merge, and the resulting Fleet `main` merge commit must then pass its push CI. The `COMPLETE` label is not itself closure evidence.
 
 ## Explicit non-goals retained for later phases
 
