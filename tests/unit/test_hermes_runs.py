@@ -24,6 +24,7 @@ class _RunsAPI:
         self.run_sensitive_interception = True
         self.run_fleet_vault_scope = True
         self.run_fleet_skill_learning = True
+        self.run_fleet_skill_quarantine = True
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -119,6 +120,9 @@ class _RunsAPI:
                                 "run_fleet_vault_scope": api.run_fleet_vault_scope,
                                 "run_fleet_skill_learning": (
                                     api.run_fleet_skill_learning
+                                ),
+                                "run_fleet_skill_quarantine": (
+                                    api.run_fleet_skill_quarantine
                                 ),
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
@@ -272,6 +276,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_sensitive_interception": True,
         "run_fleet_vault_scope": True,
         "run_fleet_skill_learning": True,
+        "run_fleet_skill_quarantine": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
         "run_command_evidence": True,
@@ -505,6 +510,23 @@ def test_fleet_skill_learning_requires_capability_and_exact_payload() -> None:
     with api.serve() as endpoint:
         client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
         with pytest.raises(HermesRunError, match="run_fleet_skill_learning"):
+            client.start(
+                prompt="blocked",
+                fleet_runtime=runtime,
+                fleet_memory=memory,
+                fleet_context=context,
+                fleet_skill_learning=learning,
+            )
+    assert [request[0:2] for request in api.requests] == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+    ]
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    api.run_fleet_skill_quarantine = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        with pytest.raises(HermesRunError, match="run_fleet_skill_quarantine"):
             client.start(
                 prompt="blocked",
                 fleet_runtime=runtime,
