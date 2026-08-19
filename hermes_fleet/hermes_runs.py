@@ -17,6 +17,12 @@ _ACTIVE_STATES = frozenset({"queued", "running", "stopping"})
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MEMORY_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,511}$")
+_MEMORY_SCOPE_KINDS = frozenset(
+    {"principal", "project", "network", "owner", "agent_instance"}
+)
+_PRINCIPAL_KINDS = frozenset({"owner", "project", "network", "device", "service"})
+_MAX_MEMORY_READ_SCOPES = 16
 _IMAGE_RE = re.compile(
     r"^(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9./_-]{0,254}@sha256:[0-9a-f]{64})$"
 )
@@ -85,6 +91,112 @@ class HermesFleetRuntimeBinding:
             "image": self.image,
             "toolsets": list(self.toolsets),
             "max_iterations": self.max_iterations,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HermesMemoryScopeRef:
+    """One exact scope understood by Hermes native Fleet memory."""
+
+    kind: str
+    scope_id: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in _MEMORY_SCOPE_KINDS:
+            raise ValueError("Hermes memory scope kind is invalid")
+        if self.kind in {"principal", "agent_instance"}:
+            if (
+                type(self.scope_id) is not str
+                or _HASH_RE.fullmatch(self.scope_id) is None
+            ):
+                raise ValueError("Hermes memory scope ID is invalid")
+        elif (
+            type(self.scope_id) is not str
+            or _MEMORY_IDENTIFIER_RE.fullmatch(self.scope_id) is None
+        ):
+            raise ValueError("Hermes memory scope ID is invalid")
+
+    def to_request(self) -> dict[str, str]:
+        return {"kind": self.kind, "scope_id": self.scope_id}
+
+
+@dataclass(frozen=True, slots=True)
+class HermesFleetMemoryBinding:
+    """Exact Fleet memory authorization sent to one Hermes run or write."""
+
+    principal_id: str
+    principal_kind: str
+    principal_generation: int
+    principal_binding_hash: str
+    agent_instance_id: str
+    source_run: str
+    read_scopes: tuple[HermesMemoryScopeRef, ...]
+    write_scope: HermesMemoryScopeRef
+    retention_until_ms: int | None = None
+    version: str = "fleet-memory-v1"
+
+    def __post_init__(self) -> None:
+        if self.version != "fleet-memory-v1":
+            raise ValueError("Hermes Fleet memory version is unsupported")
+        for value, label in (
+            (self.principal_id, "principal ID"),
+            (self.principal_binding_hash, "principal binding hash"),
+            (self.agent_instance_id, "Agent Instance ID"),
+        ):
+            if type(value) is not str or _HASH_RE.fullmatch(value) is None:
+                raise ValueError(f"Hermes Fleet memory {label} is invalid")
+        if self.principal_kind not in _PRINCIPAL_KINDS:
+            raise ValueError("Hermes Fleet memory principal kind is invalid")
+        if (
+            isinstance(self.principal_generation, bool)
+            or type(self.principal_generation) is not int
+            or self.principal_generation < 1
+        ):
+            raise ValueError("Hermes Fleet memory principal generation is invalid")
+        if (
+            type(self.source_run) is not str
+            or _MEMORY_IDENTIFIER_RE.fullmatch(self.source_run) is None
+        ):
+            raise ValueError("Hermes Fleet memory source run is invalid")
+        if type(self.read_scopes) not in {tuple, list}:
+            raise ValueError("Hermes Fleet memory read scopes are invalid")
+        read_scopes = tuple(self.read_scopes)
+        if (
+            not 1 <= len(read_scopes) <= _MAX_MEMORY_READ_SCOPES
+            or any(type(scope) is not HermesMemoryScopeRef for scope in read_scopes)
+            or len(set(read_scopes)) != len(read_scopes)
+        ):
+            raise ValueError("Hermes Fleet memory read scopes are invalid")
+        private_scope = HermesMemoryScopeRef("principal", self.principal_id)
+        if private_scope not in read_scopes:
+            raise ValueError("Hermes Fleet memory must include principal read scope")
+        if (
+            type(self.write_scope) is not HermesMemoryScopeRef
+            or self.write_scope != private_scope
+        ):
+            raise ValueError("Hermes Fleet memory writes must remain principal-private")
+        if self.retention_until_ms is not None and (
+            isinstance(self.retention_until_ms, bool)
+            or type(self.retention_until_ms) is not int
+            or self.retention_until_ms < 1
+        ):
+            raise ValueError("Hermes Fleet memory retention deadline is invalid")
+        object.__setattr__(self, "read_scopes", read_scopes)
+
+    def to_request(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "principal": {
+                "principal_id": self.principal_id,
+                "kind": self.principal_kind,
+                "generation": self.principal_generation,
+                "binding_hash": self.principal_binding_hash,
+            },
+            "agent_instance_id": self.agent_instance_id,
+            "source_run": self.source_run,
+            "read_scopes": [scope.to_request() for scope in self.read_scopes],
+            "write_scope": self.write_scope.to_request(),
+            "retention_until_ms": self.retention_until_ms,
         }
 
 
@@ -162,6 +274,8 @@ class HermesRunsClient:
             "run_stop": False,
             "run_finalize": False,
             "run_fleet_runtime": False,
+            "run_fleet_memory_scope": False,
+            "fleet_scoped_memory_write": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -208,6 +322,10 @@ class HermesRunsClient:
             "run_stop": features.get("run_stop") is True,
             "run_finalize": features.get("run_finalize") is True,
             "run_fleet_runtime": features.get("run_fleet_runtime") is True,
+            "run_fleet_memory_scope": features.get("run_fleet_memory_scope") is True,
+            "fleet_scoped_memory_write": (
+                features.get("fleet_scoped_memory_write") is True
+            ),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
             "run_command_evidence": features.get("run_command_evidence") is True,
@@ -220,6 +338,7 @@ class HermesRunsClient:
         session_id: str | None = None,
         approval_budget: int | None = None,
         fleet_runtime: HermesFleetRuntimeBinding | None = None,
+        fleet_memory: HermesFleetMemoryBinding | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
         """Create exactly one run and return its server-generated ID."""
@@ -236,12 +355,22 @@ class HermesRunsClient:
             type(approval_budget) is not int or not 1 <= approval_budget <= 32
         ):
             raise ValueError("Hermes approval budget must be between 1 and 32")
+        if fleet_memory is not None and fleet_runtime is None:
+            raise ValueError("Hermes Fleet memory requires a Fleet runtime binding")
+        features: dict[str, object] | None = None
         if fleet_runtime is not None:
             if type(fleet_runtime) is not HermesFleetRuntimeBinding:
                 raise ValueError("Hermes Fleet runtime binding is invalid")
             features = self.health(timeout_seconds=timeout_seconds)
             if features.get("run_fleet_runtime") is not True:
                 raise HermesRunError("Hermes does not advertise run_fleet_runtime")
+        if fleet_memory is not None:
+            if type(fleet_memory) is not HermesFleetMemoryBinding:
+                raise ValueError("Hermes Fleet memory binding is invalid")
+            if features is None:
+                features = self.health(timeout_seconds=timeout_seconds)
+            if features.get("run_fleet_memory_scope") is not True:
+                raise HermesRunError("Hermes does not advertise run_fleet_memory_scope")
         request = {"input": prompt}
         if session_id is not None:
             request["session_id"] = session_id
@@ -249,6 +378,8 @@ class HermesRunsClient:
             request["approval_budget"] = approval_budget
         if fleet_runtime is not None:
             request["fleet_runtime"] = fleet_runtime.to_request()
+        if fleet_memory is not None:
+            request["fleet_memory"] = fleet_memory.to_request()
         try:
             status_code, document = self._request_json(
                 "POST",
@@ -264,6 +395,77 @@ class HermesRunsClient:
         if status_code != 202 or type(run_id) is not str or not run_id:
             raise HermesRunError("Hermes did not accept the Fleet run")
         return run_id
+
+    def write_scoped_memory(
+        self,
+        *,
+        fleet_memory: HermesFleetMemoryBinding,
+        target: str = "memory",
+        action: str | None = None,
+        content: str | None = None,
+        old_text: str | None = None,
+        operations: list[dict[str, object]] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        """Persist one explicitly Fleet-authorized mutation via Hermes native memory."""
+        if type(fleet_memory) is not HermesFleetMemoryBinding:
+            raise ValueError("Hermes Fleet memory binding is invalid")
+        if target not in {"memory", "user"}:
+            raise ValueError("Hermes Fleet memory target is invalid")
+        if operations is not None:
+            if (
+                type(operations) is not list
+                or action is not None
+                or content is not None
+                or old_text is not None
+            ):
+                raise ValueError("Hermes Fleet memory mutation shape is invalid")
+            if any(type(operation) is not dict for operation in operations):
+                raise ValueError("Hermes Fleet memory operations are invalid")
+        else:
+            if action not in {"add", "replace", "remove"}:
+                raise ValueError("Hermes Fleet memory action is invalid")
+            if action == "add" and type(content) is not str:
+                raise ValueError("Hermes Fleet memory add content is invalid")
+            if action == "replace" and (
+                type(old_text) is not str or type(content) is not str
+            ):
+                raise ValueError("Hermes Fleet memory replacement is invalid")
+            if action == "remove" and type(old_text) is not str:
+                raise ValueError("Hermes Fleet memory removal is invalid")
+
+        features = self.health(timeout_seconds=timeout_seconds)
+        if features.get("fleet_scoped_memory_write") is not True:
+            raise HermesRunError("Hermes does not advertise fleet_scoped_memory_write")
+
+        request: dict[str, object] = {
+            "fleet_memory": fleet_memory.to_request(),
+            "target": target,
+        }
+        if operations is not None:
+            request["operations"] = operations
+        else:
+            request["action"] = action
+            if content is not None:
+                request["content"] = content
+            if old_text is not None:
+                request["old_text"] = old_text
+
+        status_code, document = self._request_json(
+            "POST",
+            self._path("/v1/fleet/memory"),
+            request,
+            timeout_seconds=timeout_seconds,
+        )
+        result = document.get("result")
+        if (
+            status_code != 200
+            or document.get("object") != "hermes.api_server.fleet_memory_write"
+            or type(result) is not dict
+            or result.get("success") is not True
+        ):
+            raise HermesRunError("Hermes rejected the Fleet scoped memory write")
+        return result
 
     def wait(
         self,
