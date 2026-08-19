@@ -24,7 +24,12 @@ _MEMORY_SCOPE_KINDS = frozenset(
 _PRINCIPAL_KINDS = frozenset({"owner", "project", "network", "device", "service"})
 _MAX_MEMORY_READ_SCOPES = 16
 _MAX_RUNTIME_MATERIAL_HANDLES = 64
+_MAX_SKILL_LEARNING_ITEMS = 64
 _RUNTIME_MATERIAL_HANDLE_RE = re.compile(r"^hvh1_[A-Za-z0-9_-]{20,120}$")
+_SKILL_LEARNING_NETWORK_MODES = frozenset(
+    {"none", "provider-only", "project-allowlist", "explicitly-approved-internet"}
+)
+_SKILL_LEARNING_FS_MODES = frozenset({"read-only", "read-write"})
 _RUNTIME_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _RUNTIME_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _RUNTIME_BROKER_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
@@ -400,6 +405,211 @@ class HermesFleetVaultBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class HermesSkillFilesystemNeed:
+    project_id: str
+    relative_path: str
+    target: str
+    mode: str
+    max_bytes: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.project_id) is not str
+            or _MEMORY_IDENTIFIER_RE.fullmatch(self.project_id) is None
+        ):
+            raise ValueError("Hermes skill-learning filesystem project is invalid")
+        if (
+            type(self.relative_path) is not str
+            or not self.relative_path
+            or self.relative_path.startswith("/")
+            or ".." in self.relative_path.split("/")
+            or len(self.relative_path) > 1024
+        ):
+            raise ValueError(
+                "Hermes skill-learning filesystem relative path is invalid"
+            )
+        if (
+            type(self.target) is not str
+            or not self.target.startswith("/workspace/")
+            or ".." in self.target.split("/")
+            or len(self.target) > 1024
+        ):
+            raise ValueError("Hermes skill-learning filesystem target is invalid")
+        if type(self.mode) is not str or self.mode not in _SKILL_LEARNING_FS_MODES:
+            raise ValueError("Hermes skill-learning filesystem mode is invalid")
+        if (
+            isinstance(self.max_bytes, bool)
+            or type(self.max_bytes) is not int
+            or not 0 < self.max_bytes <= 1 << 40
+        ):
+            raise ValueError("Hermes skill-learning filesystem byte bound is invalid")
+
+    def to_request(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "relative_path": self.relative_path,
+            "target": self.target,
+            "mode": self.mode,
+            "max_bytes": self.max_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HermesFleetSkillLearningBinding:
+    """Private quarantined skill-learning envelope for one exact Fleet run."""
+
+    principal_id: str
+    principal_kind: str
+    principal_generation: int
+    principal_binding_hash: str
+    agent_instance_id: str
+    source_run: str
+    run_authority_hash: str
+    recipe_hash: str
+    resolved_recipe_hash: str
+    plan_fingerprint: str
+    capabilities_hash: str
+    target_digest: str
+    toolsets: tuple[str, ...]
+    filesystem_needs: tuple[HermesSkillFilesystemNeed, ...]
+    network_mode: str
+    network_policy_hash: str
+    secret_need_fingerprints: tuple[str, ...]
+    version: str = "fleet-skill-learning-v1"
+    scope_kind: str = "principal"
+    scope_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.version != "fleet-skill-learning-v1":
+            raise ValueError("Hermes Fleet skill-learning version is unsupported")
+        for value, label in (
+            (self.principal_id, "principal ID"),
+            (self.principal_binding_hash, "principal binding hash"),
+            (self.agent_instance_id, "Agent Instance ID"),
+            (self.run_authority_hash, "RunAuthority hash"),
+            (self.recipe_hash, "Recipe hash"),
+            (self.resolved_recipe_hash, "ResolvedRecipe hash"),
+            (self.plan_fingerprint, "plan fingerprint"),
+            (self.capabilities_hash, "capabilities hash"),
+            (self.target_digest, "target digest"),
+            (self.network_policy_hash, "network policy hash"),
+        ):
+            if type(value) is not str or _HASH_RE.fullmatch(value) is None:
+                raise ValueError(f"Hermes Fleet skill-learning {label} is invalid")
+        if (
+            type(self.principal_kind) is not str
+            or self.principal_kind not in _PRINCIPAL_KINDS
+        ):
+            raise ValueError("Hermes Fleet skill-learning principal kind is invalid")
+        if (
+            isinstance(self.principal_generation, bool)
+            or type(self.principal_generation) is not int
+            or self.principal_generation < 1
+        ):
+            raise ValueError(
+                "Hermes Fleet skill-learning principal generation is invalid"
+            )
+        if (
+            type(self.source_run) is not str
+            or _MEMORY_IDENTIFIER_RE.fullmatch(self.source_run) is None
+        ):
+            raise ValueError("Hermes Fleet skill-learning source run is invalid")
+        scope_id = self.principal_id if self.scope_id is None else self.scope_id
+        if self.scope_kind != "principal" or scope_id != self.principal_id:
+            raise ValueError(
+                "Phase 15 Hermes skill-learning scope must be principal-private"
+            )
+        object.__setattr__(self, "scope_id", scope_id)
+        if type(self.toolsets) not in {tuple, list}:
+            raise ValueError("Hermes Fleet skill-learning toolsets are invalid")
+        toolsets = tuple(self.toolsets)
+        if (
+            len(toolsets) > _MAX_SKILL_LEARNING_ITEMS
+            or any(
+                type(item) is not str or _MEMORY_IDENTIFIER_RE.fullmatch(item) is None
+                for item in toolsets
+            )
+            or len(toolsets) != len(set(toolsets))
+        ):
+            raise ValueError("Hermes Fleet skill-learning toolsets are invalid")
+        object.__setattr__(self, "toolsets", tuple(sorted(toolsets)))
+        if type(self.filesystem_needs) not in {tuple, list}:
+            raise ValueError("Hermes Fleet skill-learning filesystem needs are invalid")
+        filesystem = tuple(self.filesystem_needs)
+        if len(filesystem) > _MAX_SKILL_LEARNING_ITEMS or any(
+            type(item) is not HermesSkillFilesystemNeed for item in filesystem
+        ):
+            raise ValueError("Hermes Fleet skill-learning filesystem needs are invalid")
+        object.__setattr__(
+            self,
+            "filesystem_needs",
+            tuple(
+                sorted(
+                    filesystem,
+                    key=lambda item: (
+                        item.project_id,
+                        item.relative_path,
+                        item.target,
+                        item.mode,
+                        item.max_bytes,
+                    ),
+                )
+            ),
+        )
+        if (
+            type(self.network_mode) is not str
+            or self.network_mode not in _SKILL_LEARNING_NETWORK_MODES
+        ):
+            raise ValueError("Hermes Fleet skill-learning network mode is invalid")
+        if type(self.secret_need_fingerprints) not in {tuple, list}:
+            raise ValueError("Hermes Fleet skill-learning secret needs are invalid")
+        fingerprints = tuple(self.secret_need_fingerprints)
+        if (
+            len(fingerprints) > _MAX_SKILL_LEARNING_ITEMS
+            or any(
+                type(item) is not str or _HASH_RE.fullmatch(item) is None
+                for item in fingerprints
+            )
+            or len(fingerprints) != len(set(fingerprints))
+        ):
+            raise ValueError("Hermes Fleet skill-learning secret needs are invalid")
+        object.__setattr__(
+            self, "secret_need_fingerprints", tuple(sorted(fingerprints))
+        )
+
+    def to_request(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "principal": {
+                "principal_id": self.principal_id,
+                "kind": self.principal_kind,
+                "generation": self.principal_generation,
+                "binding_hash": self.principal_binding_hash,
+            },
+            "agent_instance_id": self.agent_instance_id,
+            "source_run": self.source_run,
+            "scope": {"kind": self.scope_kind, "scope_id": self.scope_id},
+            "run_authority_hash": self.run_authority_hash,
+            "provenance": {
+                "recipe_hash": self.recipe_hash,
+                "resolved_recipe_hash": self.resolved_recipe_hash,
+                "plan_fingerprint": self.plan_fingerprint,
+                "capabilities_hash": self.capabilities_hash,
+                "target_digest": self.target_digest,
+            },
+            "needs": {
+                "tools": list(self.toolsets),
+                "filesystem": [item.to_request() for item in self.filesystem_needs],
+                "network": {
+                    "mode": self.network_mode,
+                    "policy_hash": self.network_policy_hash,
+                },
+                "secret_fingerprints": list(self.secret_need_fingerprints),
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class HermesRunResult:
     """Terminal text returned by one authenticated Hermes run."""
 
@@ -478,6 +688,7 @@ class HermesRunsClient:
             "run_fleet_context_firewall": False,
             "run_sensitive_interception": False,
             "run_fleet_vault_scope": False,
+            "run_fleet_skill_learning": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -535,6 +746,9 @@ class HermesRunsClient:
                 features.get("run_sensitive_interception") is True
             ),
             "run_fleet_vault_scope": (features.get("run_fleet_vault_scope") is True),
+            "run_fleet_skill_learning": (
+                features.get("run_fleet_skill_learning") is True
+            ),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
             "run_command_evidence": features.get("run_command_evidence") is True,
@@ -550,6 +764,7 @@ class HermesRunsClient:
         fleet_memory: HermesFleetMemoryBinding | None = None,
         fleet_context: HermesFleetContextBinding | None = None,
         fleet_vault: HermesFleetVaultBinding | None = None,
+        fleet_skill_learning: HermesFleetSkillLearningBinding | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
         """Create exactly one run and return its server-generated ID."""
@@ -579,6 +794,13 @@ class HermesRunsClient:
         ):
             raise ValueError(
                 "Hermes Fleet Vault requires runtime, memory, and context bindings"
+            )
+        if fleet_skill_learning is not None and (
+            fleet_runtime is None or fleet_memory is None or fleet_context is None
+        ):
+            raise ValueError(
+                "Hermes Fleet skill learning requires runtime, memory, and "
+                "context bindings"
             )
         features: dict[str, object] | None = None
         if fleet_runtime is not None:
@@ -633,6 +855,34 @@ class HermesRunsClient:
                 raise ValueError(
                     "Hermes Fleet Vault identity does not match run/context"
                 )
+        if fleet_skill_learning is not None:
+            if type(fleet_skill_learning) is not HermesFleetSkillLearningBinding:
+                raise ValueError("Hermes Fleet skill-learning binding is invalid")
+            if features is None:
+                features = self.health(timeout_seconds=timeout_seconds)
+            if features.get("run_fleet_skill_learning") is not True:
+                raise HermesRunError(
+                    "Hermes does not advertise run_fleet_skill_learning"
+                )
+            if (
+                fleet_skill_learning.principal_id != fleet_memory.principal_id
+                or fleet_skill_learning.principal_kind != fleet_memory.principal_kind
+                or fleet_skill_learning.principal_generation
+                != fleet_memory.principal_generation
+                or fleet_skill_learning.principal_binding_hash
+                != fleet_memory.principal_binding_hash
+                or fleet_skill_learning.agent_instance_id
+                != fleet_memory.agent_instance_id
+                or fleet_skill_learning.source_run != fleet_memory.source_run
+                or fleet_skill_learning.run_authority_hash
+                != fleet_context.run_authority_hash
+                or fleet_skill_learning.plan_fingerprint
+                != fleet_runtime.plan_fingerprint
+                or fleet_skill_learning.toolsets != fleet_runtime.toolsets
+            ):
+                raise ValueError(
+                    "Hermes Fleet skill-learning identity does not match run/context"
+                )
         request = {"input": prompt}
         if session_id is not None:
             request["session_id"] = session_id
@@ -646,6 +896,8 @@ class HermesRunsClient:
             request["fleet_context"] = fleet_context.to_request()
         if fleet_vault is not None:
             request["fleet_vault"] = fleet_vault.to_request()
+        if fleet_skill_learning is not None:
+            request["fleet_skill_learning"] = fleet_skill_learning.to_request()
         try:
             status_code, document = self._request_json(
                 "POST",
