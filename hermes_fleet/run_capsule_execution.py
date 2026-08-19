@@ -12,6 +12,7 @@ from .agent_instance import AgentInstanceBinding, AgentInstanceManager
 from .context_firewall import ContextFirewallError, authorize_context_firewall
 from .hermes_runs import (
     HermesFleetRuntimeBinding,
+    HermesFleetSkillLearningBinding,
     HermesFleetVaultBinding,
     HermesRunDeadlineExceeded,
     HermesRunError,
@@ -39,6 +40,7 @@ from .runtime_material import (
     revoke_runtime_material,
 )
 from .scoped_memory import ScopedMemoryError, authorize_scoped_memory
+from .skill_learning import SkillLearningError, authorize_skill_learning
 
 _FINALIZE_SECONDS = 5.0
 
@@ -286,6 +288,11 @@ class LocalRunCapsuleExecutor:
             principal_record = self._principals.require_current(spec.principal)
             memory = authorize_scoped_memory(spec, principal_record).binding
             context = authorize_context_firewall(spec, principal_record, agent).binding
+            skill_learning = authorize_skill_learning(spec, principal_record).binding
+            if type(skill_learning) is not HermesFleetSkillLearningBinding:
+                raise SkillLearningError(
+                    "skill-learning authorizer returned invalid binding"
+                )
             runtime_material = self._bind_runtime_material(spec, principal_record)
             if type(runtime_material) is not HermesFleetVaultBinding:
                 raise RuntimeMaterialError(
@@ -301,6 +308,7 @@ class LocalRunCapsuleExecutor:
             PrincipalError,
             ScopedMemoryError,
             ContextFirewallError,
+            SkillLearningError,
             RuntimeMaterialError,
         ) as error:
             record = self._transition(
@@ -310,8 +318,8 @@ class LocalRunCapsuleExecutor:
             )
             self._persist_no_run_cleanup(record, agent, body)
             raise RunCapsuleExecutionError(
-                "Run authority, memory scope, context, or runtime material binding "
-                "changed before Hermes submission"
+                "Run authority, memory scope, context, skill-learning, or runtime "
+                "material binding changed before Hermes submission"
             ) from error
 
         record = self._transition(record, "run_submitting")
@@ -332,6 +340,7 @@ class LocalRunCapsuleExecutor:
                 fleet_memory=memory,
                 fleet_context=context,
                 fleet_vault=runtime_material,
+                fleet_skill_learning=skill_learning,
                 timeout_seconds=self._remaining_seconds(spec),
             )
         except HermesRunSubmissionUnknown as error:

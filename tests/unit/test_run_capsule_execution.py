@@ -719,6 +719,23 @@ def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(
     assert runtime_material.run_id == spec.execution_id
     assert runtime_material.run_authority_hash == spec.run_authority_hash
     assert runtime_material.handles == ()
+    skill_learning = runs.start_kwargs["fleet_skill_learning"]
+    assert skill_learning.scope_kind == "principal"
+    assert skill_learning.scope_id == spec.principal.principal_id
+    assert skill_learning.principal_id == spec.principal.principal_id
+    assert skill_learning.agent_instance_id == spec.agent_instance_id
+    assert skill_learning.source_run == spec.execution_id
+    assert skill_learning.run_authority_hash == spec.run_authority_hash
+    assert skill_learning.recipe_hash == spec.recipe_hash
+    assert skill_learning.resolved_recipe_hash == spec.resolved_recipe_hash
+    assert skill_learning.plan_fingerprint == spec.plan_fingerprint
+    assert skill_learning.capabilities_hash == spec.capabilities_hash
+    assert skill_learning.target_digest == spec.target_digest
+    assert skill_learning.toolsets == spec.toolsets
+    assert skill_learning.filesystem_needs == ()
+    assert skill_learning.network_mode == spec.network_mode
+    assert skill_learning.network_policy_hash == spec.network_policy_hash
+    assert skill_learning.secret_need_fingerprints == ()
     assert memory.write_scope.kind == "principal"
     assert [(scope.kind, scope.scope_id) for scope in memory.read_scopes] == [
         ("principal", spec.principal.principal_id),
