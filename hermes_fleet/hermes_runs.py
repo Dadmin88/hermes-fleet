@@ -326,6 +326,7 @@ class HermesRunsClient:
             "run_fleet_memory_scope": False,
             "fleet_scoped_memory_write": False,
             "run_fleet_context_firewall": False,
+            "run_sensitive_interception": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -378,6 +379,9 @@ class HermesRunsClient:
             ),
             "run_fleet_context_firewall": (
                 features.get("run_fleet_context_firewall") is True
+            ),
+            "run_sensitive_interception": (
+                features.get("run_sensitive_interception") is True
             ),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
@@ -439,6 +443,10 @@ class HermesRunsClient:
             if features.get("run_fleet_context_firewall") is not True:
                 raise HermesRunError(
                     "Hermes does not advertise run_fleet_context_firewall"
+                )
+            if features.get("run_sensitive_interception") is not True:
+                raise HermesRunError(
+                    "Hermes does not advertise run_sensitive_interception"
                 )
             if (
                 fleet_context.principal_id != fleet_memory.principal_id
