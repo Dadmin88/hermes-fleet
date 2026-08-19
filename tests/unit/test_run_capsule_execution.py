@@ -630,6 +630,16 @@ def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(
     assert fake.present is False
     assert fake.cleanup_calls == 1
     assert runs.start_kwargs["fleet_runtime"].container_id == fake.container_id
+    memory = runs.start_kwargs["fleet_memory"]
+    assert memory.principal_id == spec.principal.principal_id
+    assert memory.agent_instance_id == spec.agent_instance_id
+    assert memory.source_run == spec.execution_id
+    assert memory.write_scope.kind == "principal"
+    assert [(scope.kind, scope.scope_id) for scope in memory.read_scopes] == [
+        ("principal", spec.principal.principal_id),
+        ("owner", "node-test:uid:1000"),
+        ("agent_instance", spec.agent_instance_id),
+    ]
     assert events.index("hermes.finalize") < events.index("learning.persist")
     assert events.index("learning.persist") < events.index("grants.revoke")
     assert events.index("grants.revoke") < events.index("body.cleanup")

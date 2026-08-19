@@ -31,6 +31,7 @@ from .run_capsule import (
     RunCapsuleSpec,
     RunCapsuleStore,
 )
+from .scoped_memory import ScopedMemoryError, authorize_scoped_memory
 
 _FINALIZE_SECONDS = 5.0
 
@@ -190,10 +191,15 @@ class LocalRunCapsuleExecutor:
         if type(prompt) is not str or not prompt.strip():
             raise RunCapsuleExecutionError("Run Capsule prompt is invalid")
         try:
-            self._principals.require_current(spec.principal)
+            principal_record = self._principals.require_current(spec.principal)
+            authorize_scoped_memory(spec, principal_record)
         except PrincipalError as error:
             raise RunCapsuleExecutionError(
                 "Run Capsule principal is not current"
+            ) from error
+        except ScopedMemoryError as error:
+            raise RunCapsuleExecutionError(
+                "Run Capsule memory scope is not authorizable"
             ) from error
         try:
             self._require_authority(spec, claim=True)
@@ -242,7 +248,9 @@ class LocalRunCapsuleExecutor:
         )
         try:
             self._require_authority(spec)
-        except RunAuthorityError as error:
+            principal_record = self._principals.require_current(spec.principal)
+            memory = authorize_scoped_memory(spec, principal_record).binding
+        except (RunAuthorityError, PrincipalError, ScopedMemoryError) as error:
             record = self._transition(
                 record,
                 "failed",
@@ -250,7 +258,7 @@ class LocalRunCapsuleExecutor:
             )
             self._persist_no_run_cleanup(record, agent, body)
             raise RunCapsuleExecutionError(
-                "RunAuthority changed before Hermes submission"
+                "Run authority or memory scope changed before Hermes submission"
             ) from error
 
         record = self._transition(record, "run_submitting")
@@ -268,6 +276,7 @@ class LocalRunCapsuleExecutor:
                 session_id=f"fleet:{spec.execution_id}",
                 approval_budget=(spec.approval_budget or None),
                 fleet_runtime=runtime,
+                fleet_memory=memory,
                 timeout_seconds=self._remaining_seconds(spec),
             )
         except HermesRunSubmissionUnknown as error:

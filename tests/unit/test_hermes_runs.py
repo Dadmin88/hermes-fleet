@@ -18,6 +18,8 @@ class _RunsAPI:
         self.post_delay_seconds = 0.0
         self.post_status = 202
         self.run_fleet_runtime = True
+        self.run_fleet_memory_scope = True
+        self.fleet_scoped_memory_write = True
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -36,6 +38,18 @@ class _RunsAPI:
                 route = self.path
                 if route.startswith("/p/"):
                     route = "/" + route.split("/", 3)[3]
+                if route == "/v1/fleet/memory":
+                    if not api.fleet_scoped_memory_write:
+                        self._json(404, {"error": {"message": "unsupported"}})
+                        return
+                    self._json(
+                        200,
+                        {
+                            "object": "hermes.api_server.fleet_memory_write",
+                            "result": {"success": True, "message": "Memory updated."},
+                        },
+                    )
+                    return
                 if route == "/v1/runs":
                     if api.post_delay_seconds:
                         time.sleep(api.post_delay_seconds)
@@ -88,6 +102,10 @@ class _RunsAPI:
                                 "run_stop": True,
                                 "run_finalize": True,
                                 "run_fleet_runtime": api.run_fleet_runtime,
+                                "run_fleet_memory_scope": api.run_fleet_memory_scope,
+                                "fleet_scoped_memory_write": (
+                                    api.fleet_scoped_memory_write
+                                ),
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
                                 "run_command_evidence": True,
@@ -126,6 +144,27 @@ class _RunsAPI:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+def _memory_binding():
+    from hermes_fleet.hermes_runs import HermesFleetMemoryBinding, HermesMemoryScopeRef
+
+    principal_id = "sha256:" + "1" * 64
+    private = HermesMemoryScopeRef("principal", principal_id)
+    return HermesFleetMemoryBinding(
+        principal_id=principal_id,
+        principal_kind="owner",
+        principal_generation=1,
+        principal_binding_hash="sha256:" + "2" * 64,
+        agent_instance_id="sha256:" + "3" * 64,
+        source_run="execution-1",
+        read_scopes=(
+            private,
+            HermesMemoryScopeRef("project", "project-a"),
+            HermesMemoryScopeRef("agent_instance", "sha256:" + "3" * 64),
+        ),
+        write_scope=private,
+    )
 
 
 def test_hermes_runs_client_returns_authenticated_terminal_text() -> None:
@@ -213,6 +252,8 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_stop": True,
         "run_finalize": True,
         "run_fleet_runtime": True,
+        "run_fleet_memory_scope": True,
+        "fleet_scoped_memory_write": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
         "run_command_evidence": True,
@@ -269,6 +310,91 @@ def test_fleet_runtime_requires_capability_and_exact_payload() -> None:
             "toolsets": ["fleet-terminal"],
             "max_iterations": 8,
         },
+    }
+
+
+def test_fleet_memory_requires_runtime_capability_and_exact_payload() -> None:
+    from hermes_fleet.hermes_runs import (
+        HermesFleetRuntimeBinding,
+        HermesRunError,
+        HermesRunsClient,
+    )
+
+    runtime = HermesFleetRuntimeBinding(
+        container_id="a" * 64,
+        plan_fingerprint="sha256:" + "b" * 64,
+        image="debian@sha256:" + "c" * 64,
+        max_iterations=8,
+    )
+    memory = _memory_binding()
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        with pytest.raises(ValueError, match="requires a Fleet runtime"):
+            client.start(prompt="blocked", fleet_memory=memory)
+    assert api.requests == []
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    api.run_fleet_memory_scope = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        with pytest.raises(HermesRunError, match="run_fleet_memory_scope"):
+            client.start(prompt="blocked", fleet_runtime=runtime, fleet_memory=memory)
+    assert [request[0:2] for request in api.requests] == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+    ]
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    with api.serve() as endpoint:
+        run_id = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]").start(
+            prompt="allowed",
+            fleet_runtime=runtime,
+            fleet_memory=memory,
+        )
+    assert run_id == "run-test"
+    assert api.requests[-1][3] == {
+        "input": "allowed",
+        "fleet_runtime": runtime.to_request(),
+        "fleet_memory": memory.to_request(),
+    }
+
+
+def test_scoped_memory_write_requires_capability_and_exact_binding() -> None:
+    from hermes_fleet.hermes_runs import HermesRunError, HermesRunsClient
+
+    memory = _memory_binding()
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    api.fleet_scoped_memory_write = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        with pytest.raises(HermesRunError, match="fleet_scoped_memory_write"):
+            client.write_scoped_memory(
+                fleet_memory=memory,
+                action="add",
+                content="Remember this privately.",
+            )
+    assert [request[0:2] for request in api.requests] == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+    ]
+
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        result = client.write_scoped_memory(
+            fleet_memory=memory,
+            action="add",
+            content="Remember this privately.",
+        )
+    assert result["success"] is True
+    assert api.requests[-1][0:2] == ("POST", "/v1/fleet/memory")
+    assert api.requests[-1][3] == {
+        "fleet_memory": memory.to_request(),
+        "target": "memory",
+        "action": "add",
+        "content": "Remember this privately.",
     }
 
 

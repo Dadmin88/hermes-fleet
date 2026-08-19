@@ -169,9 +169,9 @@ jobs:
         run: |
           git init --quiet "$RUNNER_TEMP/hermes-agent"
           git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/Dadmin88/hermes-agent.git
-          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin 04be624ceb3ebadca0d514f4276a146cdc7296e9
+          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin 64094d4c8839b155f23b1969150e9197a36be941
           git -C "$RUNNER_TEMP/hermes-agent" checkout --quiet --detach FETCH_HEAD
-          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "04be624ceb3ebadca0d514f4276a146cdc7296e9"
+          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "64094d4c8839b155f23b1969150e9197a36be941"
 
       - name: Install verified Hermes and Fleet test dependencies
         run: |
@@ -205,6 +205,40 @@ jobs:
           with fleet_runtime_scope(binding):
               assert get_fleet_runtime() is binding
           assert get_fleet_runtime() is None
+          PY
+
+      - name: Verify Hermes Fleet scoped-memory seam
+        run: |
+          python - <<'PY'
+          from agent.fleet_memory_scope import (
+              FleetMemoryBinding,
+              FleetMemoryScopeRef,
+              fleet_memory_scope,
+              get_fleet_memory,
+          )
+
+          principal_id = "sha256:" + "1" * 64
+          private = FleetMemoryScopeRef("principal", principal_id)
+          payload = {
+              "version": "fleet-memory-v1",
+              "principal": {
+                  "principal_id": principal_id,
+                  "kind": "owner",
+                  "generation": 1,
+                  "binding_hash": "sha256:" + "2" * 64,
+              },
+              "agent_instance_id": "sha256:" + "3" * 64,
+              "source_run": "fleet-ci",
+              "read_scopes": [private.to_request()],
+              "write_scope": private.to_request(),
+              "retention_until_ms": None,
+          }
+          binding = FleetMemoryBinding.from_request(payload)
+          assert binding.to_request() == payload
+          assert get_fleet_memory() is None
+          with fleet_memory_scope(binding):
+              assert get_fleet_memory() is binding
+          assert get_fleet_memory() is None
           PY
 
       - name: Run complete Fleet test suite
