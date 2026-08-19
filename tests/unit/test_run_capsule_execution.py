@@ -16,12 +16,14 @@ from hermes_fleet.execution_backend import (
     ExecutionPlan,
 )
 from hermes_fleet.hermes_runs import (
+    HermesFleetVaultBinding,
     HermesRunDeadlineExceeded,
     HermesRunError,
     HermesRunIndeterminate,
     HermesRunInspection,
     HermesRunResult,
     HermesRunSubmissionUnknown,
+    HermesRuntimeMaterialHandle,
 )
 from hermes_fleet.host_action_broker import HostActionGrant
 from hermes_fleet.network_isolation import NETWORK_NONE
@@ -411,6 +413,27 @@ def harness(
     def revoke(_spec):
         events.append("grants.revoke")
 
+    def bind_runtime_material(bound_spec, _principal):
+        events.append("runtime-material.bind")
+        handles = tuple(
+            HermesRuntimeMaterialHandle(
+                handle="hvh1_" + f"{index:032x}",
+                injection_kind="env",
+                injection_target=f"TEST_RUNTIME_MATERIAL_{index}",
+                version=1,
+                expires_at_ms=bound_spec.deadline_ms,
+            )
+            for index, _reference in enumerate(bound_spec.secret_refs, start=1)
+        )
+        return HermesFleetVaultBinding(
+            run_id=bound_spec.execution_id,
+            run_authority_hash=bound_spec.run_authority_hash,
+            handles=handles,
+        )
+
+    def revoke_runtime_material_for_run(_spec):
+        events.append("runtime-material.revoke")
+
     executor = LocalRunCapsuleExecutor(
         store=store,
         principals=principals,
@@ -427,6 +450,8 @@ def harness(
         learning_persister=learning,
         artifact_persister=(persist_artifacts if include_artifact_persister else None),
         grant_revoker=(revoke if include_revoker else None),
+        runtime_material_binder=bind_runtime_material,
+        runtime_material_revoker=revoke_runtime_material_for_run,
         client_releaser=lambda profile: releases.append(profile),
     )
     return (
@@ -556,6 +581,54 @@ def test_authority_cancelled_during_body_creation_cleans_body_without_hermes(
     assert "hermes.start" not in events
 
 
+def test_authority_cancelled_during_runtime_material_binding_revokes_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        events,
+        _releases,
+    ) = harness(
+        tmp_path,
+        secret_refs=("secret://test/reference",),
+        include_revoker=False,
+    )
+    original_binder = executor._bind_runtime_material
+
+    def bind_then_cancel(bound_spec, principal):
+        binding = original_binder(bound_spec, principal)
+        executor._authorities.cancel(spec.run_authority_hash)
+        events.append("authority.cancel.after-runtime-material")
+        return binding
+
+    executor._bind_runtime_material = bind_then_cancel
+
+    with pytest.raises(
+        RunCapsuleExecutionError, match="changed before Hermes submission"
+    ):
+        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+
+    record = store.get(spec.execution_id)
+    assert record is not None
+    assert record.state == "finalized"
+    assert runs.start_calls == 0
+    assert fake.cleanup_calls == 1
+    assert events.index("runtime-material.bind") < events.index(
+        "authority.cancel.after-runtime-material"
+    )
+    assert events.index("authority.cancel.after-runtime-material") < events.index(
+        "runtime-material.revoke"
+    )
+    assert events.index("runtime-material.revoke") < events.index("body.cleanup")
+
+
 def test_cancelled_authority_stops_known_running_run_and_finishes_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -642,6 +715,10 @@ def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(
         context.base_manifest_digest
         == service.open(bundle.resolved).base_manifest_digest
     )
+    runtime_material = runs.start_kwargs["fleet_vault"]
+    assert runtime_material.run_id == spec.execution_id
+    assert runtime_material.run_authority_hash == spec.run_authority_hash
+    assert runtime_material.handles == ()
     assert memory.write_scope.kind == "principal"
     assert [(scope.kind, scope.scope_id) for scope in memory.read_scopes] == [
         ("principal", spec.principal.principal_id),
@@ -649,7 +726,8 @@ def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(
         ("agent_instance", spec.agent_instance_id),
     ]
     assert events.index("hermes.finalize") < events.index("learning.persist")
-    assert events.index("learning.persist") < events.index("grants.revoke")
+    assert events.index("learning.persist") < events.index("runtime-material.revoke")
+    assert events.index("runtime-material.revoke") < events.index("grants.revoke")
     assert events.index("grants.revoke") < events.index("body.cleanup")
     assert service.profile_path(service.open(bundle.resolved)).is_dir()
     assert releases
@@ -1059,6 +1137,36 @@ def test_temporary_powers_cannot_reach_cleanup_without_explicit_revocation(
     assert fake.present is True
     assert fake.cleanup_calls == 0
     assert service.profile_path(service.open(bundle.resolved)).is_dir()
+
+
+def test_runtime_material_refs_use_dedicated_revoker_without_generic_grant_callback(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        _runs,
+        _store,
+        executor,
+        events,
+        _releases,
+    ) = harness(
+        tmp_path,
+        secret_refs=("secret://test/reference",),
+        include_revoker=False,
+    )
+
+    outcome = executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+
+    assert outcome.status == "completed"
+    assert outcome.record.state == "finalized"
+    assert "runtime-material.revoke" in events
+    assert "grants.revoke" not in events
+    assert events.index("runtime-material.revoke") < events.index("body.cleanup")
+    assert fake.present is False
 
 
 def test_temporary_powers_are_revoked_before_body_cleanup(

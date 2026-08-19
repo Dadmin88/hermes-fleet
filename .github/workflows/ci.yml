@@ -169,9 +169,9 @@ jobs:
         run: |
           git init --quiet "$RUNNER_TEMP/hermes-agent"
           git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/Dadmin88/hermes-agent.git
-          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin 645f3ca1ac3e1da0a35c58775c03127f3b22c461
+          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin 9cacb78c9984b9629db80c69f54b0d30c4017958
           git -C "$RUNNER_TEMP/hermes-agent" checkout --quiet --detach FETCH_HEAD
-          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "645f3ca1ac3e1da0a35c58775c03127f3b22c461"
+          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "9cacb78c9984b9629db80c69f54b0d30c4017958"
 
       - name: Install verified Hermes and Fleet test dependencies
         run: |
@@ -270,6 +270,32 @@ jobs:
           assert decision.found is False
           assert decision.action == "allow"
           assert decision.persisted_text == "ordinary-fleet-ci-text"
+          PY
+
+      - name: Verify Hermes Phase 14 runtime-material seam
+        run: |
+          python - <<'PY'
+          from agent.fleet_runtime_material import (
+              FleetRuntimeMaterialHandle,
+              FleetVaultBinding,
+          )
+          from hermes_secure_store import InjectionTarget
+
+          handle = FleetRuntimeMaterialHandle(
+              handle="hvh1_" + "A" * 32,
+              injection_kind="env",
+              injection_target="PROVIDER_KEY",
+              version=1,
+              expires_at_ms=2_000_000_000_000,
+          )
+          payload = {
+              "version": "fleet-vault-v1",
+              "run_id": "fleet-ci",
+              "run_authority_hash": "sha256:" + "5" * 64,
+              "handles": [handle.to_request()],
+          }
+          assert FleetVaultBinding.from_request(payload).to_request() == payload
+          assert InjectionTarget("broker", "provider.auth").kind == "broker"
           PY
 
       - name: Run complete Fleet test suite

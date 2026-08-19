@@ -23,6 +23,34 @@ _MEMORY_SCOPE_KINDS = frozenset(
 )
 _PRINCIPAL_KINDS = frozenset({"owner", "project", "network", "device", "service"})
 _MAX_MEMORY_READ_SCOPES = 16
+_MAX_RUNTIME_MATERIAL_HANDLES = 64
+_RUNTIME_MATERIAL_HANDLE_RE = re.compile(r"^hvh1_[A-Za-z0-9_-]{20,120}$")
+_RUNTIME_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_RUNTIME_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_RUNTIME_BROKER_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
+_RUNTIME_INJECTION_KINDS = frozenset({"env", "file", "broker"})
+_RESERVED_RUNTIME_ENV_NAMES = frozenset(
+    {
+        "API_SERVER_KEY",
+        "DOCKER_CONTEXT",
+        "DOCKER_HOST",
+        "HOME",
+        "PATH",
+        "PYTHONPATH",
+        "SHELL",
+        "SSH_AGENT_PID",
+        "SSH_AUTH_SOCK",
+        "USER",
+    }
+)
+_RESERVED_RUNTIME_ENV_PREFIXES = (
+    "DOCKER_",
+    "FLEET_",
+    "HERMES_",
+    "KERYX_",
+    "NODESCALE_",
+    "SSH_",
+)
 _IMAGE_RE = re.compile(
     r"^(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9./_-]{0,254}@sha256:[0-9a-f]{64})$"
 )
@@ -249,6 +277,128 @@ class HermesFleetContextBinding:
         }
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class HermesRuntimeMaterialHandle:
+    """Opaque Phase 14 handle plus safe runtime-injection metadata."""
+
+    handle: str
+    injection_kind: str
+    injection_target: str
+    version: int
+    expires_at_ms: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.handle) is not str
+            or _RUNTIME_MATERIAL_HANDLE_RE.fullmatch(self.handle) is None
+        ):
+            raise ValueError("Hermes runtime material handle is invalid")
+        if self.injection_kind not in _RUNTIME_INJECTION_KINDS:
+            raise ValueError("Hermes runtime material injection kind is invalid")
+        matcher = {
+            "env": _RUNTIME_ENV_RE,
+            "file": _RUNTIME_FILE_RE,
+            "broker": _RUNTIME_BROKER_RE,
+        }[self.injection_kind]
+        if (
+            type(self.injection_target) is not str
+            or matcher.fullmatch(self.injection_target) is None
+        ):
+            raise ValueError("Hermes runtime material injection target is invalid")
+        if self.injection_kind == "env" and (
+            self.injection_target in _RESERVED_RUNTIME_ENV_NAMES
+            or any(
+                self.injection_target.startswith(prefix)
+                for prefix in _RESERVED_RUNTIME_ENV_PREFIXES
+            )
+        ):
+            raise ValueError("Hermes runtime material may not override control env")
+        if (
+            isinstance(self.version, bool)
+            or type(self.version) is not int
+            or self.version < 1
+        ):
+            raise ValueError("Hermes runtime material version is invalid")
+        if (
+            isinstance(self.expires_at_ms, bool)
+            or type(self.expires_at_ms) is not int
+            or self.expires_at_ms < 1
+        ):
+            raise ValueError("Hermes runtime material expiry is invalid")
+
+    def __repr__(self) -> str:
+        return (
+            "HermesRuntimeMaterialHandle(<opaque>, injection="
+            f"{self.injection_kind}:{self.injection_target}, version={self.version})"
+        )
+
+    def to_request(self) -> dict[str, object]:
+        return {
+            "handle": self.handle,
+            "injection": {
+                "kind": self.injection_kind,
+                "target": self.injection_target,
+            },
+            "version": self.version,
+            "expires_at_ms": self.expires_at_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class HermesFleetVaultBinding:
+    """Temporary material handles for one exact Fleet execution authority."""
+
+    run_id: str
+    run_authority_hash: str
+    handles: tuple[HermesRuntimeMaterialHandle, ...]
+    version: str = "fleet-vault-v1"
+
+    def __post_init__(self) -> None:
+        if self.version != "fleet-vault-v1":
+            raise ValueError("Hermes Fleet Vault version is unsupported")
+        if (
+            type(self.run_id) is not str
+            or _MEMORY_IDENTIFIER_RE.fullmatch(self.run_id) is None
+        ):
+            raise ValueError("Hermes Fleet Vault run id is invalid")
+        if (
+            type(self.run_authority_hash) is not str
+            or _HASH_RE.fullmatch(self.run_authority_hash) is None
+        ):
+            raise ValueError("Hermes Fleet Vault RunAuthority hash is invalid")
+        if type(self.handles) not in {tuple, list}:
+            raise ValueError("Hermes Fleet Vault handles are invalid")
+        handles = tuple(self.handles)
+        if (
+            len(handles) > _MAX_RUNTIME_MATERIAL_HANDLES
+            or any(
+                type(handle) is not HermesRuntimeMaterialHandle for handle in handles
+            )
+            or len({handle.handle for handle in handles}) != len(handles)
+            or len(
+                {(handle.injection_kind, handle.injection_target) for handle in handles}
+            )
+            != len(handles)
+        ):
+            raise ValueError("Hermes Fleet Vault handles are invalid")
+        object.__setattr__(self, "handles", handles)
+
+    def __repr__(self) -> str:
+        return (
+            f"HermesFleetVaultBinding(run_id={self.run_id!r}, "
+            f"run_authority_hash={self.run_authority_hash!r}, "
+            f"handles={len(self.handles)})"
+        )
+
+    def to_request(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "run_id": self.run_id,
+            "run_authority_hash": self.run_authority_hash,
+            "handles": [handle.to_request() for handle in self.handles],
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class HermesRunResult:
     """Terminal text returned by one authenticated Hermes run."""
@@ -327,6 +477,7 @@ class HermesRunsClient:
             "fleet_scoped_memory_write": False,
             "run_fleet_context_firewall": False,
             "run_sensitive_interception": False,
+            "run_fleet_vault_scope": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -383,6 +534,7 @@ class HermesRunsClient:
             "run_sensitive_interception": (
                 features.get("run_sensitive_interception") is True
             ),
+            "run_fleet_vault_scope": (features.get("run_fleet_vault_scope") is True),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
             "run_command_evidence": features.get("run_command_evidence") is True,
@@ -397,6 +549,7 @@ class HermesRunsClient:
         fleet_runtime: HermesFleetRuntimeBinding | None = None,
         fleet_memory: HermesFleetMemoryBinding | None = None,
         fleet_context: HermesFleetContextBinding | None = None,
+        fleet_vault: HermesFleetVaultBinding | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
         """Create exactly one run and return its server-generated ID."""
@@ -420,6 +573,12 @@ class HermesRunsClient:
         ):
             raise ValueError(
                 "Hermes Fleet context requires runtime and memory bindings"
+            )
+        if fleet_vault is not None and (
+            fleet_runtime is None or fleet_memory is None or fleet_context is None
+        ):
+            raise ValueError(
+                "Hermes Fleet Vault requires runtime, memory, and context bindings"
             )
         features: dict[str, object] | None = None
         if fleet_runtime is not None:
@@ -460,6 +619,20 @@ class HermesRunsClient:
                 raise ValueError(
                     "Hermes Fleet context identity does not match memory binding"
                 )
+        if fleet_vault is not None:
+            if type(fleet_vault) is not HermesFleetVaultBinding:
+                raise ValueError("Hermes Fleet Vault binding is invalid")
+            if features is None:
+                features = self.health(timeout_seconds=timeout_seconds)
+            if features.get("run_fleet_vault_scope") is not True:
+                raise HermesRunError("Hermes does not advertise run_fleet_vault_scope")
+            if (
+                fleet_vault.run_id != fleet_memory.source_run
+                or fleet_vault.run_authority_hash != fleet_context.run_authority_hash
+            ):
+                raise ValueError(
+                    "Hermes Fleet Vault identity does not match run/context"
+                )
         request = {"input": prompt}
         if session_id is not None:
             request["session_id"] = session_id
@@ -471,6 +644,8 @@ class HermesRunsClient:
             request["fleet_memory"] = fleet_memory.to_request()
         if fleet_context is not None:
             request["fleet_context"] = fleet_context.to_request()
+        if fleet_vault is not None:
+            request["fleet_vault"] = fleet_vault.to_request()
         try:
             status_code, document = self._request_json(
                 "POST",
