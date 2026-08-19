@@ -109,6 +109,18 @@ def test_runs_client_requires_context_capability_and_exact_identity() -> None:
             )
 
     api = _RunsAPI([{"status": "completed", "output": "done"}])
+    api.run_sensitive_interception = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="test")
+        with pytest.raises(HermesRunError, match="run_sensitive_interception"):
+            client.start(
+                prompt="blocked",
+                fleet_runtime=runtime,
+                fleet_memory=memory,
+                fleet_context=context,
+            )
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
     with api.serve() as endpoint:
         run_id = HermesRunsClient(endpoint=endpoint, api_key="test").start(
             prompt="allowed",
