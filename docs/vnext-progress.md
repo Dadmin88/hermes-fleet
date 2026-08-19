@@ -33,9 +33,9 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 8A | COMPLETE | [Phase 8A Workflow → Recipe compilation and discovery](vnext-phase8a-workflow-recipe-compilation.md); Workflow v2 adds compile-only Recipe Steps, deterministic Candidate/Validated/Resolved Recipe forms, complete CPU/RAM/GPU/storage/runtime/security requirements, provenance/unknown states, exact cache invalidation, adaptive proposals, GPU placement, and low-authority disposable discovery. PR #144 repaired head is green; the closure-status commit still requires fresh exact-head PR CI and resulting `main` CI before this label is canonical evidence. |
 | 9 | COMPLETE | [Phase 9 principal identity](vnext-phase9-principal-identity.md); formal owner/project/network/device/service principals, durable generation-fenced rebind/revoke state, kernel-authenticated local UID resolution, Keryx sender ↔ Nodescale operator verified binding ↔ live observation ↔ managed-projection remote identity agreement, concurrent-principal isolation, and Run Capsule v3 exact principal references. PR #145 implementation head is green; the closure-status commit still requires fresh exact-head PR CI and resulting `main` CI before this label is canonical evidence. |
 | 10 | COMPLETE | [Phase 10 immutable RunAuthority](vnext-phase10-immutable-run-authority.md); one content-addressed authority document binds exact principal/Agent/Recipe/destination/policy/capabilities/resources/isolation/grants and derives existing Capsule/network/filesystem/broker surfaces. Durable state separately fences replay, expiry, cancellation/revocation, principal invalidation and multi-hop monotonic narrowing. PR #146 implementation head is green; the closure-status commit still requires fresh exact-head PR CI and resulting `main` CI before this label is canonical evidence. |
-| 11 | LOCKED | Scoped persistent memory remains blocked until Phase 10's closure-status PR head and resulting `main` merge commit both pass required CI. |
-| 12 | NOT STARTED | Context firewall. |
-| 13 | NOT STARTED | Secret interception. |
+| 11 | COMPLETE | [Phase 11 scoped persistent memory](vnext-phase11-scoped-persistent-memory.md); PR #147 merged and `main` CI green per the repo closure rule (merged implementation + green `main` CI closes the CLOSURE-GATED acceptance record). |
+| 12 | COMPLETE | [Phase 12 context firewall](vnext-phase12-context-firewall.md); PR #148 merged and `main` CI green per the repo closure rule. |
+| 13 | COMPLETE | [Phase 13 sensitive interception](vnext-phase13-interception.md); PR #149 merged and `main` CI green per the repo closure rule; Phase 14 owns the scoped reference store this phase's interception hook requires but does not create. |
 | 14 | NOT STARTED | Scoped Vault references. |
 | 15 | NOT STARTED | Scoped skill learning. |
 | 16 | NOT STARTED | Skill quarantine. |
@@ -59,23 +59,20 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 34 | NOT STARTED | Multi-principal Maintainer Challenge. |
 | 35 | NOT STARTED | Operator UX. |
 | 36 | NOT STARTED | Hermes-GPT connector/operator reliability. |
-| 37 | NOT STARTED | Migration off legacy disposable-profile execution. |
+| 37 | NOT STARTED | Migration off legacy disposable-profile execution, including production-local execution activation (same-machine `fleet.hermes.run` must not route through Keryx; current FX8 path submits via `submit_execution_package` → `keryx.send_task` with no local branch — a legacy-path divergence from `vnext-foundation.md:179–186`, not yet production-activated by any earlier phase). |
 | 38 | NOT STARTED | Final security gates. |
 | 39 | NOT STARTED | Release. |
 
 ## Current entry point
 
-**Next work begins at Phase 9.**
+**Next work begins at Phase 14 (Scoped Vault references).**
 
-Before implementing Phase 9:
+Phases 0–13 are closed (Phases 11–13 merged via PRs #147–#149 with green `main` CI under the repo closure rule). Phase 14 owns the scoped secret-reference store and its authorization model that Phase 13's interception hook requires but does not create (see `vnext-phase13-interception.md:13`).
 
-1. read the exact principal-identity requirements from the operator-supplied master plan;
-2. keep local execution local: use the locally authenticated principal/session identity directly and do not route same-machine identity through Nodescale/Keryx;
-3. for remote work only, bind Nodescale machine/device trust and the authenticated Keryx sender to the projected principal;
-4. never infer principal identity from prompt/model text and never let the model claim or replace identity;
-5. define bounded owner/project/network/device/service principal forms plus revocation state without implementing the full Phase 10 RunAuthority early;
-6. make the principal reference consumed by Phase 8 Capsules deterministic and independently verifiable;
-7. prove concurrent principals cannot collide or substitute one another and revoked principals fail closed;
-8. close every Phase 9 requirement before marking Phase 10 active.
+Before implementing Phase 14:
+
+1. read the exact scoped-Vault requirements from the operator-supplied master plan;
+2. implement only the scoped reference store and authorization that Phase 13 deferred; do not re-open the legacy `fleet-execution`/`DestinationRecipeExecutor` path or wire `LocalRunCapsuleExecutor` (those are Phase 37 migration items);
+3. preserve the Phase 13 fail-closed behavior: with no Phase 14 policy handler registered, interception must still block rather than invent a storage destination.
 
 Do not resume an old later-phase worktree simply because it exists.
