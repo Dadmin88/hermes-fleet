@@ -12,12 +12,13 @@ from .agent_instance import AgentInstanceBinding, AgentInstanceManager
 from .context_firewall import ContextFirewallError, authorize_context_firewall
 from .hermes_runs import (
     HermesFleetRuntimeBinding,
+    HermesFleetVaultBinding,
     HermesRunDeadlineExceeded,
     HermesRunError,
     HermesRunIndeterminate,
     HermesRunSubmissionUnknown,
 )
-from .principal_identity import PrincipalError, PrincipalRegistry
+from .principal_identity import PrincipalError, PrincipalRecord, PrincipalRegistry
 from .run_authority import (
     RunAuthorityError,
     RunAuthorityInactive,
@@ -31,6 +32,11 @@ from .run_capsule import (
     RunCapsuleRecord,
     RunCapsuleSpec,
     RunCapsuleStore,
+)
+from .runtime_material import (
+    RuntimeMaterialError,
+    authorize_runtime_material,
+    revoke_runtime_material,
 )
 from .scoped_memory import ScopedMemoryError, authorize_scoped_memory
 
@@ -60,6 +66,22 @@ BodyFactory = Callable[[RunCapsuleSpec], DockerRunCapsuleBody]
 RunsFactory = Callable[[str], Any]
 ClientReleaser = Callable[[str], None]
 AuthorityContextInspector = Callable[[RunCapsuleSpec], Mapping[str, str | None]]
+RuntimeMaterialBinder = Callable[
+    [RunCapsuleSpec, PrincipalRecord],
+    HermesFleetVaultBinding,
+]
+RuntimeMaterialRevoker = Callable[[RunCapsuleSpec], None]
+
+
+def _default_runtime_material_binder(
+    spec: RunCapsuleSpec,
+    principal: PrincipalRecord,
+) -> HermesFleetVaultBinding:
+    return authorize_runtime_material(spec, principal).binding
+
+
+def _default_runtime_material_revoker(spec: RunCapsuleSpec) -> None:
+    revoke_runtime_material(spec)
 
 
 def _default_evidence_verifier(
@@ -127,6 +149,12 @@ class LocalRunCapsuleExecutor:
         learning_persister: LearningPersister | None = None,
         artifact_persister: ArtifactPersister | None = None,
         grant_revoker: GrantRevoker | None = None,
+        runtime_material_binder: RuntimeMaterialBinder = (
+            _default_runtime_material_binder
+        ),
+        runtime_material_revoker: RuntimeMaterialRevoker = (
+            _default_runtime_material_revoker
+        ),
         client_releaser: ClientReleaser | None = None,
         finalize_timeout_seconds: float = _FINALIZE_SECONDS,
     ) -> None:
@@ -154,6 +182,10 @@ class LocalRunCapsuleExecutor:
             raise RunCapsuleExecutionError("artifact persister is invalid")
         if grant_revoker is not None and not callable(grant_revoker):
             raise RunCapsuleExecutionError("grant revoker is invalid")
+        if not callable(runtime_material_binder):
+            raise RunCapsuleExecutionError("runtime material binder is invalid")
+        if not callable(runtime_material_revoker):
+            raise RunCapsuleExecutionError("runtime material revoker is invalid")
         if client_releaser is not None and not callable(client_releaser):
             raise RunCapsuleExecutionError("client releaser is invalid")
         if (
@@ -175,6 +207,8 @@ class LocalRunCapsuleExecutor:
         self._persist_learning = learning_persister
         self._persist_artifacts = artifact_persister
         self._revoke_grants = grant_revoker
+        self._bind_runtime_material = runtime_material_binder
+        self._revoke_runtime_material = runtime_material_revoker
         self._release_client = client_releaser
         self._finalize_seconds = float(finalize_timeout_seconds)
 
@@ -252,11 +286,22 @@ class LocalRunCapsuleExecutor:
             principal_record = self._principals.require_current(spec.principal)
             memory = authorize_scoped_memory(spec, principal_record).binding
             context = authorize_context_firewall(spec, principal_record, agent).binding
+            runtime_material = self._bind_runtime_material(spec, principal_record)
+            if type(runtime_material) is not HermesFleetVaultBinding:
+                raise RuntimeMaterialError(
+                    "runtime material binder returned invalid binding"
+                )
+            # Handle minting is an external custody operation and can take time.
+            # Re-check the exact authority and principal after it completes so a
+            # revocation racing with minting cannot slip into Hermes submission.
+            self._require_authority(spec)
+            self._principals.require_current(spec.principal)
         except (
             RunAuthorityError,
             PrincipalError,
             ScopedMemoryError,
             ContextFirewallError,
+            RuntimeMaterialError,
         ) as error:
             record = self._transition(
                 record,
@@ -265,8 +310,8 @@ class LocalRunCapsuleExecutor:
             )
             self._persist_no_run_cleanup(record, agent, body)
             raise RunCapsuleExecutionError(
-                "Run authority, memory scope, or context binding changed before "
-                "Hermes submission"
+                "Run authority, memory scope, context, or runtime material binding "
+                "changed before Hermes submission"
             ) from error
 
         record = self._transition(record, "run_submitting")
@@ -286,6 +331,7 @@ class LocalRunCapsuleExecutor:
                 fleet_runtime=runtime,
                 fleet_memory=memory,
                 fleet_context=context,
+                fleet_vault=runtime_material,
                 timeout_seconds=self._remaining_seconds(spec),
             )
         except HermesRunSubmissionUnknown as error:
@@ -621,12 +667,14 @@ class LocalRunCapsuleExecutor:
                 learning_persisted=True,
             )
         if record.state == "learning_persisted":
+            try:
+                self._revoke_runtime_material(record.spec)
+            except Exception as error:
+                raise RunCapsuleExecutionError(
+                    "runtime material handles could not be revoked"
+                ) from error
             if self._revoke_grants is None:
-                if (
-                    record.spec.secret_refs
-                    or record.spec.host_broker_grants
-                    or record.spec.approval_budget
-                ):
+                if record.spec.host_broker_grants or record.spec.approval_budget:
                     raise RunCapsuleExecutionError(
                         "temporary grants require an explicit revocation callback"
                     )
@@ -698,13 +746,15 @@ class LocalRunCapsuleExecutor:
             evidence=evidence,
             learning_persisted=True,
         )
+        try:
+            self._revoke_runtime_material(record.spec)
+        except Exception as error:
+            raise RunCapsuleExecutionError(
+                "runtime material handles could not be revoked"
+            ) from error
         if self._revoke_grants is not None:
             self._revoke_grants(record.spec)
-        elif (
-            record.spec.secret_refs
-            or record.spec.host_broker_grants
-            or record.spec.approval_budget
-        ):
+        elif record.spec.host_broker_grants or record.spec.approval_budget:
             raise RunCapsuleExecutionError(
                 "temporary grants require an explicit revocation callback"
             )

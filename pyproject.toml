@@ -13,6 +13,7 @@ license-files = ["LICENSE"]
 dependencies = [
   "PyYAML>=6,<7",
   "keryx @ git+https://github.com/Dadmin88/hermes-keryx.git@b29e66d8966d444e583b0085a81309d52b157d1d#subdirectory=sdk/python",
+  "hermes-vault @ git+https://github.com/Dadmin88/hermes-vault.git@bb047f19d08585d380bfcf0f2224300939b7ba90",
 ]
 
 [project.scripts]

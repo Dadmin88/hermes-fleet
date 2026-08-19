@@ -22,6 +22,7 @@ class _RunsAPI:
         self.fleet_scoped_memory_write = True
         self.run_fleet_context_firewall = True
         self.run_sensitive_interception = True
+        self.run_fleet_vault_scope = True
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -114,6 +115,7 @@ class _RunsAPI:
                                 "run_sensitive_interception": (
                                     api.run_sensitive_interception
                                 ),
+                                "run_fleet_vault_scope": api.run_fleet_vault_scope,
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
                                 "run_command_evidence": True,
@@ -264,6 +266,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "fleet_scoped_memory_write": True,
         "run_fleet_context_firewall": True,
         "run_sensitive_interception": True,
+        "run_fleet_vault_scope": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
         "run_command_evidence": True,
@@ -368,6 +371,82 @@ def test_fleet_memory_requires_runtime_capability_and_exact_payload() -> None:
         "input": "allowed",
         "fleet_runtime": runtime.to_request(),
         "fleet_memory": memory.to_request(),
+    }
+
+
+def test_fleet_runtime_material_requires_capability_and_exact_payload() -> None:
+    from hermes_fleet.hermes_runs import (
+        HermesFleetContextBinding,
+        HermesFleetRuntimeBinding,
+        HermesFleetVaultBinding,
+        HermesRunError,
+        HermesRunsClient,
+        HermesRuntimeMaterialHandle,
+    )
+
+    runtime = HermesFleetRuntimeBinding(
+        container_id="a" * 64,
+        plan_fingerprint="sha256:" + "b" * 64,
+        image="debian@sha256:" + "c" * 64,
+        max_iterations=8,
+    )
+    memory = _memory_binding()
+    context = HermesFleetContextBinding(
+        principal_id=memory.principal_id,
+        principal_kind=memory.principal_kind,
+        principal_generation=memory.principal_generation,
+        principal_binding_hash=memory.principal_binding_hash,
+        agent_instance_id=memory.agent_instance_id,
+        base_manifest_digest="sha256:" + "4" * 64,
+        run_authority_hash="sha256:" + "5" * 64,
+    )
+    material = HermesFleetVaultBinding(
+        run_id=memory.source_run,
+        run_authority_hash=context.run_authority_hash,
+        handles=(
+            HermesRuntimeMaterialHandle(
+                handle="hvh1_" + "A" * 32,
+                injection_kind="env",
+                injection_target="PROVIDER_KEY",
+                version=1,
+                expires_at_ms=2_000_000_000_000,
+            ),
+        ),
+    )
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    api.run_fleet_vault_scope = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        with pytest.raises(HermesRunError, match="run_fleet_vault_scope"):
+            client.start(
+                prompt="blocked",
+                fleet_runtime=runtime,
+                fleet_memory=memory,
+                fleet_context=context,
+                fleet_vault=material,
+            )
+    assert [request[0:2] for request in api.requests] == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+    ]
+
+    api = _RunsAPI([{"status": "completed", "output": "done"}])
+    with api.serve() as endpoint:
+        run_id = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]").start(
+            prompt="allowed",
+            fleet_runtime=runtime,
+            fleet_memory=memory,
+            fleet_context=context,
+            fleet_vault=material,
+        )
+    assert run_id == "run-test"
+    assert api.requests[-1][3] == {
+        "input": "allowed",
+        "fleet_runtime": runtime.to_request(),
+        "fleet_memory": memory.to_request(),
+        "fleet_context": context.to_request(),
+        "fleet_vault": material.to_request(),
     }
 
 
