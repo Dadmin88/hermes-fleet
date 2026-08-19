@@ -634,6 +634,14 @@ def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(
     assert memory.principal_id == spec.principal.principal_id
     assert memory.agent_instance_id == spec.agent_instance_id
     assert memory.source_run == spec.execution_id
+    context = runs.start_kwargs["fleet_context"]
+    assert context.principal_id == spec.principal.principal_id
+    assert context.agent_instance_id == spec.agent_instance_id
+    assert context.run_authority_hash == spec.run_authority_hash
+    assert (
+        context.base_manifest_digest
+        == service.open(bundle.resolved).base_manifest_digest
+    )
     assert memory.write_scope.kind == "principal"
     assert [(scope.kind, scope.scope_id) for scope in memory.read_scopes] == [
         ("principal", spec.principal.principal_id),

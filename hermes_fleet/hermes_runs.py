@@ -201,6 +201,55 @@ class HermesFleetMemoryBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class HermesFleetContextBinding:
+    """Exact Phase 12 pre-prompt context authorization for one Hermes run."""
+
+    principal_id: str
+    principal_kind: str
+    principal_generation: int
+    principal_binding_hash: str
+    agent_instance_id: str
+    base_manifest_digest: str
+    run_authority_hash: str
+    version: str = "fleet-context-v1"
+
+    def __post_init__(self) -> None:
+        if self.version != "fleet-context-v1":
+            raise ValueError("Hermes Fleet context version is unsupported")
+        for value, label in (
+            (self.principal_id, "principal ID"),
+            (self.principal_binding_hash, "principal binding hash"),
+            (self.agent_instance_id, "Agent Instance ID"),
+            (self.base_manifest_digest, "base manifest digest"),
+            (self.run_authority_hash, "RunAuthority hash"),
+        ):
+            if type(value) is not str or _HASH_RE.fullmatch(value) is None:
+                raise ValueError(f"Hermes Fleet context {label} is invalid")
+        if self.principal_kind not in _PRINCIPAL_KINDS:
+            raise ValueError("Hermes Fleet context principal kind is invalid")
+        if (
+            isinstance(self.principal_generation, bool)
+            or type(self.principal_generation) is not int
+            or self.principal_generation < 1
+        ):
+            raise ValueError("Hermes Fleet context principal generation is invalid")
+
+    def to_request(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "principal": {
+                "principal_id": self.principal_id,
+                "kind": self.principal_kind,
+                "generation": self.principal_generation,
+                "binding_hash": self.principal_binding_hash,
+            },
+            "agent_instance_id": self.agent_instance_id,
+            "base_manifest_digest": self.base_manifest_digest,
+            "run_authority_hash": self.run_authority_hash,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class HermesRunResult:
     """Terminal text returned by one authenticated Hermes run."""
 
@@ -276,6 +325,7 @@ class HermesRunsClient:
             "run_fleet_runtime": False,
             "run_fleet_memory_scope": False,
             "fleet_scoped_memory_write": False,
+            "run_fleet_context_firewall": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -326,6 +376,9 @@ class HermesRunsClient:
             "fleet_scoped_memory_write": (
                 features.get("fleet_scoped_memory_write") is True
             ),
+            "run_fleet_context_firewall": (
+                features.get("run_fleet_context_firewall") is True
+            ),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
             "run_command_evidence": features.get("run_command_evidence") is True,
@@ -339,6 +392,7 @@ class HermesRunsClient:
         approval_budget: int | None = None,
         fleet_runtime: HermesFleetRuntimeBinding | None = None,
         fleet_memory: HermesFleetMemoryBinding | None = None,
+        fleet_context: HermesFleetContextBinding | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
         """Create exactly one run and return its server-generated ID."""
@@ -357,6 +411,12 @@ class HermesRunsClient:
             raise ValueError("Hermes approval budget must be between 1 and 32")
         if fleet_memory is not None and fleet_runtime is None:
             raise ValueError("Hermes Fleet memory requires a Fleet runtime binding")
+        if fleet_context is not None and (
+            fleet_runtime is None or fleet_memory is None
+        ):
+            raise ValueError(
+                "Hermes Fleet context requires runtime and memory bindings"
+            )
         features: dict[str, object] | None = None
         if fleet_runtime is not None:
             if type(fleet_runtime) is not HermesFleetRuntimeBinding:
@@ -371,6 +431,27 @@ class HermesRunsClient:
                 features = self.health(timeout_seconds=timeout_seconds)
             if features.get("run_fleet_memory_scope") is not True:
                 raise HermesRunError("Hermes does not advertise run_fleet_memory_scope")
+        if fleet_context is not None:
+            if type(fleet_context) is not HermesFleetContextBinding:
+                raise ValueError("Hermes Fleet context binding is invalid")
+            if features is None:
+                features = self.health(timeout_seconds=timeout_seconds)
+            if features.get("run_fleet_context_firewall") is not True:
+                raise HermesRunError(
+                    "Hermes does not advertise run_fleet_context_firewall"
+                )
+            if (
+                fleet_context.principal_id != fleet_memory.principal_id
+                or fleet_context.principal_kind != fleet_memory.principal_kind
+                or fleet_context.principal_generation
+                != fleet_memory.principal_generation
+                or fleet_context.principal_binding_hash
+                != fleet_memory.principal_binding_hash
+                or fleet_context.agent_instance_id != fleet_memory.agent_instance_id
+            ):
+                raise ValueError(
+                    "Hermes Fleet context identity does not match memory binding"
+                )
         request = {"input": prompt}
         if session_id is not None:
             request["session_id"] = session_id
@@ -380,6 +461,8 @@ class HermesRunsClient:
             request["fleet_runtime"] = fleet_runtime.to_request()
         if fleet_memory is not None:
             request["fleet_memory"] = fleet_memory.to_request()
+        if fleet_context is not None:
+            request["fleet_context"] = fleet_context.to_request()
         try:
             status_code, document = self._request_json(
                 "POST",

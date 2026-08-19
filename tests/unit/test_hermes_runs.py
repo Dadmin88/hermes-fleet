@@ -20,6 +20,7 @@ class _RunsAPI:
         self.run_fleet_runtime = True
         self.run_fleet_memory_scope = True
         self.fleet_scoped_memory_write = True
+        self.run_fleet_context_firewall = True
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -105,6 +106,9 @@ class _RunsAPI:
                                 "run_fleet_memory_scope": api.run_fleet_memory_scope,
                                 "fleet_scoped_memory_write": (
                                     api.fleet_scoped_memory_write
+                                ),
+                                "run_fleet_context_firewall": (
+                                    api.run_fleet_context_firewall
                                 ),
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
@@ -254,6 +258,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_fleet_runtime": True,
         "run_fleet_memory_scope": True,
         "fleet_scoped_memory_write": True,
+        "run_fleet_context_firewall": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
         "run_command_evidence": True,

@@ -9,6 +9,7 @@ from typing import Any
 
 from .agency_materialization import ImmutableAgencyBundle
 from .agent_instance import AgentInstanceBinding, AgentInstanceManager
+from .context_firewall import ContextFirewallError, authorize_context_firewall
 from .hermes_runs import (
     HermesFleetRuntimeBinding,
     HermesRunDeadlineExceeded,
@@ -250,7 +251,13 @@ class LocalRunCapsuleExecutor:
             self._require_authority(spec)
             principal_record = self._principals.require_current(spec.principal)
             memory = authorize_scoped_memory(spec, principal_record).binding
-        except (RunAuthorityError, PrincipalError, ScopedMemoryError) as error:
+            context = authorize_context_firewall(spec, principal_record, agent).binding
+        except (
+            RunAuthorityError,
+            PrincipalError,
+            ScopedMemoryError,
+            ContextFirewallError,
+        ) as error:
             record = self._transition(
                 record,
                 "failed",
@@ -258,7 +265,8 @@ class LocalRunCapsuleExecutor:
             )
             self._persist_no_run_cleanup(record, agent, body)
             raise RunCapsuleExecutionError(
-                "Run authority or memory scope changed before Hermes submission"
+                "Run authority, memory scope, or context binding changed before "
+                "Hermes submission"
             ) from error
 
         record = self._transition(record, "run_submitting")
@@ -277,6 +285,7 @@ class LocalRunCapsuleExecutor:
                 approval_budget=(spec.approval_budget or None),
                 fleet_runtime=runtime,
                 fleet_memory=memory,
+                fleet_context=context,
                 timeout_seconds=self._remaining_seconds(spec),
             )
         except HermesRunSubmissionUnknown as error:
