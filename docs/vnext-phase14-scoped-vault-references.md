@@ -1,6 +1,6 @@
 # vNext Phase 14: Scoped Vault references
 
-Status: **CLOSURE GATED**
+Status: **COMPLETE**
 
 Phase 14 implements the master-plan boundary for scoped secret custody and runtime-only retrieval. It extends the existing vNext `secret_refs` / RunAuthority / Run Capsule contracts rather than placing secret bodies in Fleet-owned durable state.
 
@@ -163,7 +163,14 @@ Local pre-PR evidence:
 - package build: green;
 - clean-wheel entry-point and Phase 14 import smoke: green.
 
-Fleet PR and post-merge evidence are intentionally left closure-gated until the dependency gate above is resolved and Fleet CI completes.
+Fleet closure evidence is final:
+
+- Fleet PR #151 exact head: `8b32b0dbcfb0c44a88d09f73a1344318d2085728`;
+- exact PR-head CI run `32237210793`: completed successfully;
+- merge commit: `31c8a62e6a1cd56decea4e6214c3ee24bf3315f7`;
+- exact post-merge `main` CI run `32237499703`: completed successfully on the merge SHA.
+
+The Vault, Agent, and Fleet layers have therefore all satisfied the Phase 14 closure rule.
 
 ## Later-phase boundary
 
