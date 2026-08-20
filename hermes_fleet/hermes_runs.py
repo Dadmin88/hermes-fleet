@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+from .promotion import PromotionAuthorization, PromotionScopeRef
+
 _MAX_RESPONSE_BYTES = 1_048_576
 _ACTIVE_STATES = frozenset({"queued", "running", "stopping"})
 _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -691,6 +693,7 @@ class HermesRunsClient:
             "run_fleet_skill_learning": False,
             "run_fleet_skill_quarantine": False,
             "run_fleet_skill_verification": False,
+            "fleet_learning_promotion": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -756,6 +759,9 @@ class HermesRunsClient:
             ),
             "run_fleet_skill_verification": (
                 features.get("run_fleet_skill_verification") is True
+            ),
+            "fleet_learning_promotion": (
+                features.get("fleet_learning_promotion") is True
             ),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
@@ -999,6 +1005,259 @@ class HermesRunsClient:
             or result.get("success") is not True
         ):
             raise HermesRunError("Hermes rejected the Fleet scoped memory write")
+        return result
+
+    def _require_learning_promotion(
+        self, *, timeout_seconds: float | None = None
+    ) -> None:
+        features = self.health(timeout_seconds=timeout_seconds)
+        if features.get("fleet_learning_promotion") is not True:
+            raise HermesRunError("Hermes does not advertise fleet_learning_promotion")
+
+    @staticmethod
+    def _validated_promotion_response(
+        document: dict[str, object], *, object_name: str, field: str
+    ) -> dict[str, object]:
+        value = document.get(field)
+        if document.get("object") != object_name or type(value) is not dict:
+            raise HermesRunError("Hermes returned an invalid Fleet promotion response")
+        if value.get("authority") != "none":
+            raise HermesRunError(
+                "Hermes promotion response attempted to carry authority"
+            )
+        return dict(value)
+
+    def prepare_memory_promotion(
+        self,
+        *,
+        target: str,
+        source_scope: HermesMemoryScopeRef,
+        source_content_hash: str,
+        source_owner_principal_id: str,
+        agent_instance_id: str,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        """Ask Hermes to sanitize one exact memory entry before Fleet authorizes it."""
+        if target not in {"memory", "user"}:
+            raise ValueError("Hermes promotion memory target is invalid")
+        if type(source_scope) is not HermesMemoryScopeRef:
+            raise ValueError("Hermes promotion memory source scope is invalid")
+        for value, label in (
+            (source_content_hash, "source content hash"),
+            (source_owner_principal_id, "source owner principal"),
+            (agent_instance_id, "Agent Instance"),
+        ):
+            if type(value) is not str or _HASH_RE.fullmatch(value) is None:
+                raise ValueError(f"Hermes promotion {label} is invalid")
+        self._require_learning_promotion(timeout_seconds=timeout_seconds)
+        status, document = self._request_json(
+            "POST",
+            self._path("/v1/fleet/promotions/prepare"),
+            {
+                "subject_kind": "memory",
+                "target": target,
+                "source_scope": source_scope.to_request(),
+                "source_content_hash": source_content_hash,
+                "source_owner_principal_id": source_owner_principal_id,
+                "agent_instance_id": agent_instance_id,
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        if status != 200:
+            raise HermesRunError("Hermes rejected Fleet memory promotion preparation")
+        prepared = self._validated_promotion_response(
+            document,
+            object_name="hermes.api_server.fleet_promotion_prepare",
+            field="prepared",
+        )
+        if (
+            prepared.get("subject_kind") != "memory"
+            or prepared.get("source_content_hash") != source_content_hash
+            or type(prepared.get("approved_content_hash")) is not str
+            or _HASH_RE.fullmatch(str(prepared["approved_content_hash"])) is None
+            or prepared.get("verification_digest") is not None
+        ):
+            raise HermesRunError("Hermes returned invalid memory promotion preparation")
+        return prepared
+
+    def prepare_skill_promotion(
+        self,
+        *,
+        candidate_id: str,
+        source_owner_principal_id: str,
+        agent_instance_id: str,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        """Ask Hermes to re-verify and sanitize one exact Phase 17 skill candidate."""
+        for value, label in (
+            (candidate_id, "candidate ID"),
+            (source_owner_principal_id, "source owner principal"),
+            (agent_instance_id, "Agent Instance"),
+        ):
+            if type(value) is not str or _HASH_RE.fullmatch(value) is None:
+                raise ValueError(f"Hermes promotion {label} is invalid")
+        self._require_learning_promotion(timeout_seconds=timeout_seconds)
+        status, document = self._request_json(
+            "POST",
+            self._path("/v1/fleet/promotions/prepare"),
+            {
+                "subject_kind": "skill",
+                "candidate_id": candidate_id,
+                "source_owner_principal_id": source_owner_principal_id,
+                "agent_instance_id": agent_instance_id,
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        if status != 200:
+            raise HermesRunError("Hermes rejected Fleet skill promotion preparation")
+        prepared = self._validated_promotion_response(
+            document,
+            object_name="hermes.api_server.fleet_promotion_prepare",
+            field="prepared",
+        )
+        if (
+            prepared.get("subject_kind") != "skill"
+            or prepared.get("subject_key") != candidate_id
+            or type(prepared.get("source_content_hash")) is not str
+            or _HASH_RE.fullmatch(str(prepared["source_content_hash"])) is None
+            or type(prepared.get("approved_content_hash")) is not str
+            or _HASH_RE.fullmatch(str(prepared["approved_content_hash"])) is None
+            or type(prepared.get("verification_digest")) is not str
+            or _HASH_RE.fullmatch(str(prepared["verification_digest"])) is None
+        ):
+            raise HermesRunError("Hermes returned invalid skill promotion preparation")
+        return prepared
+
+    def commit_promotion(
+        self,
+        *,
+        authorization: PromotionAuthorization,
+        target: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        """Commit one exact Fleet-approved promotion through Hermes native storage."""
+        if type(authorization) is not PromotionAuthorization:
+            raise ValueError("Hermes promotion authorization is invalid")
+        if authorization.operation != "promote":
+            raise ValueError("Hermes promotion commit requires a promote authorization")
+        request: dict[str, object] = {"authorization": authorization.to_request()}
+        if authorization.subject_kind == "memory":
+            if target not in {"memory", "user"}:
+                raise ValueError("Hermes memory promotion target is invalid")
+            request["target"] = target
+        elif target is not None:
+            raise ValueError("Hermes skill promotion does not accept a memory target")
+        self._require_learning_promotion(timeout_seconds=timeout_seconds)
+        status, document = self._request_json(
+            "POST",
+            self._path("/v1/fleet/promotions/commit"),
+            request,
+            timeout_seconds=timeout_seconds,
+        )
+        if status != 200:
+            raise HermesRunError("Hermes rejected the Fleet promotion commit")
+        result = self._validated_promotion_response(
+            document,
+            object_name="hermes.api_server.fleet_promotion_commit",
+            field="result",
+        )
+        if (
+            result.get("promotion_id") != authorization.promotion_id
+            or result.get("subject_kind") != authorization.subject_kind
+            or result.get("subject_key") != authorization.subject_key
+            or result.get("approved_content_hash")
+            != authorization.approved_content_hash
+            or result.get("operation") != "promote"
+        ):
+            raise HermesRunError("Hermes returned an invalid Fleet promotion commit")
+        return result
+
+    def rollback_promotion(
+        self,
+        *,
+        authorization: PromotionAuthorization,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        """Apply one exact append-only rollback authorized by Fleet."""
+        if type(authorization) is not PromotionAuthorization:
+            raise ValueError("Hermes rollback authorization is invalid")
+        if authorization.operation != "rollback":
+            raise ValueError("Hermes rollback requires a rollback authorization")
+        self._require_learning_promotion(timeout_seconds=timeout_seconds)
+        status, document = self._request_json(
+            "POST",
+            self._path("/v1/fleet/promotions/rollback"),
+            {"authorization": authorization.to_request()},
+            timeout_seconds=timeout_seconds,
+        )
+        if status != 200:
+            raise HermesRunError("Hermes rejected the Fleet promotion rollback")
+        result = self._validated_promotion_response(
+            document,
+            object_name="hermes.api_server.fleet_promotion_rollback",
+            field="result",
+        )
+        if (
+            result.get("promotion_id") != authorization.promotion_id
+            or result.get("operation") != "rollback"
+        ):
+            raise HermesRunError("Hermes returned an invalid Fleet promotion rollback")
+        return result
+
+    def promotion_history(
+        self,
+        *,
+        subject_kind: str,
+        subject_key: str,
+        source_owner_principal_id: str,
+        agent_instance_id: str,
+        source_scope: PromotionScopeRef,
+        target_scope: PromotionScopeRef,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        """Read non-content promotion history for optimistic conflict handling."""
+        if subject_kind not in {"memory", "skill"}:
+            raise ValueError("Hermes promotion subject kind is invalid")
+        if (
+            type(subject_key) is not str
+            or _MEMORY_IDENTIFIER_RE.fullmatch(subject_key) is None
+        ):
+            raise ValueError("Hermes promotion subject key is invalid")
+        for value, label in (
+            (source_owner_principal_id, "source owner principal"),
+            (agent_instance_id, "Agent Instance"),
+        ):
+            if type(value) is not str or _HASH_RE.fullmatch(value) is None:
+                raise ValueError(f"Hermes promotion history {label} is invalid")
+        if type(source_scope) is not PromotionScopeRef:
+            raise ValueError("Hermes promotion source scope is invalid")
+        if type(target_scope) is not PromotionScopeRef:
+            raise ValueError("Hermes promotion target scope is invalid")
+        self._require_learning_promotion(timeout_seconds=timeout_seconds)
+        status, document = self._request_json(
+            "POST",
+            self._path("/v1/fleet/promotions/history"),
+            {
+                "subject_kind": subject_kind,
+                "subject_key": subject_key,
+                "source_owner_principal_id": source_owner_principal_id,
+                "agent_instance_id": agent_instance_id,
+                "source_scope": source_scope.to_request(),
+                "target_scope": target_scope.to_request(),
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        if status != 200:
+            raise HermesRunError("Hermes rejected the Fleet promotion history request")
+        result = self._validated_promotion_response(
+            document,
+            object_name="hermes.api_server.fleet_promotion_history",
+            field="result",
+        )
+        history = result.get("history")
+        records = result.get("records")
+        if type(history) is not list or type(records) is not list:
+            raise HermesRunError("Hermes returned invalid Fleet promotion history")
         return result
 
     def wait(
