@@ -42,9 +42,7 @@ _RISK_LEVELS = frozenset({"info", "low", "medium", "high", "critical"})
 _SECRET_ACTIONS = frozenset(
     {"none", "redacted", "blocked", "vault-referenced", "failed-closed"}
 )
-_QUARANTINE_STATES = frozenset(
-    {"rejected", "needs-review", "verification-ready"}
-)
+_QUARANTINE_STATES = frozenset({"rejected", "needs-review", "verification-ready"})
 _VERIFICATION_STATES = frozenset({"not-run", "verified", "failed"})
 
 
