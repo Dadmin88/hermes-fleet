@@ -337,9 +337,7 @@ def test_security_event_and_nested_facts_are_immutable() -> None:
         item.resources.cpu_millis = 1  # type: ignore[misc]
 
 
-def test_interception_schema_cannot_carry_secret_bodies_or_secret_value_hashes() -> (
-    None
-):
+def test_interception_schema_rejects_secret_body_fields() -> None:
     item = event().to_dict()
     interception = item["secret_interceptions"][0]
     assert set(interception) == {
@@ -483,9 +481,7 @@ def test_hard_denies_are_separate_exact_event_bound_and_round_trip() -> None:
         validate_hard_denies(item, (deny, deny))
 
 
-def test_hard_deny_mutation_changes_identity_and_closed_schema_rejects_extra_fields() -> (
-    None
-):
+def test_hard_deny_identity_and_closed_schema_reject_extra_fields() -> None:
     item = event()
     first = DeterministicHardDeny.from_event(
         item,
