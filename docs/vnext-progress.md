@@ -43,7 +43,7 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 18 | COMPLETE | [Phase 18 memory/skill promotion](vnext-phase18-memory-skill-promotion.md); explicit scoped promotion, exact-hash approval, sanitization, Phase 17 skill re-verification, administrator-lineage enforcement, multi-hop scope proof, append-only history/rollback, conflict detection, zero authority widening, final Agent PRs #15/#16, Fleet PR #156, and exact post-merge `main` CI green on both repositories. |
 | 19 | COMPLETE | [Phase 19 deterministic security event model](vnext-phase19-deterministic-security-events.md); immutable exact-request/event facts, exact target/network/deadline binding, bounded memory/skill and interception/quarantine evidence, and separate deterministic hard-deny records are merged, with Fleet PR #158 and exact post-merge `main` CI green. |
 | 20 | COMPLETE | [Phase 20 Templar core](vnext-phase20-templar-core.md); exact Phase 19 event evaluation, authority-free ALLOW/DENY/REVIEW verdicts, evaluator/model/policy audit binding, stale/substitution rejection, fail-closed evaluator errors, deep-frozen context, and deterministic Fleet hard-deny precedence are merged, with Fleet PR #160 and exact post-merge `main` CI green. |
-| 21 | NOT STARTED | Disposable Templar sandbox. |
+| 21 | IN PROGRESS | [Phase 21 disposable Templar sandbox](vnext-phase21-templar-sandbox.md); fresh Bubblewrap evaluator isolation, verified evaluator artifacts, bounded hard resource limits, host/network/tool denial, optional credential-free provider channel, hard process-tree timeout termination, and cross-evaluation state destruction are implemented on the Phase 21 branch, with canonical closure still gated on broad regressions, exact-head PR CI, normal merge, and post-merge `main` CI. |
 | 22 | NOT STARTED | Templar pre-execution gate. |
 | 23 | NOT STARTED | Templar learning/promotion gate. |
 | 24 | NOT STARTED | Agency base + learned overlays. |
@@ -65,10 +65,10 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 21 (Disposable Templar sandbox).**
+**Current work is Phase 21 (Disposable Templar sandbox).**
 
-Phases 0–20 are closed under the repository closure rule. Phase 20 is merged and verified on Fleet `main`; Templar now exists as an authority-free evaluator over exact Phase 19 security events, with deterministic Fleet deny precedence and exact verdict/request/event/policy/evaluator binding.
+Phases 0–20 are closed under the repository closure rule. Phase 20 is merged and verified on Fleet `main`; Templar exists as an authority-free evaluator over exact Phase 19 security events, with deterministic Fleet deny precedence and exact verdict/request/event/policy/evaluator binding.
 
-Phase 21 is the next unstarted phase. It may add the disposable sandbox needed for evaluator process isolation and hard timeout termination, but it must not implement Phase 22 pre-execution gate ordering or Phase 23 learning/promotion gating.
+Phase 21 now implements the fresh low-authority Bubblewrap evaluator boundary required to make that core process-isolated and hard-timeout-bounded. Do not begin Phase 22 until Phase 21 passes broad local regressions, exact-head PR CI, normal merge, and resulting `main` CI. Phase 22 pre-execution gate ordering and Phase 23 learning/promotion gating remain out of scope.
 
 Do not resume an old later-phase worktree simply because it exists.

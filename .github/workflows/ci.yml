@@ -195,6 +195,11 @@ jobs:
             --clearenv --setenv PATH /usr/bin:/bin \
             -- /usr/bin/python3 -c 'import os; assert os.geteuid() == 65534'
 
+      - name: Prove Phase 21 disposable Templar sandbox
+        env:
+          FLEET_TEMPLAR_SANDBOX_INTEGRATION: "1"
+        run: python -m pytest tests/unit/test_templar_sandbox.py -q
+
       - name: Verify Hermes CLI
         run: hermes --help >/dev/null
 

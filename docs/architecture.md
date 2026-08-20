@@ -260,7 +260,21 @@ Backend timeout signals, backend failures, late responses, and malformed/binding
 
 Deterministic Phase 19 Fleet hard denies have precedence before Templar verdict validation. A valid hard deny therefore resolves to advisory `DENY` even if an accompanying Templar verdict is stale or says `ALLOW`. This precedence helper is not execution authorization; Phase 22 still owns pre-execution gate ordering and Fleet's final decision.
 
-The Phase 20 core exposes no terminal, SSH, Docker, Keryx, Nodescale, Vault-reader, host-broker, Agent-memory, or Agent-skill tool handles to the evaluator. The concrete low-authority disposable evaluator runtime remains Phase 21 work.
+The Phase 20 core exposes no terminal, SSH, Docker, Keryx, Nodescale, Vault-reader, host-broker, Agent-memory, or Agent-skill tool handles to the evaluator. Phase 21 supplies the concrete disposable runtime for that evaluator without changing the Phase 20 authority model.
+
+## Disposable Templar sandbox
+
+Phase 21 executes each Templar evaluation in one fresh Linux Bubblewrap sandbox and destroys the sandbox after the evaluator returns or is killed. The runtime uses an unshared network namespace, dedicated unprivileged UID/GID, zero effective capabilities, a clear environment allowlist, private tmpfs work/home state, and hard RLIMIT ceilings for CPU, address space, output files, file descriptors, process count, and core dumps.
+
+The sandbox exposes no project/workspace/home/management-state mounts and no Docker/Fleet/Hermes/Keryx management sockets. Only the minimal read-only system Python runtime/library surface required to start the evaluator is visible. The exact evaluator source is hash-verified outside the sandbox and injected through an anonymous file descriptor instead of mounting repository source. Symlink substitution and content-hash changes fail closed before launch.
+
+Phase 20 evaluation requests are independently reconstructed and their deterministic `evaluation_id` is recomputed again at the sandbox boundary. Secret-bearing request fields are rejected before process creation. The sandbox receives one canonical request on stdin and may emit only one bounded Phase 20 backend-response document on stdout; malformed, oversized, nonzero-exit, or binding-invalid output fails closed.
+
+Default networking is completely unavailable. When an evaluator policy explicitly requires model-provider access, Fleet may supply one fresh already-connected `AF_UNIX` provider-proxy channel. The evaluator receives no provider credential and still has no IP networking; the trusted parent-side channel factory is responsible for ensuring that this capability terminates only at the approved provider proxy and never at Fleet/Keryx/Docker/host-management services.
+
+Wall-clock timeout is enforced by the parent process, which sends `SIGKILL` to the sandbox process group and waits for termination. Integration proofs verify that evaluator children do not survive timeout. A sandbox timeout becomes the Phase 20 fail-closed `DENY`/`evaluator-timeout` verdict rather than execution authority.
+
+Phase 21 does not invoke the sandbox as a pre-execution gate and does not apply it to learning/promotion decisions; those orderings remain Phase 22 and Phase 23 work.
 
 ## Deliberate Hermes execution
 
