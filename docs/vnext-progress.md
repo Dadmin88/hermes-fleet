@@ -40,7 +40,7 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 15 | COMPLETE | [Phase 15 scoped skill learning](vnext-phase15-scoped-skill-learning.md); principal-private inactive candidates, exact source-run provenance/envelopes, native Hermes background-review routing, and mixed-version capability gating are merged, with Fleet PR #152 and exact post-merge `main` CI green. |
 | 16 | COMPLETE | [Phase 16 skill quarantine](vnext-phase16-skill-quarantine.md); deterministic risk classification, immutable content-addressed quarantine seals, tamper detection, and exact Agent capability pinning are merged, with Fleet PR #153 and exact post-merge `main` CI green. |
 | 17 | COMPLETE | [Phase 17 skill verification](vnext-phase17-skill-verification.md); exact-hash verification attestations, real disposable Bubblewrap denial/resource proofs, strict non-authority invariants, and mixed-version capability gating are merged, with Agent PR #13, Fleet PR #154, and exact post-merge `main` CI green on both repositories. |
-| 18 | NOT STARTED | Memory/skill promotion. |
+| 18 | COMPLETE | [Phase 18 memory/skill promotion](vnext-phase18-memory-skill-promotion.md); explicit scoped promotion, exact-hash approval, sanitization, Phase 17 skill re-verification, administrator-lineage enforcement, multi-hop scope proof, append-only history/rollback, conflict detection, zero authority widening, final Agent PRs #15/#16, Fleet PR #156, and exact post-merge `main` CI green on both repositories. |
 | 19 | NOT STARTED | Deterministic security event model. |
 | 20 | NOT STARTED | Templar core. |
 | 21 | NOT STARTED | Disposable Templar sandbox. |
