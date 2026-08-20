@@ -1,6 +1,6 @@
 # vNext Phase 18: Memory/skill promotion
 
-Status: **IN PROGRESS — IMPLEMENTED LOCALLY; FINAL MERGE/CI CLOSURE PENDING**
+Status: **COMPLETE — MERGED AND VERIFIED ON BOTH AGENT AND FLEET `main`**
 
 Phase 18 implements explicit durable-learning promotion. It widens the visibility scope of exact approved memory or learned-skill content without creating execution authority. Promotion remains separate from Phase 17 verification: `verified` is evidence, `promoted` is an explicit scoped visibility transition, and neither state grants tools, filesystem/network access, secret bodies, broker power, approvals, or RunAuthority mutation.
 
@@ -238,7 +238,13 @@ Current Phase 18 Fleet evidence:
 - Fleet CI now pins final Agent revision `16589473f7fe47fdec72b69cdc6f1039228744b9`;
 - the exact new CI heredoc locally executes a real `principal -> project -> network` memory promotion and prints `PHASE18_AGENT_PROMOTION_SEAM_OK`.
 
-Fleet PR-head CI, Fleet post-merge `main` CI, and final progress-ledger closure remain pending. Phase 18 must not be marked complete until those gates are green.
+Fleet delivery evidence is final:
+
+- implementation PR #156 exact final head `8cec21f28ab80f2a02551900390f09b462f9594c` completed CI run `32350309263` successfully, including Python 3.11/3.13 quality, Rust compatibility, real Nodescale/readiness proofs, and the pinned-Agent clean-install + two-hop Phase 18 promotion seam;
+- PR #156 merged as `8be2bbf223104e124713501866d1df023efcd430`;
+- exact post-merge `main` CI run `32350723647` completed successfully on that merge SHA with all five jobs green, including the pinned-Agent plugin/promotion smoke.
+
+Phase 18 therefore satisfies the repository closure rule end to end. The canonical next implementation entry point is Phase 19.
 
 ## Later-phase boundary
 
