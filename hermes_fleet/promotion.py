@@ -150,9 +150,7 @@ class PromotionAuthorization:
             if isinstance(value, bool) or type(value) is not int or value < 1:
                 raise PromotionError(f"{label} is invalid")
         if not (
-            self.issued_at_ms
-            < self.expires_at_ms
-            <= self.issued_at_ms + _MAX_TTL_MS
+            self.issued_at_ms < self.expires_at_ms <= self.issued_at_ms + _MAX_TTL_MS
         ):
             raise PromotionError("promotion lifetime is invalid")
         if self.subject_kind == "skill":

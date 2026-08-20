@@ -726,8 +726,9 @@ def test_scoped_memory_write_requires_capability_and_exact_binding() -> None:
     }
 
 
-def test_learning_promotion_client_requires_capability_and_uses_exact_documents(
-) -> None:
+def test_learning_promotion_client_requires_capability_and_uses_exact_documents() -> (
+    None
+):
     from hermes_fleet.hermes_runs import HermesRunError, HermesRunsClient
     from hermes_fleet.principal_identity import PrincipalReference
     from hermes_fleet.promotion import PromotionAuthorization, PromotionScopeRef

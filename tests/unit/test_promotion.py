@@ -175,9 +175,7 @@ def test_private_promotion_rejects_unrelated_target_administrator(
 def test_shared_scope_promotion_uses_exact_broader_scope_administrator(
     tmp_path: Path,
 ) -> None:
-    owner, network_admin = owner_and_administrator(
-        tmp_path, "network", "mesh-a"
-    )
+    owner, network_admin = owner_and_administrator(tmp_path, "network", "mesh-a")
     authorization = authorize_promotion(
         subject_kind="memory",
         subject_key="memory:" + HASH("3"),
