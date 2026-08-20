@@ -690,6 +690,7 @@ class HermesRunsClient:
             "run_fleet_vault_scope": False,
             "run_fleet_skill_learning": False,
             "run_fleet_skill_quarantine": False,
+            "run_fleet_skill_verification": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -752,6 +753,9 @@ class HermesRunsClient:
             ),
             "run_fleet_skill_quarantine": (
                 features.get("run_fleet_skill_quarantine") is True
+            ),
+            "run_fleet_skill_verification": (
+                features.get("run_fleet_skill_verification") is True
             ),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
@@ -871,6 +875,10 @@ class HermesRunsClient:
             if features.get("run_fleet_skill_quarantine") is not True:
                 raise HermesRunError(
                     "Hermes does not advertise run_fleet_skill_quarantine"
+                )
+            if features.get("run_fleet_skill_verification") is not True:
+                raise HermesRunError(
+                    "Hermes does not advertise run_fleet_skill_verification"
                 )
             if (
                 fleet_skill_learning.principal_id != fleet_memory.principal_id

@@ -169,15 +169,31 @@ jobs:
         run: |
           git init --quiet "$RUNNER_TEMP/hermes-agent"
           git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/Dadmin88/hermes-agent.git
-          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin 7cf08061ef4648c60ee91df4c9bcad8857e529a0
+          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth 1 origin 698c89f711d5b34103e05e1193f9d5fb72212fd8
           git -C "$RUNNER_TEMP/hermes-agent" checkout --quiet --detach FETCH_HEAD
-          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "7cf08061ef4648c60ee91df4c9bcad8857e529a0"
+          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "698c89f711d5b34103e05e1193f9d5fb72212fd8"
 
       - name: Install verified Hermes and Fleet test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e "$RUNNER_TEMP/hermes-agent"
           python -m pip install -e ".[dev]" build
+
+      - name: Install and prove Phase 17 disposable-runtime dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          bwrap --version
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --uid 65534 --gid 65534 --cap-drop ALL \
+            --ro-bind /usr /usr \
+            --ro-bind-try /lib /lib \
+            --ro-bind-try /lib64 /lib64 \
+            --dev /dev --proc /proc --tmpfs /tmp \
+            --clearenv --setenv PATH /usr/bin:/bin \
+            -- /usr/bin/python3 -c 'import os; assert os.geteuid() == 65534'
 
       - name: Verify Hermes CLI
         run: hermes --help >/dev/null
@@ -339,7 +355,7 @@ jobs:
           assert binding.scope_id == principal_id
           PY
 
-      - name: Verify Hermes Phase 16 skill-quarantine seam
+      - name: Verify Hermes Phase 16/17 skill safety seam
         run: |
           python - <<'PY'
           import json
@@ -353,6 +369,7 @@ jobs:
               fleet_skill_learning_scope,
           )
           from tools.fleet_skill_quarantine import quarantine_skill_candidate
+          from tools.fleet_skill_verification import verify_skill_candidate
           from tools.skill_provenance import (
               BACKGROUND_REVIEW,
               reset_current_write_origin,
@@ -421,13 +438,40 @@ jobs:
           assert created["candidate"] is True
           candidates = list((root / ".fleet" / "candidates").iterdir())
           assert len(candidates) == 1
-          result = quarantine_skill_candidate(candidates[0], expected_binding=binding)
-          assert result.state == "verification-ready"
+          quarantine = quarantine_skill_candidate(candidates[0], expected_binding=binding)
+          assert quarantine.state == "verification-ready"
+          verified = verify_skill_candidate(candidates[0], expected_binding=binding)
+          assert verified.verified is True
+          checks = {(check.category, check.name): check for check in verified.checks}
+          required = {
+              ("positive-test", "bundle-readable"),
+              ("positive-test", "scratch-write"),
+              ("network-denial", "internet"),
+              ("network-denial", "management-network"),
+              ("filesystem-denial", "host-path:/etc/passwd"),
+              ("secret-denial", "environment"),
+              ("broker-denial", "broker-sockets"),
+              ("broker-denial", "docker-socket"),
+              ("privilege-denial", "non-root-uid"),
+              ("privilege-denial", "effective-capabilities"),
+              ("resource-bound", "cpu"),
+              ("resource-bound", "address-space"),
+              ("resource-bound", "file-size"),
+              ("resource-bound", "open-files"),
+              ("resource-bound", "processes"),
+          }
+          assert required <= set(checks)
+          assert all(checks[key].passed for key in required)
           saved = json.loads((candidates[0] / "candidate.json").read_text())
+          assert saved["state"] == "verification-ready"
           assert saved["active"] is False
           assert saved["authority"] == "none"
           assert saved["quarantine"]["immutable"] is True
           assert saved["quarantine"]["bundle_id"] == saved["content_hash"]
+          assert saved["tests"]["state"] == "verified"
+          assert saved["tests"]["content_hash"] == saved["content_hash"]
+          assert saved["tests"]["quarantine_digest"] == saved["quarantine"]["digest"]
+          assert saved["tests"]["next_phase"] == 18
           PY
 
       - name: Run complete Fleet test suite
