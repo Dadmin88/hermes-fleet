@@ -1,6 +1,6 @@
 # vNext Phase 20: Templar core
 
-Status: **CLOSURE-GATED**
+Status: **COMPLETE — MERGED AND VERIFIED ON FLEET `main`**
 
 Phase 20 implements Templar's low-authority evaluation core on top of the exact immutable Phase 19 security-event model.
 
@@ -252,17 +252,15 @@ Current Phase 20 pre-PR evidence:
 - Rust `cargo build --workspace`: green;
 - `git diff --check`: green.
 
-Repository closure still requires the normal path:
+Fleet delivery evidence is final:
 
-1. complete relevant/broad local regressions;
-2. reviewable branch/commit;
-3. PR;
-4. exact final PR-head CI green;
-5. merge through GitHub;
-6. exact resulting `main` CI green;
-7. closure record updated through the normal closure workflow.
+- implementation PR #160 final exact head: `714d92500a5fd90161475b1d2d4f3d9d967791b1`;
+- exact final-head PR CI run `32361944528`: completed successfully with Python 3.11/3.13 quality, Rust workspace compatibility, real Nodescale/readiness proofs, and the pinned-Hermes clean-install smoke all green;
+- PR #160 merged normally as `b083090fa3bb98318c521ebe64153e9088f9580b`;
+- exact post-merge `main` CI run `32362200150`: completed successfully on that merge SHA with all five jobs green, including the pinned-Hermes clean-install smoke;
+- no force push, history rewrite, skipped failing security test, or administrative merge override was used.
 
-Until those steps are complete, Phase 20 remains `CLOSURE-GATED` rather than `COMPLETE`.
+Phase 20 therefore satisfies the repository closure rule end to end. The canonical next implementation entry point is Phase 21.
 
 ## Later-phase boundary
 
