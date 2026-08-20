@@ -240,6 +240,16 @@ Important planned invariants:
 
 These statements guide future implementation but must not be exposed as shipped capability until the corresponding contracts and proofs are merged.
 
+## Deterministic security-event facts
+
+Fleet's Phase 19 security-event boundary turns already-authoritative request state into immutable, versioned facts for later low-authority evaluation. The canonical `fleet.security-request.v1` projection binds the exact principal, Recipe/ResolvedRecipe identity, proposed immutable RunAuthority hash, target, requested tools, authorized toolsets, resource limits, network posture, policy version, and capability set. Its request hash changes whenever those execution semantics change.
+
+`fleet.security-event.v1` adds bounded memory/skill risk, secret-interception, deterministic policy-mismatch, and quarantine/verification evidence. Those derived facts have a separate event content hash so evidence may change without pretending the underlying request changed. Secret-interception records contain classifications, counts, action, and sanitized evidence identity only; they never contain secret bodies or direct hashes of intercepted secret values.
+
+Deterministic Fleet hard denies are represented separately as `fleet.security-hard-deny.v1` and bind the exact request hash, event hash, and policy digest. They are not embedded as event facts and they are not Templar verdicts. This separation lets later gate logic stop an already-hard-denied request without invoking Templar while keeping the event itself a neutral fact record.
+
+Phase 19 does not grant authority, activate RunAuthority, invoke Templar, or return `ALLOW`, `DENY`, or `REVIEW`. Later Templar phases may consume these exact facts, but Fleet deterministic policy remains authoritative and security judgments must remain bound to the exact request hash.
+
 ## Deliberate Hermes execution
 
 `fleet.hermes.run` is the current operation that starts Hermes execution.
