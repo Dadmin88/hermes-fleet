@@ -1,6 +1,6 @@
 # vNext Phase 17: Skill verification
 
-Status: **CLOSURE GATED**
+Status: **COMPLETE**
 
 Phase 17 verifies exact Phase 16 `verification-ready` learned-skill candidates inside a disposable runtime before any later promotion decision. Verification adds evidence; it does not activate a skill, widen scope, mutate RunAuthority, or grant authority.
 
@@ -136,7 +136,16 @@ Agent acceptance evidence is final:
 - exact merged-Agent Phase 17 seam: `PHASE17_AGENT_VERIFICATION_SEAM_OK` against `698c89f711d5b34103e05e1193f9d5fb72212fd8`;
 - Fleet now treats missing `run_fleet_skill_verification` as a hard compatibility failure for skill-learning runs.
 
-Fleet PR-head CI, merge, and post-merge CI evidence remain closure-gated until the Fleet Phase 17 branch passes those gates.
+Fleet closure evidence is final:
+
+- initial PR #154 implementation head: `8d8df7ac88414b01e4d78867da0345bcd668abce`;
+- initial PR CI run `32329985084` correctly failed closed in the Hermes clean-install seam because the GitHub-hosted Ubuntu runner blocked Bubblewrap namespace creation;
+- repaired PR head: `b0cb9db6df6a10a1497069ad0ce6836862013700`, enabling and preflighting unprivileged user namespaces in the ephemeral CI runner without weakening the verifier;
+- exact repaired-head PR CI run `32330446773`: completed successfully;
+- merge commit: `5ffdfdcdfe26856645291825febf93d0f2144ef0`;
+- exact post-merge `main` CI run `32330817904`: completed successfully on the merge SHA, including Python 3.11/3.13 quality, Rust compatibility, real Nodescale/readiness proofs, and the pinned merged-Agent Phase 16/17 Bubblewrap verification seam.
+
+Phase 17 therefore satisfies the repository closure rule end to end.
 
 ## Later-phase boundary
 

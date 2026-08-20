@@ -36,10 +36,10 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 11 | COMPLETE | [Phase 11 scoped persistent memory](vnext-phase11-scoped-persistent-memory.md); PR #147 merged and `main` CI green per the repo closure rule (merged implementation + green `main` CI closes the CLOSURE-GATED acceptance record). |
 | 12 | COMPLETE | [Phase 12 context firewall](vnext-phase12-context-firewall.md); PR #148 merged and `main` CI green per the repo closure rule. |
 | 13 | COMPLETE | [Phase 13 sensitive interception](vnext-phase13-interception.md); PR #149 merged and `main` CI green per the repo closure rule; Phase 14 owns the scoped reference store this phase's interception hook requires but does not create. |
-| 14 | NOT STARTED | Scoped Vault references. |
-| 15 | NOT STARTED | Scoped skill learning. |
-| 16 | NOT STARTED | Skill quarantine. |
-| 17 | NOT STARTED | Skill verification. |
+| 14 | COMPLETE | [Phase 14 scoped Vault references](vnext-phase14-scoped-vault-references.md); Vault custody, Agent runtime redemption/injection, and Fleet authorization/temporary-handle seams are merged and closed, with Fleet PR #151 and exact post-merge `main` CI green. |
+| 15 | COMPLETE | [Phase 15 scoped skill learning](vnext-phase15-scoped-skill-learning.md); principal-private inactive candidates, exact source-run provenance/envelopes, native Hermes background-review routing, and mixed-version capability gating are merged, with Fleet PR #152 and exact post-merge `main` CI green. |
+| 16 | COMPLETE | [Phase 16 skill quarantine](vnext-phase16-skill-quarantine.md); deterministic risk classification, immutable content-addressed quarantine seals, tamper detection, and exact Agent capability pinning are merged, with Fleet PR #153 and exact post-merge `main` CI green. |
+| 17 | COMPLETE | [Phase 17 skill verification](vnext-phase17-skill-verification.md); exact-hash verification attestations, real disposable Bubblewrap denial/resource proofs, strict non-authority invariants, and mixed-version capability gating are merged, with Agent PR #13, Fleet PR #154, and exact post-merge `main` CI green on both repositories. |
 | 18 | NOT STARTED | Memory/skill promotion. |
 | 19 | NOT STARTED | Deterministic security event model. |
 | 20 | NOT STARTED | Templar core. |
@@ -65,14 +65,10 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 14 (Scoped Vault references).**
+**Next work begins at Phase 18 (Memory/skill promotion).**
 
-Phases 0–13 are closed (Phases 11–13 merged via PRs #147–#149 with green `main` CI under the repo closure rule). Phase 14 owns the scoped secret-reference store and its authorization model that Phase 13's interception hook requires but does not create (see `vnext-phase13-interception.md:13`).
+Phases 0–17 are closed under the repository closure rule. Phases 14–17 were reconciled against their exact acceptance records after implementation: Fleet PRs #151–#154 are merged, each exact PR head passed CI before merge, each resulting Fleet `main` merge SHA passed post-merge CI, and the dependent Hermes Agent Phase 17 implementation is likewise merged with green exact-head and post-merge CI.
 
-Before implementing Phase 14:
-
-1. read the exact scoped-Vault requirements from the operator-supplied master plan;
-2. implement only the scoped reference store and authorization that Phase 13 deferred; do not re-open the legacy `fleet-execution`/`DestinationRecipeExecutor` path or wire `LocalRunCapsuleExecutor` (those are Phase 37 migration items);
-3. preserve the Phase 13 fail-closed behavior: with no Phase 14 policy handler registered, interception must still block rather than invent a storage destination.
+Phase 18 is the next unstarted phase. Do not treat Phase 17 verification as promotion or authority: a verified learned-skill candidate remains inactive and `authority: none` until the Phase 18 promotion policy explicitly authorizes a scope transition.
 
 Do not resume an old later-phase worktree simply because it exists.

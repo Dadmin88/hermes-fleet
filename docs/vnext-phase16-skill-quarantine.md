@@ -1,6 +1,6 @@
 # vNext Phase 16: Skill quarantine
 
-Status: **CLOSURE GATED**
+Status: **COMPLETE**
 
 Phase 16 freezes and deterministically classifies Phase 15 learned-skill candidates before any Phase 17 verification or activation. Candidates remain hidden from normal Hermes skill discovery, inactive, principal-private, and authority-free throughout quarantine.
 
@@ -90,7 +90,14 @@ Exact post-merge Agent `main` CI run `32306858940` completed successfully on mer
 - clean Python package build and installed entry-point smoke: green;
 - exact merged-Agent quarantine seam: `PHASE16_AGENT_QUARANTINE_SEAM_OK` against `7cf08061ef4648c60ee91df4c9bcad8857e529a0`.
 
-Fleet PR/post-merge evidence remains closure-gated until Fleet CI pins the exact closed Agent Phase 16 merge.
+Fleet closure evidence is final:
+
+- Fleet PR #153 exact head: `6e6b927b2880aded5ba2be539fb5e73e7bfe7121`;
+- exact PR-head CI run `32308059301`: completed successfully;
+- merge commit: `31bb7111e6c4cfd555067224acc460e1a9d95336`;
+- exact post-merge `main` CI run `32308293673`: completed successfully on the merge SHA.
+
+Fleet therefore pins and proves the exact closed Agent Phase 16 seam, satisfying the Phase 16 closure rule.
 
 ## Later-phase boundary
 

@@ -1,6 +1,6 @@
 # vNext Phase 15: Scoped skill learning
 
-Status: **CLOSURE GATED**
+Status: **COMPLETE**
 
 Phase 15 implements the master-plan scoped skill-learning boundary while preserving Hermes native skill format/loading and Fleet's existing authority model. It does not activate autonomously learned skills and does not implement Phase 16 scanning/classification or Phase 17 verification.
 
@@ -167,7 +167,14 @@ Exact post-merge Agent `main` CI run `32243877677` completed successfully on mer
 - Python package build: green;
 - clean-wheel operational entry points and Phase 15 import smoke: green.
 
-Fleet PR and post-merge evidence remain closure-gated until the Agent dependency is closed and Fleet CI pins that exact Agent merge.
+Fleet closure evidence is final:
+
+- Fleet PR #152 exact head: `b2557efdcaaf6a7882d0ca7c11f537e4664ae5c4`;
+- exact PR-head CI run `32276601643`: completed successfully;
+- merge commit: `331c604e894e10d39bcf109197b8ca38b4ce1639`;
+- exact post-merge `main` CI run `32276894660`: completed successfully on the merge SHA.
+
+The Agent dependency and Fleet compatibility gate are therefore both closed for Phase 15.
 
 ## Later-phase boundary
 
