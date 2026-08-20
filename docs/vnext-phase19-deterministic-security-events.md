@@ -1,6 +1,6 @@
 # vNext Phase 19: Deterministic security event model
 
-Status: **CLOSURE-GATED**
+Status: **COMPLETE — MERGED AND VERIFIED ON FLEET `main`**
 
 Phase 19 defines the immutable, versioned Fleet security-fact model that later Templar phases consume. It deliberately does **not** implement Templar, create an authorization decision, activate a RunAuthority, or grant execution power.
 
@@ -254,7 +254,7 @@ Phase 19 proves:
 
 ## Local acceptance evidence
 
-Current Phase 19 implementation evidence before PR delivery:
+Phase 19 implementation and local acceptance evidence:
 
 - focused Phase 19 suite: 12 passed;
 - exact pinned Hermes Agent integration environment uses revision `16589473f7fe47fdec72b69cdc6f1039228744b9`, matching Fleet CI;
@@ -276,16 +276,15 @@ Current Phase 19 implementation evidence before PR delivery:
 - secret-body closed-schema test: green;
 - malformed target/network/interception/quarantine tests: green.
 
-Repository closure still requires the normal path:
+Fleet delivery evidence is final:
 
-1. reviewable branch/commit;
-2. PR;
-3. exact PR-head CI green;
-4. merge through GitHub;
-5. exact resulting `main` CI green;
-6. closure record updated with final evidence.
+- implementation PR #158 final exact head: `721c46cf3ac5047ba43e10cd25f8fe938692f292`;
+- exact final-head PR CI run `32356964144`: completed successfully with Python 3.11/3.13 quality, Rust workspace compatibility, real Nodescale/readiness proofs, and the pinned-Hermes clean-install smoke all green;
+- PR #158 merged normally as `231e55f8ee202993135776ab76ae976e8c7c7380`;
+- exact post-merge `main` CI run `32357490741`: completed successfully on that merge SHA with all five jobs green, including the pinned-Hermes clean-install smoke;
+- the two earlier PR runs failed only repository quality formatting/lint gates on superseded heads and were repaired with forward commits; no failed behavioral/security test was bypassed, no history was rewritten, and no force push or administrative merge override was used.
 
-Until those steps are complete, this phase remains `CLOSURE-GATED` rather than `COMPLETE`.
+Phase 19 therefore satisfies the repository closure rule end to end. The canonical next implementation entry point is Phase 20.
 
 ## Later-phase boundary
 
