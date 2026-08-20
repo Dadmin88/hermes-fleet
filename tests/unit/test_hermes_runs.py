@@ -26,6 +26,7 @@ class _RunsAPI:
         self.run_fleet_skill_learning = True
         self.run_fleet_skill_quarantine = True
         self.run_fleet_skill_verification = True
+        self.fleet_learning_promotion = True
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -53,6 +54,110 @@ class _RunsAPI:
                         {
                             "object": "hermes.api_server.fleet_memory_write",
                             "result": {"success": True, "message": "Memory updated."},
+                        },
+                    )
+                    return
+                if route == "/v1/fleet/promotions/prepare":
+                    if not api.fleet_learning_promotion:
+                        self._json(404, {"error": {"message": "unsupported"}})
+                        return
+                    assert type(body) is dict
+                    source_hash = body.get("source_content_hash")
+                    if body.get("subject_kind") == "memory":
+                        prepared = {
+                            "subject_kind": "memory",
+                            "subject_key": "memory:" + str(source_hash),
+                            "source_content_hash": source_hash,
+                            "approved_content_hash": source_hash,
+                            "sanitized": False,
+                            "verification_digest": None,
+                            "authority": "none",
+                        }
+                    else:
+                        candidate_id = body.get("candidate_id")
+                        prepared = {
+                            "subject_kind": "skill",
+                            "subject_key": candidate_id,
+                            "source_content_hash": "sha256:" + "8" * 64,
+                            "approved_content_hash": "sha256:" + "9" * 64,
+                            "sanitized": True,
+                            "verification_digest": "sha256:" + "a" * 64,
+                            "authority": "none",
+                        }
+                    self._json(
+                        200,
+                        {
+                            "object": "hermes.api_server.fleet_promotion_prepare",
+                            "prepared": prepared,
+                        },
+                    )
+                    return
+                if route == "/v1/fleet/promotions/commit":
+                    assert type(body) is dict
+                    assert type(body.get("authorization")) is dict
+                    authorization = body["authorization"]
+                    self._json(
+                        200,
+                        {
+                            "object": "hermes.api_server.fleet_promotion_commit",
+                            "result": {
+                                "promotion_id": authorization["promotion_id"],
+                                "subject_kind": authorization["subject_kind"],
+                                "subject_key": authorization["subject_key"],
+                                "target_scope": authorization["target_scope"],
+                                "approved_content_hash": authorization[
+                                    "approved_content_hash"
+                                ],
+                                "previous_promotion_id": authorization.get(
+                                    "expected_current_promotion_id"
+                                ),
+                                "current_promotion_id": authorization["promotion_id"],
+                                "operation": "promote",
+                                "idempotent": False,
+                                "authority": "none",
+                            },
+                        },
+                    )
+                    return
+                if route == "/v1/fleet/promotions/rollback":
+                    assert type(body) is dict
+                    assert type(body.get("authorization")) is dict
+                    authorization = body["authorization"]
+                    self._json(
+                        200,
+                        {
+                            "object": "hermes.api_server.fleet_promotion_rollback",
+                            "result": {
+                                "promotion_id": authorization["promotion_id"],
+                                "subject_kind": authorization["subject_kind"],
+                                "subject_key": authorization["subject_key"],
+                                "target_scope": authorization["target_scope"],
+                                "approved_content_hash": authorization[
+                                    "approved_content_hash"
+                                ],
+                                "previous_promotion_id": authorization[
+                                    "expected_current_promotion_id"
+                                ],
+                                "current_promotion_id": authorization["promotion_id"],
+                                "operation": "rollback",
+                                "idempotent": False,
+                                "authority": "none",
+                            },
+                        },
+                    )
+                    return
+                if route == "/v1/fleet/promotions/history":
+                    assert type(body) is dict
+                    self._json(
+                        200,
+                        {
+                            "object": "hermes.api_server.fleet_promotion_history",
+                            "result": {
+                                "current_promotion_id": None,
+                                "history": [],
+                                "records": [],
+                                "authority": "none",
+                            },
                         },
                     )
                     return
@@ -127,6 +232,9 @@ class _RunsAPI:
                                 ),
                                 "run_fleet_skill_verification": (
                                     api.run_fleet_skill_verification
+                                ),
+                                "fleet_learning_promotion": (
+                                    api.fleet_learning_promotion
                                 ),
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
@@ -282,6 +390,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_fleet_skill_learning": True,
         "run_fleet_skill_quarantine": True,
         "run_fleet_skill_verification": True,
+        "fleet_learning_promotion": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
         "run_command_evidence": True,
@@ -615,6 +724,135 @@ def test_scoped_memory_write_requires_capability_and_exact_binding() -> None:
         "action": "add",
         "content": "Remember this privately.",
     }
+
+
+def test_learning_promotion_client_requires_capability_and_uses_exact_documents(
+) -> None:
+    from hermes_fleet.hermes_runs import HermesRunError, HermesRunsClient
+    from hermes_fleet.principal_identity import PrincipalReference
+    from hermes_fleet.promotion import PromotionAuthorization, PromotionScopeRef
+
+    memory = _memory_binding()
+    source_hash = "sha256:" + "6" * 64
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    api.fleet_learning_promotion = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        with pytest.raises(HermesRunError, match="fleet_learning_promotion"):
+            client.prepare_memory_promotion(
+                target="memory",
+                source_scope=memory.write_scope,
+                source_content_hash=source_hash,
+                source_owner_principal_id=memory.principal_id,
+                agent_instance_id=memory.agent_instance_id,
+            )
+    assert [request[0:2] for request in api.requests] == [
+        ("GET", "/health"),
+        ("GET", "/v1/capabilities"),
+    ]
+
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    issued = int(time.time() * 1000)
+    administrator = PrincipalReference(
+        principal_id=memory.principal_id,
+        kind="project",
+        generation=1,
+        binding_hash="sha256:" + "5" * 64,
+    )
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        prepared = client.prepare_memory_promotion(
+            target="memory",
+            source_scope=memory.write_scope,
+            source_content_hash=source_hash,
+            source_owner_principal_id=memory.principal_id,
+            agent_instance_id=memory.agent_instance_id,
+        )
+        assert prepared["approved_content_hash"] == source_hash
+        assert prepared["authority"] == "none"
+
+        authorization = PromotionAuthorization(
+            subject_kind="memory",
+            subject_key="memory:" + source_hash,
+            source_owner_principal_id=memory.principal_id,
+            agent_instance_id=memory.agent_instance_id,
+            source_scope=PromotionScopeRef("principal", memory.principal_id),
+            target_scope=PromotionScopeRef("project", "project-a"),
+            source_content_hash=source_hash,
+            approved_content_hash=source_hash,
+            administrator=administrator,
+            issued_at_ms=issued,
+            expires_at_ms=issued + 60_000,
+        )
+        committed = client.commit_promotion(
+            authorization=authorization,
+            target="memory",
+        )
+        assert committed["promotion_id"] == authorization.promotion_id
+        assert committed["authority"] == "none"
+
+        history = client.promotion_history(
+            subject_kind="memory",
+            subject_key=authorization.subject_key,
+            source_owner_principal_id=memory.principal_id,
+            agent_instance_id=memory.agent_instance_id,
+            source_scope=authorization.source_scope,
+            target_scope=authorization.target_scope,
+        )
+        assert history == {
+            "current_promotion_id": None,
+            "history": [],
+            "records": [],
+            "authority": "none",
+        }
+
+        rollback = PromotionAuthorization(
+            subject_kind="memory",
+            subject_key=authorization.subject_key,
+            source_owner_principal_id=memory.principal_id,
+            agent_instance_id=memory.agent_instance_id,
+            source_scope=authorization.source_scope,
+            target_scope=authorization.target_scope,
+            source_content_hash=source_hash,
+            approved_content_hash=source_hash,
+            administrator=administrator,
+            issued_at_ms=issued + 1,
+            expires_at_ms=issued + 60_001,
+            expected_current_promotion_id="sha256:" + "7" * 64,
+            rollback_to_promotion_id="sha256:" + "8" * 64,
+            operation="rollback",
+        )
+        rolled_back = client.rollback_promotion(authorization=rollback)
+        assert rolled_back["promotion_id"] == rollback.promotion_id
+        assert rolled_back["operation"] == "rollback"
+        assert rolled_back["authority"] == "none"
+
+    post_paths = [request[1] for request in api.requests if request[0] == "POST"]
+    assert post_paths == [
+        "/v1/fleet/promotions/prepare",
+        "/v1/fleet/promotions/commit",
+        "/v1/fleet/promotions/history",
+        "/v1/fleet/promotions/rollback",
+    ]
+
+
+def test_skill_promotion_prepare_requires_exact_verification_evidence() -> None:
+    from hermes_fleet.hermes_runs import HermesRunsClient
+
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    candidate_id = "sha256:" + "b" * 64
+    with api.serve() as endpoint:
+        prepared = HermesRunsClient(
+            endpoint=endpoint,
+            api_key="[REDACTED]",
+        ).prepare_skill_promotion(
+            candidate_id=candidate_id,
+            source_owner_principal_id="sha256:" + "1" * 64,
+            agent_instance_id="sha256:" + "3" * 64,
+        )
+    assert prepared["subject_key"] == candidate_id
+    assert prepared["verification_digest"] == "sha256:" + "a" * 64
+    assert prepared["authority"] == "none"
 
 
 def test_fleet_runtime_binding_rejects_overbroad_or_unpinned_values() -> None:
