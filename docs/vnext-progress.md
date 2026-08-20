@@ -42,7 +42,7 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 17 | COMPLETE | [Phase 17 skill verification](vnext-phase17-skill-verification.md); exact-hash verification attestations, real disposable Bubblewrap denial/resource proofs, strict non-authority invariants, and mixed-version capability gating are merged, with Agent PR #13, Fleet PR #154, and exact post-merge `main` CI green on both repositories. |
 | 18 | COMPLETE | [Phase 18 memory/skill promotion](vnext-phase18-memory-skill-promotion.md); explicit scoped promotion, exact-hash approval, sanitization, Phase 17 skill re-verification, administrator-lineage enforcement, multi-hop scope proof, append-only history/rollback, conflict detection, zero authority widening, final Agent PRs #15/#16, Fleet PR #156, and exact post-merge `main` CI green on both repositories. |
 | 19 | COMPLETE | [Phase 19 deterministic security event model](vnext-phase19-deterministic-security-events.md); immutable exact-request/event facts, exact target/network/deadline binding, bounded memory/skill and interception/quarantine evidence, and separate deterministic hard-deny records are merged, with Fleet PR #158 and exact post-merge `main` CI green. |
-| 20 | NOT STARTED | Templar core. |
+| 20 | IN PROGRESS | [Phase 20 Templar core](vnext-phase20-templar-core.md); exact Phase 19 event evaluation, authority-free ALLOW/DENY/REVIEW verdicts, model/policy audit binding, stale/substitution rejection, fail-closed evaluator errors, and deterministic Fleet hard-deny precedence are implemented on the Phase 20 branch, with canonical closure still gated on final regressions, PR CI, merge, and post-merge `main` CI. |
 | 21 | NOT STARTED | Disposable Templar sandbox. |
 | 22 | NOT STARTED | Templar pre-execution gate. |
 | 23 | NOT STARTED | Templar learning/promotion gate. |
@@ -65,10 +65,10 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 20 (Templar core).**
+**Current work is Phase 20 (Templar core).**
 
-Phases 0–19 are closed under the repository closure rule. Phase 19 is merged and verified on Fleet `main`; immutable exact-request security events and separate deterministic hard-deny records now provide the fact boundary that later Templar phases must consume without gaining execution authority.
+Phases 0–19 are closed under the repository closure rule. Phase 19 is merged and verified on Fleet `main`; immutable exact-request security events and separate deterministic hard-deny records provide the fact boundary Templar must consume without gaining execution authority.
 
-Phase 20 is the next unstarted phase. Templar remains a low-authority evaluator only: deterministic Fleet deny wins, `ALLOW` cannot grant execution, and every verdict must bind to the exact Phase 19 request hash.
+Phase 20 now implements the authority-free Templar core over those exact facts. Do not begin Phase 21 until the Phase 20 implementation passes its final local regressions, exact-head PR CI, normal merge, and resulting `main` CI. Deterministic Fleet deny still wins, `ALLOW` cannot grant execution, and every verdict remains bound to the exact Phase 19 request/event identity.
 
 Do not resume an old later-phase worktree simply because it exists.
