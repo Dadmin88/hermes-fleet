@@ -42,7 +42,7 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 17 | COMPLETE | [Phase 17 skill verification](vnext-phase17-skill-verification.md); exact-hash verification attestations, real disposable Bubblewrap denial/resource proofs, strict non-authority invariants, and mixed-version capability gating are merged, with Agent PR #13, Fleet PR #154, and exact post-merge `main` CI green on both repositories. |
 | 18 | COMPLETE | [Phase 18 memory/skill promotion](vnext-phase18-memory-skill-promotion.md); explicit scoped promotion, exact-hash approval, sanitization, Phase 17 skill re-verification, administrator-lineage enforcement, multi-hop scope proof, append-only history/rollback, conflict detection, zero authority widening, final Agent PRs #15/#16, Fleet PR #156, and exact post-merge `main` CI green on both repositories. |
 | 19 | COMPLETE | [Phase 19 deterministic security event model](vnext-phase19-deterministic-security-events.md); immutable exact-request/event facts, exact target/network/deadline binding, bounded memory/skill and interception/quarantine evidence, and separate deterministic hard-deny records are merged, with Fleet PR #158 and exact post-merge `main` CI green. |
-| 20 | IN PROGRESS | [Phase 20 Templar core](vnext-phase20-templar-core.md); exact Phase 19 event evaluation, authority-free ALLOW/DENY/REVIEW verdicts, model/policy audit binding, stale/substitution rejection, fail-closed evaluator errors, and deterministic Fleet hard-deny precedence are implemented on the Phase 20 branch, with canonical closure still gated on final regressions, PR CI, merge, and post-merge `main` CI. |
+| 20 | COMPLETE | [Phase 20 Templar core](vnext-phase20-templar-core.md); exact Phase 19 event evaluation, authority-free ALLOW/DENY/REVIEW verdicts, evaluator/model/policy audit binding, stale/substitution rejection, fail-closed evaluator errors, deep-frozen context, and deterministic Fleet hard-deny precedence are merged, with Fleet PR #160 and exact post-merge `main` CI green. |
 | 21 | NOT STARTED | Disposable Templar sandbox. |
 | 22 | NOT STARTED | Templar pre-execution gate. |
 | 23 | NOT STARTED | Templar learning/promotion gate. |
@@ -65,10 +65,10 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Current work is Phase 20 (Templar core).**
+**Next work begins at Phase 21 (Disposable Templar sandbox).**
 
-Phases 0–19 are closed under the repository closure rule. Phase 19 is merged and verified on Fleet `main`; immutable exact-request security events and separate deterministic hard-deny records provide the fact boundary Templar must consume without gaining execution authority.
+Phases 0–20 are closed under the repository closure rule. Phase 20 is merged and verified on Fleet `main`; Templar now exists as an authority-free evaluator over exact Phase 19 security events, with deterministic Fleet deny precedence and exact verdict/request/event/policy/evaluator binding.
 
-Phase 20 now implements the authority-free Templar core over those exact facts. Do not begin Phase 21 until the Phase 20 implementation passes its final local regressions, exact-head PR CI, normal merge, and resulting `main` CI. Deterministic Fleet deny still wins, `ALLOW` cannot grant execution, and every verdict remains bound to the exact Phase 19 request/event identity.
+Phase 21 is the next unstarted phase. It may add the disposable sandbox needed for evaluator process isolation and hard timeout termination, but it must not implement Phase 22 pre-execution gate ordering or Phase 23 learning/promotion gating.
 
 Do not resume an old later-phase worktree simply because it exists.
