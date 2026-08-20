@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+import hermes_fleet.templar_sandbox as templar_sandbox_module
 from hermes_fleet.templar import (
     ALLOW,
     DENY,
@@ -169,7 +170,6 @@ def test_provider_policy_requires_exact_channel_configuration(tmp_path: Path) ->
 
 
 def test_provider_channel_rejects_named_unix_socket(tmp_path: Path) -> None:
-    item = artifact(tmp_path, valid_response_source())
     socket_path = tmp_path / "provider.sock"
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -179,16 +179,10 @@ def test_provider_channel_rejects_named_unix_socket(tmp_path: Path) -> None:
         client.connect(str(socket_path))
         accepted, _address = server.accept()
         try:
-            backend = TemplarSandboxBackend(
-                artifact=item,
-                evaluator=EVALUATOR,
-                policy=TemplarSandboxPolicy(provider_access=PROVIDER_CHANNEL),
-                provider_channel_factory=lambda **_kwargs: client,
-            )
             with pytest.raises(
                 TemplarSandboxProtocolError, match="anonymous socketpair"
             ):
-                backend.evaluate(evaluation_request(), timeout_ms=1_000)
+                templar_sandbox_module._validate_provider_socket(client)
         finally:
             accepted.close()
     finally:
