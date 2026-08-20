@@ -250,6 +250,18 @@ Deterministic Fleet hard denies are represented separately as `fleet.security-ha
 
 Phase 19 does not grant authority, activate RunAuthority, invoke Templar, or return `ALLOW`, `DENY`, or `REVIEW`. Later Templar phases may consume these exact facts, but Fleet deterministic policy remains authoritative and security judgments must remain bound to the exact request hash.
 
+## Templar core
+
+Phase 20 adds an authority-free Templar evaluation core over the exact Phase 19 security-event boundary. One bounded structured evaluation request binds the Phase 19 request/event hashes, Fleet policy digest, Templar policy identity, evaluator/model identity, issue/deadline timestamps, and the complete sanitized Phase 19 event. The request has a deterministic `evaluation_id` that is independently recomputed when a verdict is later validated.
+
+A backend may return only a closed `fleet.templar-backend-response.v1` object containing the exact evaluation/request/event identities plus `ALLOW`, `DENY`, or `REVIEW` and bounded reason codes. Fleet then wraps that response in immutable `fleet.templar-verdict.v1` evidence carrying exact policy/model/version provenance and `authority: none`. Unknown fields, request substitution, stale event/policy/model identity, arbitrary evaluation IDs, or authority-bearing verdicts fail closed.
+
+Backend timeout signals, backend failures, late responses, and malformed/binding-mismatched responses become bounded Fleet-generated `DENY` verdicts with origin `core-fail-closed`; raw backend exception text is not persisted in the verdict. A completely wedged backend that ignores its timeout contract is not yet process-killed by Phase 20: that hard lifecycle boundary belongs to the Phase 21 disposable Templar sandbox.
+
+Deterministic Phase 19 Fleet hard denies have precedence before Templar verdict validation. A valid hard deny therefore resolves to advisory `DENY` even if an accompanying Templar verdict is stale or says `ALLOW`. This precedence helper is not execution authorization; Phase 22 still owns pre-execution gate ordering and Fleet's final decision.
+
+The Phase 20 core exposes no terminal, SSH, Docker, Keryx, Nodescale, Vault-reader, host-broker, Agent-memory, or Agent-skill tool handles to the evaluator. The concrete low-authority disposable evaluator runtime remains Phase 21 work.
+
 ## Deliberate Hermes execution
 
 `fleet.hermes.run` is the current operation that starts Hermes execution.
