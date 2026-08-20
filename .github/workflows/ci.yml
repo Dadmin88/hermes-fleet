@@ -179,11 +179,21 @@ jobs:
           python -m pip install -e "$RUNNER_TEMP/hermes-agent"
           python -m pip install -e ".[dev]" build
 
-      - name: Install Phase 17 disposable-runtime dependency
+      - name: Install and prove Phase 17 disposable-runtime dependency
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y bubblewrap
           bwrap --version
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --uid 65534 --gid 65534 --cap-drop ALL \
+            --ro-bind /usr /usr \
+            --ro-bind-try /lib /lib \
+            --ro-bind-try /lib64 /lib64 \
+            --dev /dev --proc /proc --tmpfs /tmp \
+            --clearenv --setenv PATH /usr/bin:/bin \
+            -- /usr/bin/python3 -c 'import os; assert os.geteuid() == 65534'
 
       - name: Verify Hermes CLI
         run: hermes --help >/dev/null
