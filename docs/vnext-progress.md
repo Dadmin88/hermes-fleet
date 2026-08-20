@@ -41,7 +41,7 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 16 | COMPLETE | [Phase 16 skill quarantine](vnext-phase16-skill-quarantine.md); deterministic risk classification, immutable content-addressed quarantine seals, tamper detection, and exact Agent capability pinning are merged, with Fleet PR #153 and exact post-merge `main` CI green. |
 | 17 | COMPLETE | [Phase 17 skill verification](vnext-phase17-skill-verification.md); exact-hash verification attestations, real disposable Bubblewrap denial/resource proofs, strict non-authority invariants, and mixed-version capability gating are merged, with Agent PR #13, Fleet PR #154, and exact post-merge `main` CI green on both repositories. |
 | 18 | COMPLETE | [Phase 18 memory/skill promotion](vnext-phase18-memory-skill-promotion.md); explicit scoped promotion, exact-hash approval, sanitization, Phase 17 skill re-verification, administrator-lineage enforcement, multi-hop scope proof, append-only history/rollback, conflict detection, zero authority widening, final Agent PRs #15/#16, Fleet PR #156, and exact post-merge `main` CI green on both repositories. |
-| 19 | NOT STARTED | Deterministic security event model. |
+| 19 | IN PROGRESS | [Phase 19 deterministic security event model](vnext-phase19-deterministic-security-events.md); immutable exact-request/event facts and separate deterministic hard-deny records are implemented on the Phase 19 branch, with canonical closure still gated on exact-head PR CI, merge, and resulting `main` CI. |
 | 20 | NOT STARTED | Templar core. |
 | 21 | NOT STARTED | Disposable Templar sandbox. |
 | 22 | NOT STARTED | Templar pre-execution gate. |
@@ -65,10 +65,10 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 18 (Memory/skill promotion).**
+**Current work is Phase 19 (Deterministic security event model).**
 
-Phases 0–17 are closed under the repository closure rule. Phases 14–17 were reconciled against their exact acceptance records after implementation: Fleet PRs #151–#154 are merged, each exact PR head passed CI before merge, each resulting Fleet `main` merge SHA passed post-merge CI, and the dependent Hermes Agent Phase 17 implementation is likewise merged with green exact-head and post-merge CI.
+Phases 0–18 are closed under the repository closure rule. Phase 18 is merged and verified on both Hermes Agent and Fleet `main`; explicit memory/skill promotion therefore remains separate from Phase 17 verification and still carries no execution authority.
 
-Phase 18 is the next unstarted phase. Do not treat Phase 17 verification as promotion or authority: a verified learned-skill candidate remains inactive and `authority: none` until the Phase 18 promotion policy explicitly authorizes a scope transition.
+Phase 19 now defines the immutable exact-request/event fact model and separate deterministic hard-deny records required before Templar exists. Do not begin Phase 20 until the Phase 19 implementation PR passes exact-head CI, merges normally, and the resulting Fleet `main` SHA passes post-merge CI.
 
 Do not resume an old later-phase worktree simply because it exists.
