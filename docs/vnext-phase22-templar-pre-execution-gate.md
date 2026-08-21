@@ -1,6 +1,6 @@
 # vNext Phase 22: Templar pre-execution gate
 
-Status: **CLOSURE-GATED**
+Status: **COMPLETE — MERGED AND VERIFIED ON FLEET `main`**
 
 Phase 22 composes the security components delivered in Phases 19–21 into the mandatory vNext pre-execution ordering. It does not give Templar authority and it does not implement the Phase 23 learning/promotion gate.
 
@@ -276,15 +276,15 @@ Current Phase 22 pre-PR evidence:
 - Rust `cargo build --workspace`: green;
 - `git diff --check`: green.
 
-Repository closure still requires the normal path:
+Fleet delivery evidence is final:
 
-1. reviewable branch/commit;
-2. exact final PR-head CI green;
-3. normal GitHub merge;
-4. exact resulting `main` CI green;
-5. closure record update through the normal closure workflow.
+- implementation PR #164 final exact head: `ad7a3ee9ba8838c50654b77586b7af8b63f977f3`;
+- exact final-head PR CI run `32441184357`: completed successfully with Python 3.11/3.13 quality, Rust workspace compatibility, real Nodescale/readiness proofs, and the pinned-Hermes clean-install smoke all green;
+- PR #164 merged normally as `1afb5eb473c66a1176ffe4d6535066ab35e462c3`;
+- exact post-merge `main` CI run `32441380973`: completed successfully on that merge SHA with all five jobs green;
+- no force push, history rewrite, skipped failing security proof, or administrative merge override was used.
 
-Until those steps are complete, Phase 22 remains `CLOSURE-GATED` rather than `COMPLETE`.
+Phase 22 therefore satisfies the repository closure rule end to end. The canonical next implementation entry point is Phase 23.
 
 ## Later-phase boundary
 
