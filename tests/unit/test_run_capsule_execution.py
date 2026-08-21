@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,10 @@ from hermes_fleet.hermes_runs import (
 from hermes_fleet.host_action_broker import HostActionGrant
 from hermes_fleet.network_isolation import NETWORK_NONE
 from hermes_fleet.oci_backend import DockerWorkshopBackend
+from hermes_fleet.pre_execution_gate import (
+    PreExecutionPermit,
+    PreExecutionPermitSealer,
+)
 from hermes_fleet.principal_identity import (
     PRINCIPAL_OWNER,
     SOURCE_LOCAL_PEER,
@@ -63,6 +69,8 @@ HASH_2 = "sha256:" + "2" * 64
 HASH_3 = "sha256:" + "3" * 64
 HASH_5 = "sha256:" + "5" * 64
 HASH_6 = "sha256:" + "6" * 64
+PERMIT_TEST_KEY = b"p" * 32
+PERMIT_SEALER = PreExecutionPermitSealer(PERMIT_TEST_KEY)
 PRINCIPAL_DEFINITION = PrincipalDefinition(
     kind=PRINCIPAL_OWNER,
     subject="node-test:uid:1000",
@@ -226,6 +234,37 @@ def make_authority(
 
 def make_spec(bundle, **kwargs) -> RunCapsuleSpec:
     return make_authority(bundle, **kwargs).to_capsule_spec()
+
+
+def permit(spec: RunCapsuleSpec) -> PreExecutionPermit:
+    unsigned = PreExecutionPermit(
+        gate_request_hash=HASH_1,
+        security_request_hash=HASH_2,
+        event_hash=HASH_3,
+        policy_digest=HASH_5,
+        run_authority_hash=spec.run_authority_hash,
+        capsule_hash=spec.content_hash,
+        final_decision_hash=HASH_6,
+        issued_at_ms=900,
+        valid_until_ms=2_000,
+        seal="hmac-sha256:" + "0" * 64,
+    )
+    payload = json.dumps(
+        unsigned.unsigned_dict(),
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    seal = (
+        "hmac-sha256:"
+        + hmac.new(
+            PERMIT_TEST_KEY,
+            payload,
+            hashlib.sha256,
+        ).hexdigest()
+    )
+    return replace(unsigned, seal=seal)
 
 
 class FakeWorkshop(DockerWorkshopBackend):
@@ -438,6 +477,7 @@ def harness(
         store=store,
         principals=principals,
         authorities=authorities,
+        permit_sealer=PERMIT_SEALER,
         authority_context_inspector=lambda _spec: {
             "policy_digest": authority.policy_digest,
             "capabilities_hash": authority.capabilities_hash,
@@ -468,6 +508,68 @@ def harness(
     )
 
 
+def test_stale_pre_execution_permit_blocks_capsule_and_body_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        events,
+        _releases,
+    ) = harness(tmp_path)
+    stale = replace(permit(spec), capsule_hash=HASH_1)
+
+    with pytest.raises(RunCapsuleExecutionError, match="pre-execution permit"):
+        executor.execute_initial(
+            spec=spec,
+            permit=stale,
+            agency_bundle=bundle,
+            prompt="work",
+        )
+
+    assert store.get(spec.execution_id) is None
+    assert fake.ensure_calls == 0
+    assert runs.start_calls == 0
+    assert events == []
+
+
+def test_forged_pre_execution_permit_seal_blocks_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    (
+        bundle,
+        spec,
+        _service,
+        fake,
+        _workspace,
+        runs,
+        store,
+        executor,
+        events,
+        _releases,
+    ) = harness(tmp_path)
+    forged = replace(permit(spec), final_decision_hash=HASH_1)
+
+    with pytest.raises(RunCapsuleExecutionError, match="pre-execution permit"):
+        executor.execute_initial(
+            spec=spec,
+            permit=forged,
+            agency_bundle=bundle,
+            prompt="work",
+        )
+
+    assert store.get(spec.execution_id) is None
+    assert fake.ensure_calls == 0
+    assert runs.start_calls == 0
+    assert events == []
+
+
 def test_revoked_principal_blocks_initial_admission_before_side_effects(
     tmp_path: Path,
 ) -> None:
@@ -485,7 +587,9 @@ def test_revoked_principal_blocks_initial_admission_before_side_effects(
     ) = harness(tmp_path, principal_revoked=True)
 
     with pytest.raises(RunCapsuleExecutionError, match="principal is not current"):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
 
     assert store.get(spec.execution_id) is None
     assert fake.ensure_calls == 0
@@ -511,7 +615,9 @@ def test_cancelled_authority_blocks_initial_admission_before_side_effects(
     executor._authorities.cancel(spec.run_authority_hash)
 
     with pytest.raises(RunCapsuleExecutionError, match="RunAuthority is not current"):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
 
     assert store.get(spec.execution_id) is None
     assert fake.ensure_calls == 0
@@ -541,7 +647,9 @@ def test_stale_policy_blocks_initial_admission_before_side_effects(
     }
 
     with pytest.raises(RunCapsuleExecutionError, match="RunAuthority is not current"):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
 
     assert store.get(spec.execution_id) is None
     assert fake.ensure_calls == 0
@@ -569,7 +677,9 @@ def test_authority_cancelled_during_body_creation_cleans_body_without_hermes(
     with pytest.raises(
         RunCapsuleExecutionError, match="changed before Hermes submission"
     ):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
 
     record = store.get(spec.execution_id)
     assert record is not None
@@ -613,7 +723,9 @@ def test_authority_cancelled_during_runtime_material_binding_revokes_before_clea
     with pytest.raises(
         RunCapsuleExecutionError, match="changed before Hermes submission"
     ):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
 
     record = store.get(spec.execution_id)
     assert record is not None
@@ -695,7 +807,9 @@ def test_success_orders_quiescence_learning_revocation_cleanup_and_keeps_agent(
         events,
         releases,
     ) = harness(tmp_path)
-    outcome = executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+    outcome = executor.execute_initial(
+        spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+    )
 
     assert outcome.status == "completed"
     assert outcome.text == "RESULT"
@@ -764,7 +878,9 @@ def test_timeout_is_finalized_quiescent_and_cleaned(tmp_path: Path) -> None:
         _events,
         _releases,
     ) = harness(tmp_path, mode="timeout")
-    outcome = executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+    outcome = executor.execute_initial(
+        spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+    )
     assert outcome.status == "timed_out"
     assert outcome.record.state == "finalized"
     assert fake.present is False
@@ -795,7 +911,9 @@ def test_recovery_cleans_exact_body_after_indeterminate_creation_without_recreat
     fake.ensure = ambiguous_creation  # type: ignore[method-assign]
 
     with pytest.raises(RunCapsuleIndeterminate, match="body creation outcome"):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
 
     stranded = store.require_exact(spec)
     assert stranded.state == "indeterminate"
@@ -835,7 +953,9 @@ def test_submission_unknown_retains_exact_body_and_agent_for_recovery(
         _releases,
     ) = harness(tmp_path, mode="submission_unknown")
     with pytest.raises(RunCapsuleIndeterminate, match="submission outcome"):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
     record = store.require_exact(spec)
     assert record.state == "indeterminate"
     assert record.container_id == fake.container_id
@@ -862,7 +982,9 @@ def test_finalize_failure_retains_body_until_quiescence_can_be_proven(
         _releases,
     ) = harness(tmp_path, mode="finalize_fail")
     with pytest.raises(RunCapsuleIndeterminate, match="quiescence"):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
     record = store.require_exact(spec)
     assert record.state == "indeterminate"
     assert record.hermes_run_id == "hermes-run-1"
@@ -1069,7 +1191,9 @@ def test_definite_start_failure_cleans_body_without_deleting_agent(
         _events,
         _releases,
     ) = harness(tmp_path, mode="start_fail")
-    outcome = executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+    outcome = executor.execute_initial(
+        spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+    )
     assert outcome.status == "failed"
     assert outcome.record.state == "finalized"
     assert fake.present is False
@@ -1101,7 +1225,9 @@ def test_declared_artifacts_are_persisted_before_learning_revocation_and_cleanup
         include_artifact_persister=True,
     )
 
-    outcome = executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+    outcome = executor.execute_initial(
+        spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+    )
 
     assert outcome.status == "completed"
     assert outcome.artifacts == {"artifact": b"payload"}
@@ -1146,7 +1272,9 @@ def test_temporary_powers_cannot_reach_cleanup_without_explicit_revocation(
     )
 
     with pytest.raises(RunCapsuleExecutionError, match="revocation callback"):
-        executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+        executor.execute_initial(
+            spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+        )
 
     record = store.require_exact(spec)
     assert record.state == "learning_persisted"
@@ -1176,7 +1304,9 @@ def test_runtime_material_refs_use_dedicated_revoker_without_generic_grant_callb
         include_revoker=False,
     )
 
-    outcome = executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+    outcome = executor.execute_initial(
+        spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+    )
 
     assert outcome.status == "completed"
     assert outcome.record.state == "finalized"
@@ -1213,7 +1343,9 @@ def test_temporary_powers_are_revoked_before_body_cleanup(
         host_broker_grants=(host_grant,),
     )
 
-    outcome = executor.execute_initial(spec=spec, agency_bundle=bundle, prompt="work")
+    outcome = executor.execute_initial(
+        spec=spec, permit=permit(spec), agency_bundle=bundle, prompt="work"
+    )
 
     assert outcome.status == "completed"
     assert outcome.record.state == "finalized"

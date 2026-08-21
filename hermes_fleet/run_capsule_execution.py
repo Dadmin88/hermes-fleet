@@ -19,6 +19,11 @@ from .hermes_runs import (
     HermesRunIndeterminate,
     HermesRunSubmissionUnknown,
 )
+from .pre_execution_gate import (
+    PreExecutionGateError,
+    PreExecutionPermit,
+    PreExecutionPermitSealer,
+)
 from .principal_identity import PrincipalError, PrincipalRecord, PrincipalRegistry
 from .run_authority import (
     RunAuthorityError,
@@ -142,6 +147,7 @@ class LocalRunCapsuleExecutor:
         store: RunCapsuleStore,
         principals: PrincipalRegistry,
         authorities: RunAuthorityStore,
+        permit_sealer: PreExecutionPermitSealer,
         authority_context_inspector: AuthorityContextInspector,
         instances: AgentInstanceManager,
         runs_factory: RunsFactory,
@@ -166,6 +172,8 @@ class LocalRunCapsuleExecutor:
             raise RunCapsuleExecutionError("principal registry is invalid")
         if type(authorities) is not RunAuthorityStore:
             raise RunCapsuleExecutionError("RunAuthority store is invalid")
+        if type(permit_sealer) is not PreExecutionPermitSealer:
+            raise RunCapsuleExecutionError("pre-execution permit sealer is invalid")
         if not callable(authority_context_inspector):
             raise RunCapsuleExecutionError("RunAuthority context inspector is invalid")
         if type(instances) is not AgentInstanceManager:
@@ -200,6 +208,7 @@ class LocalRunCapsuleExecutor:
         self._store = store
         self._principals = principals
         self._authorities = authorities
+        self._permit_sealer = permit_sealer
         self._authority_context = authority_context_inspector
         self._instances = instances
         self._runs_factory = runs_factory
@@ -218,11 +227,20 @@ class LocalRunCapsuleExecutor:
         self,
         *,
         spec: RunCapsuleSpec,
+        permit: PreExecutionPermit,
         agency_bundle: ImmutableAgencyBundle,
         prompt: str,
     ) -> RunCapsuleOutcome:
         if type(spec) is not RunCapsuleSpec:
             raise RunCapsuleExecutionError("Run Capsule spec is invalid")
+        if type(permit) is not PreExecutionPermit:
+            raise RunCapsuleExecutionError("pre-execution permit is required")
+        try:
+            self._permit_sealer.verify(permit, spec=spec, now_ms=self._now_ms())
+        except PreExecutionGateError as error:
+            raise RunCapsuleExecutionError(
+                "pre-execution permit is stale or request-substituted"
+            ) from error
         if type(agency_bundle) is not ImmutableAgencyBundle:
             raise RunCapsuleExecutionError("Agency bundle is invalid")
         if type(prompt) is not str or not prompt.strip():

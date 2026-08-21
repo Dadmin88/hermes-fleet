@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import platform
 import shutil
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,10 @@ from hermes_fleet.backend_capabilities import BackendCapabilities
 from hermes_fleet.execution_backend import ExecutionPlan
 from hermes_fleet.hermes_runs import HermesRunResult
 from hermes_fleet.network_isolation import NETWORK_NONE
+from hermes_fleet.pre_execution_gate import (
+    PreExecutionPermit,
+    PreExecutionPermitSealer,
+)
 from hermes_fleet.principal_identity import (
     PRINCIPAL_OWNER,
     SOURCE_LOCAL_PEER,
@@ -47,6 +53,7 @@ BASE_IMAGE = (
 AUTHORITY = "sha256:" + "8" * 64
 IDEMPOTENCY = "sha256:" + "9" * 64
 PROVENANCE = "sha256:" + "7" * 64
+PERMIT_TEST_KEY = b"d" * 32
 PRINCIPAL_DEFINITION = PrincipalDefinition(
     kind=PRINCIPAL_OWNER,
     subject="phase9-docker:uid:1000",
@@ -264,6 +271,31 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
         toolsets=("fleet-terminal",),
     )
     spec = authority.to_capsule_spec()
+    permit_sealer = PreExecutionPermitSealer(PERMIT_TEST_KEY)
+    unsigned_permit = PreExecutionPermit(
+        gate_request_hash=AUTHORITY,
+        security_request_hash=IDEMPOTENCY,
+        event_hash=PROVENANCE,
+        policy_digest=authority.policy_digest,
+        run_authority_hash=spec.run_authority_hash,
+        capsule_hash=spec.content_hash,
+        final_decision_hash=authority.capabilities_hash,
+        issued_at_ms=issued_at_ms,
+        valid_until_ms=min(deadline_ms, issued_at_ms + 60_000),
+        seal="hmac-sha256:" + "0" * 64,
+    )
+    payload = json.dumps(
+        unsigned_permit.unsigned_dict(),
+        ensure_ascii=True,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    permit = replace(
+        unsigned_permit,
+        seal="hmac-sha256:"
+        + hmac.new(PERMIT_TEST_KEY, payload, hashlib.sha256).hexdigest(),
+    )
     store_path = tmp_path / "capsules.sqlite"
     store = RunCapsuleStore(store_path)
     principals = PrincipalRegistry(tmp_path / "principals.sqlite")
@@ -282,6 +314,7 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
         store=store,
         principals=principals,
         authorities=authorities,
+        permit_sealer=permit_sealer,
         authority_context_inspector=lambda _spec: {
             "policy_digest": authority.policy_digest,
             "capabilities_hash": authority.capabilities_hash,
@@ -297,6 +330,7 @@ def test_real_docker_capsule_is_destroyed_while_agent_instance_persists(
     try:
         outcome = executor.execute_initial(
             spec=spec,
+            permit=permit,
             agency_bundle=bundle,
             prompt="prove the disposable body lifecycle",
         )
