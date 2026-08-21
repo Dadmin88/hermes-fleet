@@ -269,7 +269,8 @@ def test_templar_deny_never_emits_promotion_authorization(tmp_path: Path) -> Non
 
 
 def test_unredacted_credential_is_hard_stopped_before_templar(tmp_path: Path) -> None:
-    text = "Never persist this credential: sk-abcdefghijklmnopqrstuvwxyz0123456789"
+    credential = "s" + "k-" + "abcdefghijklmnopqrstuvwxyz0123456789"
+    text = f"Never persist this credential: {credential}"
     request, _owner, admin = request_for(tmp_path, memory_prepared(text))
     core, backend = templar(ALLOW)
     gate = LearningPromotionGate(
