@@ -1064,9 +1064,7 @@ class HermesRunsClient:
         ):
             if type(value) is not str or _HASH_RE.fullmatch(value) is None:
                 raise ValueError(f"Hermes promotion {label} is invalid")
-        self._require_learning_promotion_gate_material(
-            timeout_seconds=timeout_seconds
-        )
+        self._require_learning_promotion_gate_material(timeout_seconds=timeout_seconds)
         status, document = self._request_json(
             "POST",
             self._path("/v1/fleet/promotions/prepare"),
@@ -1114,9 +1112,7 @@ class HermesRunsClient:
         ):
             if type(value) is not str or _HASH_RE.fullmatch(value) is None:
                 raise ValueError(f"Hermes promotion {label} is invalid")
-        self._require_learning_promotion_gate_material(
-            timeout_seconds=timeout_seconds
-        )
+        self._require_learning_promotion_gate_material(timeout_seconds=timeout_seconds)
         status, document = self._request_json(
             "POST",
             self._path("/v1/fleet/promotions/prepare"),

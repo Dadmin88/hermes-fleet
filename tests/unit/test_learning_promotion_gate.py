@@ -203,8 +203,7 @@ def test_memory_allow_binds_templar_to_exact_candidate_then_authorizes(
     assert outcome.authorization is not None
     assert outcome.authorization.approved_content_hash == raw_hash(text)
     assert (
-        outcome.authorization.source_owner_principal_id
-        == owner.reference.principal_id
+        outcome.authorization.source_owner_principal_id == owner.reference.principal_id
     )
     assert outcome.authorization.to_request()["authority"] == "none"
     assert backend.calls == 1

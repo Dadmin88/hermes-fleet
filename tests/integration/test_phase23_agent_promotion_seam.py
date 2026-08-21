@@ -97,31 +97,19 @@ def _mock_runtime_checks(*_args, **_kwargs) -> list[VerificationCheck]:
             "filesystem-denial", "host-path:/etc/passwd", True, "host path absent"
         ),
         VerificationCheck("network-denial", "internet", True, "unreachable"),
-        VerificationCheck(
-            "network-denial", "management-network", True, "unreachable"
-        ),
-        VerificationCheck(
-            "positive-test", "bundle-readable", True, "files=1"
-        ),
-        VerificationCheck(
-            "positive-test", "scratch-write", True, "isolated tmpfs"
-        ),
+        VerificationCheck("network-denial", "management-network", True, "unreachable"),
+        VerificationCheck("positive-test", "bundle-readable", True, "files=1"),
+        VerificationCheck("positive-test", "scratch-write", True, "isolated tmpfs"),
         VerificationCheck(
             "privilege-denial", "effective-capabilities", True, "CapEff=0"
         ),
-        VerificationCheck(
-            "privilege-denial", "non-root-uid", True, "euid=65534"
-        ),
-        VerificationCheck(
-            "resource-bound", "address-space", True, "bounded"
-        ),
+        VerificationCheck("privilege-denial", "non-root-uid", True, "euid=65534"),
+        VerificationCheck("resource-bound", "address-space", True, "bounded"),
         VerificationCheck("resource-bound", "cpu", True, "bounded"),
         VerificationCheck("resource-bound", "file-size", True, "bounded"),
         VerificationCheck("resource-bound", "open-files", True, "bounded"),
         VerificationCheck("resource-bound", "processes", True, "bounded"),
-        VerificationCheck(
-            "secret-denial", "environment", True, "sensitive_names=0"
-        ),
+        VerificationCheck("secret-denial", "environment", True, "sensitive_names=0"),
     ]
 
 
@@ -294,15 +282,17 @@ def test_real_agent_prepare_templar_gate_and_commit_are_exact(tmp_path: Path) ->
             )
             store.load_from_disk()
             project_text = (
-                store._scope_dir(project)
-                / store._target_filename("memory")
+                store._scope_dir(project) / store._target_filename("memory")
             ).read_text(encoding="utf-8")
 
         assert "phase23@example.com" not in project_text
         assert "[email]" in project_text
-        assert json.loads(
-            json.dumps(outcome.authorization.to_request(), sort_keys=True)
-        )["approved_content_hash"] == prepared.approved_content_hash
+        assert (
+            json.loads(json.dumps(outcome.authorization.to_request(), sort_keys=True))[
+                "approved_content_hash"
+            ]
+            == prepared.approved_content_hash
+        )
     finally:
         reset_hermes_home_override(token)
 

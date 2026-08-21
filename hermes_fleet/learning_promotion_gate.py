@@ -152,9 +152,7 @@ def _reason_codes(value: object) -> tuple[str, ...]:
     if type(value) not in {tuple, list} or len(value) > _MAX_REASON_CODES:
         raise LearningPromotionGateError("learning gate reason codes are invalid")
     items = tuple(value)
-    if any(
-        type(item) is not str or _CODE_RE.fullmatch(item) is None for item in items
-    ):
+    if any(type(item) is not str or _CODE_RE.fullmatch(item) is None for item in items):
         raise LearningPromotionGateError("learning gate reason code is invalid")
     if len(set(items)) != len(items):
         raise LearningPromotionGateError(
@@ -619,9 +617,7 @@ class LearningPromotionGate:
         if templar is not None and type(templar) is not TemplarCore:
             raise LearningPromotionGateError("learning gate Templar core is invalid")
         if review_router is not None and not callable(review_router):
-            raise LearningPromotionGateError(
-                "learning gate review router is invalid"
-            )
+            raise LearningPromotionGateError("learning gate review router is invalid")
         if (
             isinstance(authorization_ttl_ms, bool)
             or type(authorization_ttl_ms) is not int
