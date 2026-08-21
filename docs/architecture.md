@@ -276,6 +276,20 @@ Wall-clock timeout is enforced by the parent process, which sends `SIGKILL` to t
 
 Phase 21 does not invoke the sandbox as a pre-execution gate and does not apply it to learning/promotion decisions; those orderings remain Phase 22 and Phase 23 work.
 
+## Templar pre-execution gate
+
+Phase 22 composes the authenticated execution intent, deterministic Fleet policy, destination admission, the Phase 20/21 Templar evaluator when policy requires it, and Fleet's final decision before temporary execution power is activated. Deterministic hard deny short-circuits before destination admission or Templar. Destination denial stops before Templar. Templar `DENY` stops, `REVIEW` routes operator flow without authority, and `ALLOW` only reaches Fleet's final decision.
+
+The gate evaluates one proposed immutable RunAuthority document because the Phase 19 request hash must bind its exact content before Templar can reason about it. That proposed document is identity only until Fleet final `ALLOW`. `RunAuthorityStore.admit()` is called only after the request survives policy, admission, required Templar evaluation, final Fleet decision, and a second exact current-context check.
+
+Current principal/Agent/Recipe/policy/capabilities/target facts are captured before policy, checked again after the final decision, and checked immediately after RunAuthority admission. A mutation racing the authority-store commit cancels the newly admitted authority and produces no execution permit. The Run Capsule executor independently rechecks the live RunAuthority/current principal/policy/capabilities/target before Capsule claim and body creation.
+
+A successful gate returns the exact derived `RunCapsuleSpec` plus `fleet.pre-execution-permit.v1`. The permit binds the Phase 22 request, Phase 19 request/event, Fleet final decision, optional exact Templar verdict, RunAuthority hash, and Capsule hash, has a bounded lifetime no longer than the Capsule deadline, carries `authority: none`, and is HMAC-SHA256 sealed with a process-local Fleet key. The seal proves only that the configured Fleet gate issued this exact permit; it is gate evidence, not a second source of execution power. Any post-RunAuthority failure before permit issuance cancels the newly admitted authority.
+
+`LocalRunCapsuleExecutor.execute_initial()` requires that exact permit and the matching Fleet permit verifier before Capsule admission, Agent preparation, runtime-material binding, body creation, or Hermes submission. A stale, substituted, forged, or tampered permit therefore leaves the Capsule store empty and the body factory untouched. The executor still independently requires the exact active RunAuthority/current principal/policy/capabilities/target after permit verification. This is the vNext enforcement of the rule that no container exists before the pre-execution gate succeeds.
+
+Phase 22 does not activate the older `DestinationRecipeExecutor` execution-package path; migration off that legacy route and final production-local execution activation remain Phase 37 work. Phase 23 learning/promotion gating also remains separate.
+
 ## Deliberate Hermes execution
 
 `fleet.hermes.run` is the current operation that starts Hermes execution.

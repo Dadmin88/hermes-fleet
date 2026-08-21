@@ -44,7 +44,7 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 | 19 | COMPLETE | [Phase 19 deterministic security event model](vnext-phase19-deterministic-security-events.md); immutable exact-request/event facts, exact target/network/deadline binding, bounded memory/skill and interception/quarantine evidence, and separate deterministic hard-deny records are merged, with Fleet PR #158 and exact post-merge `main` CI green. |
 | 20 | COMPLETE | [Phase 20 Templar core](vnext-phase20-templar-core.md); exact Phase 19 event evaluation, authority-free ALLOW/DENY/REVIEW verdicts, evaluator/model/policy audit binding, stale/substitution rejection, fail-closed evaluator errors, deep-frozen context, and deterministic Fleet hard-deny precedence are merged, with Fleet PR #160 and exact post-merge `main` CI green. |
 | 21 | COMPLETE | [Phase 21 disposable Templar sandbox](vnext-phase21-templar-sandbox.md); fresh Bubblewrap evaluator isolation, verified evaluator artifacts, bounded non-widenable resource limits, host/network/tool denial, anonymous provider proxy channel, hard process-tree timeout termination, and cross-evaluation state destruction are merged, with Fleet PR #162 and exact post-merge `main` CI green. |
-| 22 | NOT STARTED | Templar pre-execution gate. |
+| 22 | IN PROGRESS | [Phase 22 Templar pre-execution gate](vnext-phase22-templar-pre-execution-gate.md); authenticated principal binding, deterministic hard-deny precedence, destination admission before conditional Templar, Fleet final decision, stale-context fencing, post-decision RunAuthority activation, and mandatory authority-free Fleet-sealed pre-execution permit enforcement at the Run Capsule body boundary are implemented on the Phase 22 branch, with canonical closure still gated on broad regressions, exact-head PR CI, normal merge, and post-merge `main` CI. |
 | 23 | NOT STARTED | Templar learning/promotion gate. |
 | 24 | NOT STARTED | Agency base + learned overlays. |
 | 25 | NOT STARTED | Revocation and right-to-forget. |
@@ -65,10 +65,10 @@ Read [vNext foundation](vnext-foundation.md) before this ledger.
 
 ## Current entry point
 
-**Next work begins at Phase 22 (Templar pre-execution gate).**
+**Current work is Phase 22 (Templar pre-execution gate).**
 
-Phases 0–21 are closed under the repository closure rule. Phase 21 is merged and verified on Fleet `main`; Templar now has both the authority-free Phase 20 verdict core and the fresh Bubblewrap process-isolation/hard-timeout boundary required for safe evaluation.
+Phases 0–21 are closed under the repository closure rule. Phase 21 is merged and verified on Fleet `main`; Templar has both the authority-free Phase 20 verdict core and the fresh Bubblewrap process-isolation/hard-timeout boundary required for safe evaluation.
 
-Phase 22 is the next unstarted phase. It may compose the authenticated request, deterministic Fleet policy, Phase 20 Templar core, and Phase 21 sandbox into the pre-execution gate, but it must preserve deterministic Fleet deny precedence and must not implement Phase 23 learning/promotion gating.
+Phase 22 now composes authenticated principal binding, deterministic Fleet policy, destination admission, conditional Templar evaluation, Fleet final decision, RunAuthority activation, and mandatory exact-Capsule permit enforcement in the required order. Do not begin Phase 23 until Phase 22 passes broad local regressions, exact-head PR CI, normal merge, and resulting `main` CI. The legacy FX8 production-path migration remains Phase 37 work rather than being silently activated here.
 
 Do not resume an old later-phase worktree simply because it exists.
