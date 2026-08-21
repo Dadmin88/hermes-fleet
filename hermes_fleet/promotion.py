@@ -87,6 +87,62 @@ class PromotionScopeRef:
         return {"kind": self.kind, "scope_id": self.scope_id}
 
 
+def _validate_promotion_fields(
+    *,
+    subject_kind: str,
+    subject_key: str,
+    source_owner_principal_id: str,
+    agent_instance_id: str,
+    source_scope: PromotionScopeRef,
+    target_scope: PromotionScopeRef,
+    source_content_hash: str,
+    approved_content_hash: str,
+    administrator: PrincipalReference,
+    verification_digest: str | None,
+    expected_current_promotion_id: str | None,
+    rollback_to_promotion_id: str | None,
+    operation: str,
+) -> None:
+    if subject_kind not in PROMOTABLE_KINDS:
+        raise PromotionError("promotion subject kind is invalid")
+    _identifier(subject_key, "promotion subject key")
+    if operation not in {"promote", "rollback"}:
+        raise PromotionError("promotion operation is invalid")
+    if expected_current_promotion_id is not None:
+        _hash(expected_current_promotion_id, "expected current promotion ID")
+    if operation == "rollback":
+        _hash(rollback_to_promotion_id, "rollback promotion ID")
+        if expected_current_promotion_id is None:
+            raise PromotionError("rollback requires the exact current promotion ID")
+        if rollback_to_promotion_id == expected_current_promotion_id:
+            raise PromotionError("rollback target is already current")
+    elif rollback_to_promotion_id is not None:
+        raise PromotionError("normal promotion cannot carry a rollback target")
+    _hash(source_owner_principal_id, "promotion source owner principal")
+    _hash(agent_instance_id, "promotion Agent Instance")
+    _hash(source_content_hash, "promotion source content hash")
+    _hash(approved_content_hash, "promotion approved content hash")
+    if (
+        type(source_scope) is not PromotionScopeRef
+        or type(target_scope) is not PromotionScopeRef
+    ):
+        raise PromotionError("promotion scope reference is invalid")
+    if type(administrator) is not PrincipalReference:
+        raise PromotionError("promotion administrator reference is invalid")
+    if source_scope.kind == "principal" and (
+        source_scope.scope_id != source_owner_principal_id
+    ):
+        raise PromotionError("promotion private source scope does not match its owner")
+    if _SCOPE_RANK[target_scope.kind] <= _SCOPE_RANK[source_scope.kind]:
+        raise PromotionError("promotion target must be broader than the source scope")
+    if subject_kind == "skill":
+        _hash(verification_digest, "promotion skill verification digest")
+    elif verification_digest is not None:
+        raise PromotionError(
+            "memory promotion cannot carry skill verification evidence"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PromotionAuthorization:
     subject_kind: str
@@ -112,37 +168,21 @@ class PromotionAuthorization:
             raise PromotionError("promotion version is unsupported")
         if self.policy_version != PROMOTION_POLICY_VERSION:
             raise PromotionError("promotion policy version is unsupported")
-        if self.subject_kind not in PROMOTABLE_KINDS:
-            raise PromotionError("promotion subject kind is invalid")
-        _identifier(self.subject_key, "promotion subject key")
-        if self.operation not in {"promote", "rollback"}:
-            raise PromotionError("promotion operation is invalid")
-        if self.expected_current_promotion_id is not None:
-            _hash(self.expected_current_promotion_id, "expected current promotion ID")
-        if self.operation == "rollback":
-            _hash(self.rollback_to_promotion_id, "rollback promotion ID")
-            if self.expected_current_promotion_id is None:
-                raise PromotionError("rollback requires the exact current promotion ID")
-            if self.rollback_to_promotion_id == self.expected_current_promotion_id:
-                raise PromotionError("rollback target is already current")
-        elif self.rollback_to_promotion_id is not None:
-            raise PromotionError("normal promotion cannot carry a rollback target")
-        _hash(self.source_owner_principal_id, "promotion source owner principal")
-        _hash(self.agent_instance_id, "promotion Agent Instance")
-        _hash(self.source_content_hash, "promotion source content hash")
-        _hash(self.approved_content_hash, "promotion approved content hash")
-        if type(self.administrator) is not PrincipalReference:
-            raise PromotionError("promotion administrator reference is invalid")
-        if self.source_scope.kind == "principal" and (
-            self.source_scope.scope_id != self.source_owner_principal_id
-        ):
-            raise PromotionError(
-                "promotion private source scope does not match its owner"
-            )
-        if _SCOPE_RANK[self.target_scope.kind] <= _SCOPE_RANK[self.source_scope.kind]:
-            raise PromotionError(
-                "promotion target must be broader than the source scope"
-            )
+        _validate_promotion_fields(
+            subject_kind=self.subject_kind,
+            subject_key=self.subject_key,
+            source_owner_principal_id=self.source_owner_principal_id,
+            agent_instance_id=self.agent_instance_id,
+            source_scope=self.source_scope,
+            target_scope=self.target_scope,
+            source_content_hash=self.source_content_hash,
+            approved_content_hash=self.approved_content_hash,
+            administrator=self.administrator,
+            verification_digest=self.verification_digest,
+            expected_current_promotion_id=self.expected_current_promotion_id,
+            rollback_to_promotion_id=self.rollback_to_promotion_id,
+            operation=self.operation,
+        )
         for value, label in (
             (self.issued_at_ms, "promotion issue time"),
             (self.expires_at_ms, "promotion expiry"),
@@ -153,12 +193,6 @@ class PromotionAuthorization:
             self.issued_at_ms < self.expires_at_ms <= self.issued_at_ms + _MAX_TTL_MS
         ):
             raise PromotionError("promotion lifetime is invalid")
-        if self.subject_kind == "skill":
-            _hash(self.verification_digest, "promotion skill verification digest")
-        elif self.verification_digest is not None:
-            raise PromotionError(
-                "memory promotion cannot carry skill verification evidence"
-            )
 
     def unsigned_document(self) -> dict[str, object]:
         return {
@@ -237,6 +271,60 @@ def _administrator_controls_private_source(
     return binding.evidence.get("parent_principal_id") == source_owner_principal_id
 
 
+def validate_promotion_policy(
+    *,
+    subject_kind: str,
+    subject_key: str,
+    source_owner_principal_id: str,
+    agent_instance_id: str,
+    source_scope: PromotionScopeRef,
+    target_scope: PromotionScopeRef,
+    source_content_hash: str,
+    approved_content_hash: str,
+    administrator: PrincipalRecord,
+    verification_digest: str | None = None,
+    expected_current_promotion_id: str | None = None,
+    rollback_to_promotion_id: str | None = None,
+    operation: str = "promote",
+    ttl_ms: int = 5 * 60 * 1000,
+) -> None:
+    """Validate deterministic promotion policy without minting authorization."""
+
+    if type(administrator) is not PrincipalRecord:
+        raise PromotionError("promotion administrator is invalid")
+    if (
+        isinstance(ttl_ms, bool)
+        or type(ttl_ms) is not int
+        or not 0 < ttl_ms <= _MAX_TTL_MS
+    ):
+        raise PromotionError("promotion TTL is invalid")
+    _validate_promotion_fields(
+        subject_kind=subject_kind,
+        subject_key=subject_key,
+        source_owner_principal_id=source_owner_principal_id,
+        agent_instance_id=agent_instance_id,
+        source_scope=source_scope,
+        target_scope=target_scope,
+        source_content_hash=source_content_hash,
+        approved_content_hash=approved_content_hash,
+        administrator=administrator.reference,
+        verification_digest=verification_digest,
+        expected_current_promotion_id=expected_current_promotion_id,
+        rollback_to_promotion_id=rollback_to_promotion_id,
+        operation=operation,
+    )
+    if not _administrator_controls_scope(administrator, target_scope):
+        raise PromotionError("principal is not an administrator of the target scope")
+    if source_scope.kind == "principal" and not _administrator_controls_private_source(
+        administrator,
+        source_owner_principal_id=source_owner_principal_id,
+        target=target_scope,
+    ):
+        raise PromotionError(
+            "private promotion administrator is not derived from the source principal"
+        )
+
+
 def authorize_promotion(
     *,
     subject_kind: str,
@@ -256,24 +344,22 @@ def authorize_promotion(
     ttl_ms: int = 5 * 60 * 1000,
 ) -> PromotionAuthorization:
     """Authorize one exact sanitized promotion without granting authority."""
-    if type(administrator) is not PrincipalRecord:
-        raise PromotionError("promotion administrator is invalid")
-    if (
-        isinstance(ttl_ms, bool)
-        or type(ttl_ms) is not int
-        or not 0 < ttl_ms <= _MAX_TTL_MS
-    ):
-        raise PromotionError("promotion TTL is invalid")
-    if not _administrator_controls_scope(administrator, target_scope):
-        raise PromotionError("principal is not an administrator of the target scope")
-    if source_scope.kind == "principal" and not _administrator_controls_private_source(
-        administrator,
+    validate_promotion_policy(
+        subject_kind=subject_kind,
+        subject_key=subject_key,
         source_owner_principal_id=source_owner_principal_id,
-        target=target_scope,
-    ):
-        raise PromotionError(
-            "private promotion administrator is not derived from the source principal"
-        )
+        agent_instance_id=agent_instance_id,
+        source_scope=source_scope,
+        target_scope=target_scope,
+        source_content_hash=source_content_hash,
+        approved_content_hash=approved_content_hash,
+        administrator=administrator,
+        verification_digest=verification_digest,
+        expected_current_promotion_id=expected_current_promotion_id,
+        rollback_to_promotion_id=rollback_to_promotion_id,
+        operation=operation,
+        ttl_ms=ttl_ms,
+    )
     issued = int(time.time() * 1000) if now_ms is None else now_ms
     return PromotionAuthorization(
         subject_kind=subject_kind,
@@ -301,4 +387,5 @@ __all__ = [
     "PromotionError",
     "PromotionScopeRef",
     "authorize_promotion",
+    "validate_promotion_policy",
 ]

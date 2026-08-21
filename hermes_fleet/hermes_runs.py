@@ -694,6 +694,7 @@ class HermesRunsClient:
             "run_fleet_skill_quarantine": False,
             "run_fleet_skill_verification": False,
             "fleet_learning_promotion": False,
+            "fleet_learning_promotion_gate_material": False,
             "run_approval_budget": False,
             "run_tool_evidence": False,
             "run_command_evidence": False,
@@ -762,6 +763,9 @@ class HermesRunsClient:
             ),
             "fleet_learning_promotion": (
                 features.get("fleet_learning_promotion") is True
+            ),
+            "fleet_learning_promotion_gate_material": (
+                features.get("fleet_learning_promotion_gate_material") is True
             ),
             "run_approval_budget": features.get("run_approval_budget") is True,
             "run_tool_evidence": features.get("run_tool_evidence") is True,
@@ -1014,6 +1018,17 @@ class HermesRunsClient:
         if features.get("fleet_learning_promotion") is not True:
             raise HermesRunError("Hermes does not advertise fleet_learning_promotion")
 
+    def _require_learning_promotion_gate_material(
+        self, *, timeout_seconds: float | None = None
+    ) -> None:
+        features = self.health(timeout_seconds=timeout_seconds)
+        if features.get("fleet_learning_promotion") is not True:
+            raise HermesRunError("Hermes does not advertise fleet_learning_promotion")
+        if features.get("fleet_learning_promotion_gate_material") is not True:
+            raise HermesRunError(
+                "Hermes does not advertise fleet_learning_promotion_gate_material"
+            )
+
     @staticmethod
     def _validated_promotion_response(
         document: dict[str, object], *, object_name: str, field: str
@@ -1049,7 +1064,7 @@ class HermesRunsClient:
         ):
             if type(value) is not str or _HASH_RE.fullmatch(value) is None:
                 raise ValueError(f"Hermes promotion {label} is invalid")
-        self._require_learning_promotion(timeout_seconds=timeout_seconds)
+        self._require_learning_promotion_gate_material(timeout_seconds=timeout_seconds)
         status, document = self._request_json(
             "POST",
             self._path("/v1/fleet/promotions/prepare"),
@@ -1075,6 +1090,7 @@ class HermesRunsClient:
             or prepared.get("source_content_hash") != source_content_hash
             or type(prepared.get("approved_content_hash")) is not str
             or _HASH_RE.fullmatch(str(prepared["approved_content_hash"])) is None
+            or type(prepared.get("evaluation_material")) is not dict
             or prepared.get("verification_digest") is not None
         ):
             raise HermesRunError("Hermes returned invalid memory promotion preparation")
@@ -1096,7 +1112,7 @@ class HermesRunsClient:
         ):
             if type(value) is not str or _HASH_RE.fullmatch(value) is None:
                 raise ValueError(f"Hermes promotion {label} is invalid")
-        self._require_learning_promotion(timeout_seconds=timeout_seconds)
+        self._require_learning_promotion_gate_material(timeout_seconds=timeout_seconds)
         status, document = self._request_json(
             "POST",
             self._path("/v1/fleet/promotions/prepare"),
@@ -1124,6 +1140,7 @@ class HermesRunsClient:
             or _HASH_RE.fullmatch(str(prepared["approved_content_hash"])) is None
             or type(prepared.get("verification_digest")) is not str
             or _HASH_RE.fullmatch(str(prepared["verification_digest"])) is None
+            or type(prepared.get("evaluation_material")) is not dict
         ):
             raise HermesRunError("Hermes returned invalid skill promotion preparation")
         return prepared
