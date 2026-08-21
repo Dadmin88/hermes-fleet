@@ -27,6 +27,7 @@ class _RunsAPI:
         self.run_fleet_skill_quarantine = True
         self.run_fleet_skill_verification = True
         self.fleet_learning_promotion = True
+        self.fleet_learning_promotion_gate_material = True
         self.stop_delay_seconds = 0.0
         self.stop_response_sent = False
 
@@ -70,6 +71,13 @@ class _RunsAPI:
                             "source_content_hash": source_hash,
                             "approved_content_hash": source_hash,
                             "sanitized": False,
+                            "evaluation_material": {
+                                "schema": "fleet.promotion-evaluation-material.v1",
+                                "kind": "memory",
+                                "content_hash": source_hash,
+                                "bytes": 4,
+                                "text": "safe",
+                            },
                             "verification_digest": None,
                             "authority": "none",
                         }
@@ -81,6 +89,12 @@ class _RunsAPI:
                             "source_content_hash": "sha256:" + "8" * 64,
                             "approved_content_hash": "sha256:" + "9" * 64,
                             "sanitized": True,
+                            "evaluation_material": {
+                                "schema": "fleet.promotion-evaluation-material.v1",
+                                "kind": "skill",
+                                "content_hash": "sha256:" + "9" * 64,
+                                "files": [],
+                            },
                             "verification_digest": "sha256:" + "a" * 64,
                             "authority": "none",
                         }
@@ -235,6 +249,9 @@ class _RunsAPI:
                                 ),
                                 "fleet_learning_promotion": (
                                     api.fleet_learning_promotion
+                                ),
+                                "fleet_learning_promotion_gate_material": (
+                                    api.fleet_learning_promotion_gate_material
                                 ),
                                 "run_approval_budget": True,
                                 "run_tool_evidence": True,
@@ -391,6 +408,7 @@ def test_hermes_runs_client_reports_public_capabilities_without_run() -> None:
         "run_fleet_skill_quarantine": True,
         "run_fleet_skill_verification": True,
         "fleet_learning_promotion": True,
+        "fleet_learning_promotion_gate_material": True,
         "run_approval_budget": True,
         "run_tool_evidence": True,
         "run_command_evidence": True,
@@ -751,6 +769,21 @@ def test_learning_promotion_client_requires_capability_and_uses_exact_documents(
         ("GET", "/health"),
         ("GET", "/v1/capabilities"),
     ]
+
+    api = _RunsAPI([{"status": "completed", "output": "unused"}])
+    api.fleet_learning_promotion_gate_material = False
+    with api.serve() as endpoint:
+        client = HermesRunsClient(endpoint=endpoint, api_key="[REDACTED]")
+        with pytest.raises(
+            HermesRunError, match="fleet_learning_promotion_gate_material"
+        ):
+            client.prepare_memory_promotion(
+                target="memory",
+                source_scope=memory.write_scope,
+                source_content_hash=source_hash,
+                source_owner_principal_id=memory.principal_id,
+                agent_instance_id=memory.agent_instance_id,
+            )
 
     api = _RunsAPI([{"status": "completed", "output": "unused"}])
     issued = int(time.time() * 1000)

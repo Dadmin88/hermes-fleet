@@ -4,8 +4,9 @@ Templar consumes only the immutable Phase 19 security-event facts and returns
 one bounded advisory decision: ALLOW, DENY, or REVIEW. A verdict never grants
 execution authority. Deterministic Fleet hard denies retain precedence.
 
-Phase 20 deliberately does not implement the Phase 21 disposable evaluator
-sandbox or the Phase 22/23 execution and learning gates.
+The Phase 21 disposable evaluator sandbox and the Phase 22/23 execution and
+learning gate orchestration remain separate modules. This core only validates
+and evaluates exact supported immutable Fleet event schemas.
 """
 
 from __future__ import annotations
@@ -54,6 +55,9 @@ _MAX_DOCUMENT_BYTES = 768 * 1024
 _MAX_REASON_CODES = 16
 _MAX_TIMEOUT_MS = 120_000
 _MAX_VERDICT_TTL_MS = 10 * 60_000
+_SUPPORTED_EVENT_SCHEMAS = frozenset(
+    {"fleet.security-event.v1", "fleet.learning-promotion-event.v1"}
+)
 
 
 class TemplarError(RuntimeError):
@@ -152,6 +156,34 @@ def _plain_json(value: object) -> object:
     if type(value) is tuple:
         return [_plain_json(item) for item in value]
     return value
+
+
+def _event_binding(event: object) -> tuple[str, str, str, dict[str, Any]]:
+    """Validate one immutable event against Templar's closed event contract."""
+
+    to_dict = getattr(event, "to_dict", None)
+    request_hash = getattr(event, "request_hash", None)
+    event_hash = getattr(event, "content_hash", None)
+    policy_digest = getattr(event, "policy_digest", None)
+    if not callable(to_dict):
+        raise TemplarError("Templar event does not expose a canonical document")
+    _hash(request_hash, "Templar event request hash")
+    _hash(event_hash, "Templar event content hash")
+    _hash(policy_digest, "Templar event policy digest")
+    document = to_dict()
+    if (
+        type(document) is not dict
+        or document.get("schema") not in _SUPPORTED_EVENT_SCHEMAS
+    ):
+        raise TemplarError("Templar event schema is unsupported")
+    if document.get("request_hash") != request_hash:
+        raise TemplarBindingError("Templar event request hash is inconsistent")
+    if _digest(document, "Templar event") != event_hash:
+        raise TemplarBindingError("Templar event content hash is inconsistent")
+    request = document.get("request")
+    if type(request) is not dict or request.get("policy_digest") != policy_digest:
+        raise TemplarBindingError("Templar event Fleet policy is inconsistent")
+    return request_hash, event_hash, policy_digest, document
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,8 +299,8 @@ class TemplarEvaluationRequest:
             ).decode("utf-8")
         )
         object.__setattr__(self, "event", _freeze_json(event))
-        if event.get("schema") != "fleet.security-event.v1":
-            raise TemplarError("Templar context is not a Phase 19 security event")
+        if event.get("schema") not in _SUPPORTED_EVENT_SCHEMAS:
+            raise TemplarError("Templar context event schema is unsupported")
         if event.get("request_hash") != self.request_hash:
             raise TemplarBindingError("Templar context request hash does not match")
         if _digest(event, "Templar security-event context") != self.event_hash:
@@ -283,24 +315,23 @@ class TemplarEvaluationRequest:
     @classmethod
     def from_event(
         cls,
-        event: SecurityEvent,
+        event: object,
         *,
         templar_policy: TemplarPolicyRef,
         evaluator: TemplarEvaluatorIdentity,
         issued_at_ms: int,
         deadline_ms: int,
     ) -> TemplarEvaluationRequest:
-        if type(event) is not SecurityEvent:
-            raise TemplarError("Templar requires an exact Phase 19 security event")
+        request_hash, event_hash, policy_digest, document = _event_binding(event)
         return cls(
-            request_hash=event.request_hash,
-            event_hash=event.content_hash,
-            fleet_policy_digest=event.policy_digest,
+            request_hash=request_hash,
+            event_hash=event_hash,
+            fleet_policy_digest=policy_digest,
             templar_policy=templar_policy,
             evaluator=evaluator,
             issued_at_ms=issued_at_ms,
             deadline_ms=deadline_ms,
-            event=event.to_dict(),
+            event=document,
         )
 
     def request_document(self) -> dict[str, object]:
@@ -528,22 +559,25 @@ class TemplarVerdict:
 
     def validate_for(
         self,
-        event: SecurityEvent,
+        event: object,
         *,
         templar_policy: TemplarPolicyRef,
         evaluator: TemplarEvaluatorIdentity,
         now_ms: int,
     ) -> None:
-        if type(event) is not SecurityEvent:
-            raise TemplarStaleVerdict("Templar verdict event is invalid")
+        try:
+            request_hash, event_hash, policy_digest, _document = _event_binding(event)
+        except TemplarError as error:
+            raise TemplarStaleVerdict("Templar verdict event is invalid") from error
         _positive_int(now_ms, "Templar verdict validation time")
         if (
-            self.request_hash != event.request_hash
-            or self.event_hash != event.content_hash
-            or self.fleet_policy_digest != event.policy_digest
+            self.request_hash != request_hash
+            or self.event_hash != event_hash
+            or self.fleet_policy_digest != policy_digest
         ):
             raise TemplarStaleVerdict(
-                "Templar verdict no longer matches security event"
+                "Templar verdict no longer matches security event or evaluated "
+                "learning event"
             )
         if self.templar_policy != templar_policy:
             raise TemplarStaleVerdict("Templar verdict policy is stale")
@@ -574,7 +608,7 @@ class TemplarBackend(Protocol):
 
 
 class TemplarCore:
-    """Low-authority evaluator contract around one exact Phase 19 event."""
+    """Low-authority evaluator contract around one exact supported Fleet event."""
 
     def __init__(
         self,
@@ -607,7 +641,7 @@ class TemplarCore:
         self._wall_clock_ms = wall_clock_ms or (lambda: time.time_ns() // 1_000_000)
         self._monotonic_ms = monotonic_ms or (lambda: time.monotonic_ns() // 1_000_000)
 
-    def evaluate(self, event: SecurityEvent) -> TemplarVerdict:
+    def evaluate(self, event: object) -> TemplarVerdict:
         issued_at_ms = self._wall_clock_ms()
         _positive_int(issued_at_ms, "Templar current time")
         request = TemplarEvaluationRequest.from_event(
