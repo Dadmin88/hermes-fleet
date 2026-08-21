@@ -1,6 +1,6 @@
 # vNext Phase 21: Disposable Templar sandbox
 
-Status: **CLOSURE-GATED**
+Status: **COMPLETE — MERGED AND VERIFIED ON FLEET `main`**
 
 Phase 21 gives the Phase 20 Templar core a real disposable Linux evaluator runtime. It does not add any execution authority. Templar still returns only `ALLOW`, `DENY`, or `REVIEW`, every verdict still carries `authority: none`, and deterministic Fleet deny still wins.
 
@@ -251,15 +251,16 @@ Current Phase 21 pre-PR evidence:
 - Rust `cargo build --workspace`: green;
 - `git diff --check`: green.
 
-Repository closure still requires the normal path:
+Fleet delivery evidence is final:
 
-1. reviewable branch/commit;
-2. exact final PR-head CI green, including the explicit Phase 21 Bubblewrap proof;
-3. normal GitHub merge;
-4. exact resulting `main` CI green;
-5. closure record update through the normal closure workflow.
+- implementation PR #162 final exact head: `61272596f46a9598558b440ada8264333364ec26`;
+- exact final-head PR CI run `32413231482`: completed successfully with Python 3.11/3.13 quality, Rust workspace compatibility, real Nodescale/readiness proofs, and the pinned-Hermes clean-install job including the explicit Phase 21 Bubblewrap adversarial proof all green;
+- the initial PR head `fc9ffe8aa7825804b89fe1155c4e30e558807418` failed only because a structural provider-socket unit test accidentally depended on Bubblewrap availability in the ordinary Python quality job; the test was decoupled with a forward commit, with no sandbox weakening, history rewrite, force push, or skipped security proof;
+- PR #162 merged normally as `207a5244dae3432b58076c13310790549a59db14`;
+- exact post-merge `main` CI run `32413558912`: completed successfully on that merge SHA with all five jobs green, including the pinned-Hermes clean-install job and real Phase 21 Bubblewrap proof;
+- no administrative merge override was used.
 
-Until those steps are complete, Phase 21 remains `CLOSURE-GATED` rather than `COMPLETE`.
+Phase 21 therefore satisfies the repository closure rule end to end. The canonical next implementation entry point is Phase 22.
 
 ## Later-phase boundary
 
