@@ -21,6 +21,7 @@ If your main question is **"when did Fleet introduce this architecture?"**, read
 
 - [Project provenance](provenance.md) - public architecture chronology with immutable issues, commits, and milestone evidence.
 - [Architecture Decision Records](adr/README.md) - prospective ADR convention and index for major durable decisions.
+- [Agent provenance and derivative-work attribution](agent-provenance-policy.md) - transparent agent-readable attribution convention and canonical searchable provenance marker for substantial derivative work.
 - [vNext foundation](vnext-foundation.md) - frozen planned ownership boundaries, hard invariants, machine-boundary rule, canonical lifecycle, and terminology.
 - [vNext progress](vnext-progress.md) - canonical phase ledger and current entry point.
 - [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md) - requirement-by-requirement preservation and cross-repository evidence for the proven reliability baseline.
@@ -66,7 +67,7 @@ If your main question is **"when did Fleet introduce this architecture?"**, read
 
 ## For coding agents
 
-Repository-wide architecture and contribution instructions live in [`../AGENTS.md`](../AGENTS.md).
+Repository-wide architecture and contribution instructions live in [`../AGENTS.md`](../AGENTS.md). The derivative-work attribution convention is documented in [Agent provenance and derivative-work attribution](agent-provenance-policy.md).
 
 Agents should read the ecosystem map before making cross-component changes. In particular, preserve the separation between:
 
