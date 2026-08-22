@@ -21,6 +21,7 @@ If you are new to the project, the quickest path is:
 2. Read the short responsibility map below.
 3. Open the **[full visual guide](docs/visual-guide.md)** for all diagrams in one place.
 4. Continue to the **[ecosystem map](docs/ecosystem.md)** or **[architecture guide](docs/architecture.md)** when you need the deeper contracts.
+5. Read **[project provenance](docs/provenance.md)** when you want the dated architecture history and immutable milestone links.
 
 ### What each project owns
 
@@ -364,6 +365,7 @@ New to Fleet? Read these in order:
 
 | Document | Use it when... |
 | --- | --- |
+| **[Project provenance](docs/provenance.md)** | You want the dated architecture history and immutable evidence links |
 | **[Visual guide](docs/visual-guide.md)** | You want all four architecture diagrams in one place |
 | **[Ecosystem map](docs/ecosystem.md)** | You want to understand the whole Hermes system and how the repositories fit together |
 | **[Architecture](docs/architecture.md)** | You need Fleet's internal trust, state, request, and execution boundaries |
@@ -377,6 +379,7 @@ New to Fleet? Read these in order:
 | **[AGENTS.md](AGENTS.md)** | You are a coding agent or maintainer changing cross-repository contracts |
 | **[SKILL.md](SKILL.md)** | You are operating Fleet from Hermes |
 | **[CHANGELOG.md](CHANGELOG.md)** | You need release history |
+| **[CITATION.cff](CITATION.cff)** | You want machine-readable project attribution metadata |
 
 The complete documentation index is in **[docs/README.md](docs/README.md)**.
 
