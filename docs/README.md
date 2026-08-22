@@ -2,6 +2,8 @@
 
 This directory contains the durable public documentation for Hermes Fleet. It describes the current product contracts and operational boundaries rather than the chronology of how individual implementation milestones were completed.
 
+For the project’s public architectural chronology and immutable milestone links, see [**Project provenance**](provenance.md). New major architecture decisions are recorded prospectively under [**Architecture Decision Records**](adr/README.md); older decisions are not retroactively backdated.
+
 ## New to Hermes Fleet? Start here
 
 1. [**vNext foundation**](vnext-foundation.md) - the frozen planned ownership boundaries, hard invariants, machine-boundary rule, canonical Agent Instance/RunAuthority/Run Capsule lifecycle, and terminology.
@@ -11,10 +13,14 @@ This directory contains the durable public documentation for Hermes Fleet. It de
 
 If your main question is **"where does Hermes Agency fit, and how will Fleet find or place profiles?"**, read [Profile identity and placement](profile-placement.md).
 
+If your main question is **"when did Fleet introduce this architecture?"**, read [Project provenance](provenance.md) and follow the immutable issue/commit links there.
+
 ## By topic
 
 ### Ecosystem and architecture
 
+- [Project provenance](provenance.md) - public architecture chronology with immutable issues, commits, and milestone evidence.
+- [Architecture Decision Records](adr/README.md) - prospective ADR convention and index for major durable decisions.
 - [vNext foundation](vnext-foundation.md) - frozen planned ownership boundaries, hard invariants, machine-boundary rule, canonical lifecycle, and terminology.
 - [vNext progress](vnext-progress.md) - canonical phase ledger and current entry point.
 - [Phase 1 reliability baseline](vnext-phase1-reliability-baseline.md) - requirement-by-requirement preservation and cross-repository evidence for the proven reliability baseline.
@@ -79,6 +85,7 @@ Do not promote open issues or design directions into current product documentati
 ## Other repository references
 
 - [`../README.md`](../README.md) - project overview and quickstart.
+- [`../CITATION.cff`](../CITATION.cff) - machine-readable project citation metadata.
 - [`../AGENTS.md`](../AGENTS.md) - coding-agent architecture and repository contract.
 - [`../SKILL.md`](../SKILL.md) - Hermes operator skill.
 - [`../CHANGELOG.md`](../CHANGELOG.md) - release history.
@@ -87,5 +94,7 @@ Do not promote open issues or design directions into current product documentati
 ## Documentation policy
 
 Public documentation should describe behavior that remains meaningful across machines and releases. Keep machine names, personal home paths, private network details, live task/run identifiers, temporary checkpoint hashes, one-off rollout evidence, and agent work logs in local workspace state, issues, pull requests, CI artifacts, or release notes instead of these reference documents.
+
+`provenance.md` is the deliberate chronology exception: it records major public architecture milestones and links them to immutable public evidence. It should remain concise, factual, and limited to the project’s own history rather than comparisons with unrelated projects.
 
 When a document discusses architectural direction that is not yet a merged Fleet contract, label that distinction explicitly.

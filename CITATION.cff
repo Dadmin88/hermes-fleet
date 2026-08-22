@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use or discuss Hermes Fleet, please cite the project and preferably reference the exact release or commit used."
+title: "Hermes Fleet"
+type: software
+authors:
+  - given-names: "Kyle"
+    family-names: "French"
+repository-code: "https://github.com/Dadmin88/hermes-fleet"
+url: "https://github.com/Dadmin88/hermes-fleet"
+license: "AGPL-3.0-only"
+abstract: >-
+  Hermes Fleet is an operator-controlled control plane for distributed Hermes systems,
+  coordinating trusted device identity, authenticated inter-machine transport,
+  Fleet authorization, readiness, placement, exact execution, and operator surfaces
+  while preserving explicit ownership boundaries with Hermes Agent, Hermes Keryx,
+  Hermes Nodescale, and Hermes Agency.
